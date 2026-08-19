@@ -1,0 +1,34 @@
+@layer stratum.components {
+  .stratum-port-range {
+    min-width: 0;
+  }
+
+  /* Tabular figures matter more here than anywhere else in the family: the
+   * total re-renders on every keystroke, and proportional digits make it jump
+   * horizontally while the operator is watching it for exactly the change that
+   * tells them `1-65535` and `1-6553` are different. */
+  .stratum-port-range__count {
+    font-variant-numeric: var(--stratum-numeric);
+    font-feature-settings: 'tnum' 1;
+  }
+
+  /* Several problems at once. Only the first is spelled out — a wall of
+   * validation text under a single field is read by nobody — and the rest are
+   * counted so the operator knows more remain.
+   *
+   * The aside reads as secondary through the italic, NOT through opacity.
+   * It inherits the message tone, and those tones are placed just above the
+   * 4.5:1 floor: at 0.75 the danger tone composited 4.73:1 on `surface` and
+   * dipped under AA on `surface-sunken`. Opacity multiplies contrast down, so
+   * it can never be the de-emphasis channel for text that is already at the
+   * threshold. */
+  .stratum-port-range__more {
+    font-style: italic;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-port-range__more {
+      color: GrayText;
+    }
+  }
+}

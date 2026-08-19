@@ -1,0 +1,194 @@
+@layer stratum.components {
+  .stratum-health-bar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+  }
+
+  .stratum-health-bar[data-size='sm'] { --_h: 6px;  --_fs: var(--stratum-text-2xs); }
+  .stratum-health-bar[data-size='md'] { --_h: 10px; --_fs: var(--stratum-text-2xs); }
+  .stratum-health-bar[data-size='lg'] { --_h: 16px; --_fs: var(--stratum-text-xs); }
+
+  .stratum-health-bar__rail {
+    display: flex;
+    /* A hairline between bands so two adjacent warm colours never read as one
+     * larger band. */
+    gap: var(--stratum-space-px);
+    width: 100%;
+    height: var(--_h);
+    overflow: hidden;
+    background: var(--stratum-track);
+    border: 1px solid var(--stratum-track-border);
+    border-radius: var(--stratum-radius-full);
+  }
+
+  .stratum-health-bar__band {
+    flex-basis: 0;
+    flex-shrink: 1;
+    /* Guarantees a 1-in-500 bucket is still a visible sliver. Flexbox honours
+     * the minimum by shrinking neighbours, so the rail stays exactly full. */
+    min-width: 3px;
+    background: var(--_fg);
+  }
+
+  /* Nothing counted. The rail stays visibly EMPTY — the one thing it must
+   * never do is render a full healthy bar because no data arrived. */
+  .stratum-health-bar__empty {
+    flex: 1;
+    background: transparent;
+  }
+
+  /* -- Bucket paint ---------------------------------------------------------- */
+  .stratum-health-bar__band[data-status='ok'],
+  .stratum-health-bar__legend-item[data-status='ok']       { --_fg: var(--stratum-success); }
+  .stratum-health-bar__band[data-status='degraded'],
+  .stratum-health-bar__legend-item[data-status='degraded'] { --_fg: var(--stratum-warning); }
+  .stratum-health-bar__band[data-status='failed'],
+  .stratum-health-bar__legend-item[data-status='failed']   { --_fg: var(--stratum-danger); }
+  .stratum-health-bar__band[data-status='pending'],
+  .stratum-health-bar__legend-item[data-status='pending']  { --_fg: var(--stratum-info); }
+  .stratum-health-bar__band[data-status='info'],
+  .stratum-health-bar__legend-item[data-status='info']     { --_fg: var(--stratum-text-secondary); }
+  /* `inactive` paints a band and a swatch — meaningful graphics, so 3:1 under
+   * SC 1.4.11. `text-disabled` is neutral-400 at 2.52:1 and misses that as well
+   * as the text threshold; `text-muted` keeps the bucket quiet and legible, and
+   * stays a visible step away from the lighter `unknown` hatch below. */
+  .stratum-health-bar__band[data-status='inactive'],
+  .stratum-health-bar__legend-item[data-status='inactive'] { --_fg: var(--stratum-text-muted); }
+  .stratum-health-bar__band[data-status='unknown'],
+  .stratum-health-bar__legend-item[data-status='unknown'],
+  .stratum-health-bar__band[data-status='unaccounted'],
+  .stratum-health-bar__legend-item[data-status='unaccounted'] { --_fg: var(--stratum-unknown); }
+
+  /* -- Unknown is TEXTURE, not a colour -------------------------------------
+   * A solid grey band next to a solid red band still reads as a verdict.
+   * Diagonal hatching reads as "no reading here" instead — a different visual
+   * category entirely, which is exactly the claim being made. */
+  .stratum-health-bar__band[data-status='unknown'],
+  .stratum-health-bar__band[data-status='unaccounted'] {
+    background-color: var(--stratum-unknown-subtle);
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--_fg) 0 2px,
+      transparent 2px 5px
+    );
+  }
+
+  /* Unaccounted is the weaker claim of the two — we did not even enumerate
+   * these — so its hatch is sparser. */
+  .stratum-health-bar__band[data-status='unaccounted'] {
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--_fg) 0 1px,
+      transparent 1px 6px
+    );
+  }
+
+  /* -- Legend ---------------------------------------------------------------- */
+  .stratum-health-bar__legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-2) var(--stratum-space-6);
+    font-size: var(--_fs);
+  }
+
+  .stratum-health-bar__legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    cursor: help;
+  }
+
+  .stratum-health-bar__swatch {
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: 9px;
+    height: 9px;
+    background: var(--_fg);
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-xs);
+  }
+
+  .stratum-health-bar__legend-item[data-status='unknown'] .stratum-health-bar__swatch,
+  .stratum-health-bar__legend-item[data-status='unaccounted'] .stratum-health-bar__swatch {
+    background-color: var(--stratum-unknown-subtle);
+    background-image: repeating-linear-gradient(45deg, var(--_fg) 0 1px, transparent 1px 3px);
+    border-color: var(--_fg);
+  }
+
+  /* A bucket with no reading at all: dashed outline, hollow, italic. It is not
+   * zero and must not look like zero. */
+  .stratum-health-bar__legend-item[data-unobserved] .stratum-health-bar__swatch {
+    background: transparent;
+    background-image: none;
+    border-style: dashed;
+    border-color: var(--stratum-unknown);
+  }
+  /* The dashed hollow swatch and the italic are what say "no reading". The
+   * label is still the bucket's NAME — "never probed" is the most important
+   * word in the legend, not a disabled control — so it keeps a text-grade
+   * colour rather than the sub-AA `text-disabled` token. */
+  .stratum-health-bar__legend-item[data-unobserved] .stratum-health-bar__legend-label,
+  .stratum-health-bar__legend-item[data-unobserved] .stratum-health-bar__legend-count {
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-health-bar__legend-label {
+    color: var(--stratum-text-secondary);
+  }
+
+  .stratum-health-bar__legend-count {
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    font-feature-settings: 'tnum' 1;
+    color: var(--stratum-text);
+  }
+
+  /* "nothing counted" is the bar's entire content in the empty case. It is the
+   * last thing that may be rendered below AA. */
+  .stratum-health-bar__note {
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+
+  /* At least one bucket has no reading, so the bar cannot claim to describe
+   * the whole population. The dotted rail edge is the visible caveat. */
+  .stratum-health-bar[data-incomplete] .stratum-health-bar__rail {
+    border-style: dashed;
+  }
+
+  /* The bar is a data graphic: hue IS the encoding, and the OS repainting
+   * every band to CanvasText would erase the information rather than adapt it.
+   * `forced-color-adjust: none` is the sanctioned escape hatch for exactly
+   * this case. The rail keeps a system-coloured border so the widget's own
+   * boundary still tracks the user's theme, and the legend text — which
+   * carries the same information in words — is left fully forced. */
+  @media (forced-colors: active) {
+    .stratum-health-bar__rail {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+    .stratum-health-bar__band {
+      forced-color-adjust: none;
+    }
+    .stratum-health-bar__swatch {
+      forced-color-adjust: none;
+    }
+    .stratum-health-bar__legend-item[data-unobserved] .stratum-health-bar__swatch {
+      forced-color-adjust: auto;
+      border-color: GrayText;
+    }
+    .stratum-health-bar__legend-label,
+    .stratum-health-bar__legend-count {
+      color: CanvasText;
+    }
+    .stratum-health-bar__legend-item[data-unobserved] .stratum-health-bar__legend-label,
+    .stratum-health-bar__legend-item[data-unobserved] .stratum-health-bar__legend-count,
+    .stratum-health-bar__note {
+      color: GrayText;
+    }
+  }
+}

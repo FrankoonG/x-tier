@@ -1,0 +1,207 @@
+@layer stratum.components {
+  .stratum-checkbox {
+    /* Per-instance contract. Retheme one checkbox by setting these rather than
+     * out-specifying the selectors below. */
+    --_box: 16px;
+    --_bg: var(--stratum-surface);
+    --_border: var(--stratum-border-strong);
+    --_border-width: 1px;
+    --_mark: var(--stratum-accent-on-solid);
+    --_radius: var(--stratum-radius-sm);
+    --_font: var(--stratum-text-sm);
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+    font-size: var(--_font);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+  }
+
+  /* A description turns the row into a block: the control then aligns to the
+   * first text line rather than to the vertical centre of two lines. */
+  .stratum-checkbox[data-block] {
+    align-items: flex-start;
+  }
+  .stratum-checkbox[data-block] .stratum-checkbox__control {
+    margin-block-start: var(--stratum-space-px);
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-checkbox[data-size='sm'] { --_box: 14px; --_font: var(--stratum-text-xs); }
+  .stratum-checkbox[data-size='md'] { --_box: 16px; --_font: var(--stratum-text-sm); }
+  .stratum-checkbox[data-size='lg'] { --_box: 18px; --_font: var(--stratum-text-md); }
+
+  /* -- Control ------------------------------------------------------------- */
+  .stratum-checkbox__control {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: var(--_box);
+    height: var(--_box);
+  }
+
+  /* The real input stays on top of the painted box: pointer hits, the tab
+   * order and the accessibility tree all stay native. */
+  .stratum-checkbox__input {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: 50%;
+    translate: -50% -50%;
+    /* WCAG 2.2 SC 2.5.8 — the smallest box is 14px, so the hit area is grown
+     * beyond the paint without changing the visual size. */
+    width: max(100%, 24px);
+    height: max(100%, 24px);
+    margin: 0;
+    padding: 0;
+    opacity: 0;
+    cursor: pointer;
+    /* The mark SVGs below carry a `scale`, which makes them stacking contexts
+     * painted alongside positioned content and therefore ABOVE this input in
+     * tree order. Without the explicit z-index they would swallow the click
+     * that is supposed to reach the real control. */
+    z-index: 1;
+  }
+
+  .stratum-checkbox__box {
+    display: grid;
+    /* Belt and braces: pure decoration must never be a hit target. */
+    pointer-events: none;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    color: var(--_mark);
+    background: var(--_bg);
+    border: var(--_border-width) solid var(--_border);
+    border-radius: var(--_radius);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-checkbox__check,
+  .stratum-checkbox__dash {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    /* --stratum-zoom-pop resolves to 1 under reduced motion, so the mark simply
+     * appears instead of popping. */
+    scale: var(--stratum-zoom-pop);
+    /* Opacity deliberately faster than transform — the mark reads as present
+     * before it finishes settling. */
+    transition:
+      opacity var(--stratum-duration-2xs) var(--stratum-ease-out),
+      scale var(--stratum-duration-xs) var(--stratum-ease-signature);
+  }
+
+  .stratum-checkbox[data-state='checked'] .stratum-checkbox__check,
+  .stratum-checkbox[data-state='mixed'] .stratum-checkbox__dash {
+    opacity: 1;
+    scale: 1;
+  }
+
+  /* -- Text ---------------------------------------------------------------- */
+  .stratum-checkbox__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+  }
+
+  .stratum-checkbox__label {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .stratum-checkbox__description {
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- States -------------------------------------------------------------- */
+  .stratum-checkbox[data-state='checked'],
+  .stratum-checkbox[data-state='mixed'] {
+    --_bg: var(--stratum-accent);
+    --_border: var(--stratum-accent);
+  }
+
+  .stratum-checkbox:not([data-disabled]):hover {
+    --_border: var(--stratum-accent);
+  }
+  .stratum-checkbox[data-state='unchecked']:not([data-disabled]):hover {
+    --_bg: var(--stratum-surface-hover);
+  }
+
+  /* Invalid is signalled by a doubled border as well as by hue, so it survives
+   * both colour-vision deficiency and a monochrome display. */
+  .stratum-checkbox[data-invalid] {
+    --_border: var(--stratum-danger);
+    --_border-width: 2px;
+  }
+  .stratum-checkbox[data-invalid][data-state='checked'],
+  .stratum-checkbox[data-invalid][data-state='mixed'] {
+    --_bg: var(--stratum-danger);
+    --_mark: var(--stratum-danger-on-solid);
+  }
+
+  .stratum-checkbox[data-disabled] {
+    --_bg: var(--stratum-surface-disabled);
+    --_border: var(--stratum-border);
+    color: var(--stratum-text-disabled);
+  }
+  .stratum-checkbox[data-disabled][data-state='checked'],
+  .stratum-checkbox[data-disabled][data-state='mixed'] {
+    --_bg: var(--stratum-text-disabled);
+    --_border: var(--stratum-text-disabled);
+    --_mark: var(--stratum-surface);
+  }
+  .stratum-checkbox[data-disabled] .stratum-checkbox__input,
+  .stratum-checkbox[data-disabled] .stratum-checkbox__label {
+    cursor: not-allowed;
+  }
+  /* The label inherits `--stratum-text-disabled` from the root above, which is
+   * fine — it is the accessible name of a genuinely disabled `<input>`, the
+   * one case WCAG 1.4.3 exempts. The description is not part of that control:
+   * it is content, and it is normally what explains the lock. `text-subtle`
+   * keeps it a step quieter than the enabled `text-muted` while clearing
+   * 4.5:1 (5.06:1 light, 5.08:1 dark). */
+  .stratum-checkbox[data-disabled] .stratum-checkbox__description {
+    color: var(--stratum-text-subtle);
+  }
+
+  /* -- Focus ---------------------------------------------------------------
+   * The input carries focus but is invisible, so the ring is drawn on the box
+   * it sits over. Values come from the same tokens as the global rule. */
+  .stratum-checkbox__input:focus-visible + .stratum-checkbox__box {
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+
+  /* Forced colours discard our fills, so checked-ness has to be carried by
+   * system keywords and the border must exist independently of the fill. */
+  @media (forced-colors: active) {
+    .stratum-checkbox__box {
+      background: ButtonFace;
+      border-color: ButtonBorder;
+      color: ButtonFace;
+    }
+    .stratum-checkbox[data-state='checked'] .stratum-checkbox__box,
+    .stratum-checkbox[data-state='mixed'] .stratum-checkbox__box {
+      background: Highlight;
+      border-color: Highlight;
+      color: HighlightText;
+    }
+    .stratum-checkbox[data-disabled] {
+      color: GrayText;
+    }
+    .stratum-checkbox[data-disabled] .stratum-checkbox__box {
+      background: ButtonFace;
+      border-color: GrayText;
+      color: GrayText;
+    }
+    .stratum-checkbox[data-disabled] .stratum-checkbox__description {
+      color: GrayText;
+    }
+  }
+}

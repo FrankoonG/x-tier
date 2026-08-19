@@ -1,0 +1,86 @@
+@layer stratum.components {
+  .stratum-chain-builder {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+  }
+
+  /* The preview sits ABOVE the editor, not below it: in a constrained chain the
+   * composed result is the thing being edited, and burying it under the rows
+   * means the operator reads the parts and never the whole. */
+  .stratum-chain-builder__preview {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--stratum-space-2) var(--stratum-space-4);
+    padding: var(--stratum-space-4) var(--stratum-space-5);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    min-width: 0;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-x: auto;
+  }
+
+  .stratum-chain-builder__preview-label {
+    flex: 0 0 auto;
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .stratum-chain-builder__empty {
+    font-size: var(--stratum-text-xs);
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-chain-builder__row[data-validity='invalid'] {
+    border-color: var(--stratum-danger-border);
+  }
+  .stratum-chain-builder__row[data-validity='empty'] {
+    border-style: dashed;
+  }
+
+  /* A step after a hole in the chain. Dimmed, but the CONTROL is untouched: the
+   * operator has to be able to read and edit it in order to fix the chain, and
+   * the row still carries its own validity note. */
+  .stratum-chain-builder__row[data-downstream] .stratum-row-list__index {
+    text-decoration: line-through;
+  }
+
+  .stratum-chain-builder__downstream {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--stratum-space-2) var(--stratum-space-4);
+  }
+
+  /* An escape hatch offered next to the warning, never applied automatically. */
+  .stratum-chain-builder__clear {
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    border: none;
+    font: inherit;
+    font-weight: var(--stratum-weight-medium);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .stratum-chain-builder__clear:hover {
+    text-decoration-thickness: 2px;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-chain-builder__preview {
+      border-color: CanvasText;
+    }
+    .stratum-chain-builder__row[data-validity='invalid'] {
+      border-width: 2px;
+      border-style: double;
+    }
+  }
+}

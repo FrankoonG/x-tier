@@ -1,0 +1,117 @@
+@layer stratum.components {
+  .stratum-tooltip {
+    /* Inverse surface so a tooltip never reads as a panel that can be
+     * interacted with. The arrow reads the same two properties. */
+    --_bg: var(--stratum-surface-inverse);
+    --_fg: var(--stratum-text-inverse);
+    /* Mirrored by TOOLTIP_ARROW_SIZE in Tooltip.tsx, which derives both the
+     * offset compensation and the scale origin from it. Keep the two in step —
+     * this is 8px, not the 10px Popover uses. */
+    --_arrow-size: var(--stratum-space-4);
+
+    z-index: var(--stratum-z-tooltip);
+    box-sizing: border-box;
+    width: max-content;
+    max-width: var(--stratum-tooltip-max-width, 18rem);
+    padding-block: var(--stratum-space-3);
+    padding-inline: var(--stratum-space-5);
+
+    font-size: var(--stratum-text-xs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    box-shadow: var(--stratum-shadow-md);
+
+    /* Never a pointer target in its own right, but not `pointer-events: none`
+     * either: SC 1.4.13 requires the pointer to be able to rest on it. */
+    cursor: default;
+
+    /* Resting state. `transform-origin` comes in inline from the resolved
+     * placement (and from the arrow's centre when there is one), so the scale
+     * appears to grow out of the trigger. */
+    opacity: 1;
+    transform: scale(1);
+    transition: var(--stratum-transition-popover-enter);
+  }
+
+  @starting-style {
+    .stratum-tooltip[data-state='entering'] {
+      opacity: 0;
+      transform: scale(var(--stratum-zoom-subtle));
+    }
+  }
+
+  .stratum-tooltip[data-state='exiting'] {
+    opacity: 0;
+    transform: scale(var(--stratum-zoom-subtle));
+    transition: var(--stratum-transition-popover-exit);
+    pointer-events: none;
+  }
+
+  /* Moving between tooltips in a warm TooltipProvider group: the delay is gone,
+   * so the entrance must go too. Re-animating each one would read as flicker
+   * rather than as motion. Must follow the rules above to win the cascade. */
+  .stratum-tooltip[data-instant] {
+    transition-duration: var(--stratum-duration-0);
+  }
+
+  /* -- Arrow ---------------------------------------------------------------- */
+  .stratum-tooltip__arrow {
+    position: absolute;
+    width: var(--_arrow-size);
+    height: var(--_arrow-size);
+    background: var(--_bg);
+    rotate: 45deg;
+  }
+
+  .stratum-tooltip[data-side='bottom'] .stratum-tooltip__arrow {
+    top: calc(var(--_arrow-size) / -2);
+  }
+  .stratum-tooltip[data-side='top'] .stratum-tooltip__arrow {
+    bottom: calc(var(--_arrow-size) / -2);
+  }
+  .stratum-tooltip[data-side='right'] .stratum-tooltip__arrow {
+    left: calc(var(--_arrow-size) / -2);
+  }
+  .stratum-tooltip[data-side='left'] .stratum-tooltip__arrow {
+    right: calc(var(--_arrow-size) / -2);
+  }
+
+  /* Forced colours drop the inverse fill and the shadow, which is all that
+   * separated the tooltip from the content behind it — so it needs a real
+   * border and system colours instead. */
+  @media (forced-colors: active) {
+    .stratum-tooltip {
+      background: Canvas;
+      color: CanvasText;
+      border-color: CanvasText;
+    }
+    .stratum-tooltip__arrow {
+      background: Canvas;
+      border: 1px solid CanvasText;
+    }
+
+    /* The OS repaints every border here, so `transparent` cannot hide the two
+     * inner edges — the arrow would read as a floating diamond. `border-style`
+     * is not overridden, so the edges are removed outright. Sizing is
+     * unaffected: the global reset makes this a border-box. */
+    .stratum-tooltip[data-side='bottom'] .stratum-tooltip__arrow {
+      border-right-style: none;
+      border-bottom-style: none;
+    }
+    .stratum-tooltip[data-side='top'] .stratum-tooltip__arrow {
+      border-top-style: none;
+      border-left-style: none;
+    }
+    .stratum-tooltip[data-side='right'] .stratum-tooltip__arrow {
+      border-top-style: none;
+      border-right-style: none;
+    }
+    .stratum-tooltip[data-side='left'] .stratum-tooltip__arrow {
+      border-bottom-style: none;
+      border-left-style: none;
+    }
+  }
+}

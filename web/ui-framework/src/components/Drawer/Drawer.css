@@ -1,0 +1,268 @@
+@layer stratum.components {
+  .stratum-drawer__overlay {
+    z-index: var(--stratum-z-drawer);
+    display: grid;
+  }
+
+  /* Dock the sheet to one edge and stretch it along the other axis.
+   *
+   * `left`/`right`, NOT `start`/`end`. The inline-axis keywords are
+   * flow-relative and mirror under `dir="rtl"`, but the travel this pairs with
+   * (`--_from-x`, below) is a `translate()` percentage, which resolves in
+   * screen coordinates and is never mirrored by `direction`. Mixing the two
+   * broke RTL in both directions: `side="left"` docked against the right
+   * physical edge while still animating along the leftward vector, so the sheet
+   * slid in from mid-screen and, on close, retreated the wrong way — which is
+   * one way to see "it always leaves to the right no matter which side it came
+   * from". Making the dock physical puts it back in agreement with the travel.
+   *
+   * Physical is also what the API promises: the prop is `side="left" | "right"
+   * | "top" | "bottom"`, so a caller asking for `left` means the left of the
+   * screen, not the start of the reading order. A flow-relative sheet would
+   * need flow-relative prop names to match, and those are a different feature.
+   *
+   * The block axis needs no equivalent change: `align-items: start/end` is
+   * flow-relative to `writing-mode`, not `direction`, and this framework does
+   * not ship a vertical writing mode. */
+  .stratum-drawer__overlay[data-side='left']   { justify-items: left;    align-items: stretch; }
+  .stratum-drawer__overlay[data-side='right']  { justify-items: right;   align-items: stretch; }
+  .stratum-drawer__overlay[data-side='top']    { justify-items: stretch; align-items: start; }
+  .stratum-drawer__overlay[data-side='bottom'] { justify-items: stretch; align-items: end; }
+
+  .stratum-drawer__overlay[data-state='exiting'] {
+    pointer-events: none;
+  }
+
+  /* -- Scrim ---------------------------------------------------------------- */
+  .stratum-drawer__scrim {
+    position: absolute;
+    inset: 0;
+    background: var(--stratum-scrim);
+    opacity: 1;
+    transition: var(--stratum-transition-overlay-enter);
+  }
+
+  @starting-style {
+    .stratum-drawer__scrim[data-state='entering'] {
+      opacity: 0;
+    }
+  }
+
+  .stratum-drawer__scrim[data-state='exiting'] {
+    opacity: 0;
+    transition: var(--stratum-transition-overlay-exit);
+  }
+
+  /* -- Panel ---------------------------------------------------------------- */
+  .stratum-drawer {
+    --_bg: var(--stratum-surface-elevated);
+    --_border: var(--stratum-border);
+    --_pad: var(--stratum-space-10);
+
+    /* Entrance travel, one axis per side. The 100% is multiplied by
+     * --stratum-motion-distance, so reduced motion removes the slide entirely
+     * and leaves the fade — which is precisely what that preference asks for. */
+    --_from-x: 0;
+    --_from-y: 0;
+
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+
+    color: var(--stratum-text);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    box-shadow: var(--stratum-shadow-xl);
+
+    opacity: 1;
+    transform: translate(0, 0);
+    transition: var(--stratum-transition-overlay-enter);
+  }
+
+  .stratum-drawer[data-side='left'],
+  .stratum-drawer[data-side='right'] {
+    width: var(--_w);
+    height: 100%;
+  }
+  .stratum-drawer[data-side='top'],
+  .stratum-drawer[data-side='bottom'] {
+    width: 100%;
+    height: var(--_h);
+  }
+
+  /* Overridable tokens with sane fallbacks, so a host design system can set the
+   * scale once rather than per instance. */
+  .stratum-drawer[data-size='sm'] {
+    --_w: var(--stratum-drawer-width-sm, 20rem);
+    --_h: var(--stratum-drawer-height-sm, 14rem);
+  }
+  .stratum-drawer[data-size='md'] {
+    --_w: var(--stratum-drawer-width-md, 26rem);
+    --_h: var(--stratum-drawer-height-md, 20rem);
+  }
+  .stratum-drawer[data-size='lg'] {
+    --_w: var(--stratum-drawer-width-lg, 34rem);
+    --_h: var(--stratum-drawer-height-lg, 28rem);
+  }
+  .stratum-drawer[data-size='xl'] {
+    --_w: var(--stratum-drawer-width-xl, 44rem);
+    --_h: var(--stratum-drawer-height-xl, 36rem);
+  }
+  .stratum-drawer[data-size='full'] {
+    --_w: 100%;
+    --_h: 100%;
+  }
+
+  /* Rounded on the inner edge only — the docked edge is flush with the
+   * viewport, where a radius would just show a sliver of the page behind. */
+  .stratum-drawer[data-side='right'] {
+    border-top-left-radius: var(--stratum-radius-xl);
+    border-bottom-left-radius: var(--stratum-radius-xl);
+  }
+  .stratum-drawer[data-side='left'] {
+    border-top-right-radius: var(--stratum-radius-xl);
+    border-bottom-right-radius: var(--stratum-radius-xl);
+  }
+  .stratum-drawer[data-side='top'] {
+    border-bottom-left-radius: var(--stratum-radius-xl);
+    border-bottom-right-radius: var(--stratum-radius-xl);
+  }
+  .stratum-drawer[data-side='bottom'] {
+    border-top-left-radius: var(--stratum-radius-xl);
+    border-top-right-radius: var(--stratum-radius-xl);
+  }
+  /* Must follow the side rules: equal specificity, later wins. */
+  .stratum-drawer[data-size='full'] {
+    border-radius: 0;
+  }
+
+  .stratum-drawer[data-side='right']  { --_from-x: calc(100% * var(--stratum-motion-distance)); }
+  .stratum-drawer[data-side='left']   { --_from-x: calc(-100% * var(--stratum-motion-distance)); }
+  .stratum-drawer[data-side='bottom'] { --_from-y: calc(100% * var(--stratum-motion-distance)); }
+  .stratum-drawer[data-side='top']    { --_from-y: calc(-100% * var(--stratum-motion-distance)); }
+
+  @starting-style {
+    .stratum-drawer[data-state='entering'] {
+      opacity: 0;
+      transform: translate(var(--_from-x), var(--_from-y));
+    }
+  }
+
+  /* Focus is already back on the opener here, so only the pointer needs
+   * neutralising. `inert` is deliberately NOT used: Chrome clears the
+   * document's focused element asynchronously when a subtree becomes inert,
+   * even after focus has moved out of it, which undoes the restore. */
+  .stratum-drawer[data-state='exiting'] {
+    opacity: 0;
+    transform: translate(var(--_from-x), var(--_from-y));
+    transition: var(--stratum-transition-overlay-exit);
+    pointer-events: none;
+  }
+
+  /* Focus lands on the sheet on open so its name is announced; it is not an
+   * operable control, so it does not take a ring of its own. Controls inside
+   * keep the global :focus-visible ring. */
+  .stratum-drawer:focus-visible {
+    outline: none;
+  }
+
+  /* -- Header --------------------------------------------------------------- */
+  .stratum-drawer__header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-6);
+    padding: var(--_pad) var(--_pad) var(--stratum-space-6);
+  }
+
+  /* The heading collapses with the header. Left as a box it becomes a direct
+   * flex item of the sheet carrying `flex: 1 1 auto`, the same grow factor as
+   * the body, while its only child is the absolutely-positioned hidden <h2>.
+   * Every left/right drawer is `height: 100%`, so the free space would be
+   * split 50/50 with an empty box and the content pushed halfway down. */
+  .stratum-drawer__header[data-bare],
+  .stratum-drawer__header[data-bare] .stratum-drawer__heading {
+    display: contents;
+  }
+  .stratum-drawer__header[data-bare] ~ .stratum-drawer__body {
+    padding-block-start: var(--_pad);
+  }
+
+  .stratum-drawer__heading {
+    display: grid;
+    gap: var(--stratum-space-2);
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .stratum-drawer__title {
+    margin: 0;
+    font-size: var(--stratum-text-lg);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+  }
+
+  .stratum-drawer__description {
+    margin: 0;
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-secondary);
+  }
+
+  .stratum-drawer__close {
+    flex-shrink: 0;
+    margin-inline-start: auto;
+  }
+
+  /* -- Body ----------------------------------------------------------------- */
+  .stratum-drawer__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+    padding-inline: var(--_pad);
+    padding-block-end: var(--_pad);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-normal);
+    color: var(--stratum-text);
+  }
+
+  /* -- Footer --------------------------------------------------------------- */
+  .stratum-drawer__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--stratum-space-4);
+    padding: var(--stratum-space-6) var(--_pad);
+    background: var(--stratum-surface-sunken);
+    border-top: 1px solid var(--stratum-divider);
+    /* The sheet has no `overflow: hidden`, so the sunken fill would otherwise
+     * paint square past whichever bottom corner the [data-side] rules rounded.
+     * `inherit` picks up that corner and resolves to 0 on the flush edge and
+     * at [data-size='full']. */
+    border-end-start-radius: inherit;
+    border-end-end-radius: inherit;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-drawer {
+      background: Canvas;
+      color: CanvasText;
+      border-color: CanvasText;
+    }
+    .stratum-drawer__scrim {
+      background: Canvas;
+    }
+    .stratum-drawer__footer {
+      background: Canvas;
+      border-top-color: CanvasText;
+    }
+  }
+}

@@ -1,0 +1,54 @@
+@layer stratum.components {
+  .stratum-kbd {
+    --_h: 18px;
+    --_fs: var(--stratum-text-2xs);
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-1);
+    vertical-align: middle;
+    font-family: var(--stratum-font-sans);
+  }
+
+  .stratum-kbd[data-size='sm'] { --_h: 18px; --_fs: var(--stratum-text-2xs); }
+  .stratum-kbd[data-size='md'] { --_h: 22px; --_fs: var(--stratum-text-xs); }
+
+  .stratum-kbd__key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    min-inline-size: var(--_h);
+    block-size: var(--_h);
+    padding-inline: var(--stratum-space-2);
+
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-none);
+    white-space: nowrap;
+
+    color: var(--stratum-text-secondary);
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border-strong);
+    /* The heavier bottom edge is the whole keycap illusion. It reads as a
+     * physical key at 11px in a way a uniform border does not. */
+    border-block-end-width: 2px;
+    border-radius: var(--stratum-radius-sm);
+  }
+
+  .stratum-kbd__separator {
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-none);
+    color: var(--stratum-text-subtle);
+    user-select: none;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-kbd__key {
+      color: ButtonText;
+      background: ButtonFace;
+      border-color: ButtonBorder;
+    }
+  }
+}

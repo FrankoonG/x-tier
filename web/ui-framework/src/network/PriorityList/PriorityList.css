@@ -1,0 +1,108 @@
+@layer stratum.components {
+  .stratum-priority-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+  }
+
+  .stratum-priority-list[data-size='sm'] { --_fs: var(--stratum-text-xs); }
+  .stratum-priority-list[data-size='md'] { --_fs: var(--stratum-text-sm); }
+
+  /* The walk direction. Real content, not decoration — it is the only place the
+   * meaning of position is written down, so it stays at reading contrast. */
+  .stratum-priority-list__semantics {
+    margin: 0;
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-priority-list__row {
+    font-size: var(--_fs);
+  }
+
+  /* A disabled entry is still in the list and still occupies a position, so it
+   * dims rather than disappears. The label keeps a non-colour channel — the
+   * strike — because "skipped by the engine" must not rest on opacity alone. */
+  .stratum-priority-list__row[data-disabled] .stratum-priority-list__label {
+    color: var(--stratum-text-muted);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+
+  /* Shadowed: a warning edge, never the danger role. The entry is legal. */
+  .stratum-priority-list__row[data-shadowed] {
+    border-inline-start: 3px solid var(--stratum-warning);
+  }
+  .stratum-priority-list__row[data-state='dirty'] {
+    border-inline-start: 3px solid var(--stratum-warning);
+  }
+  .stratum-priority-list__row[data-state='pending'] {
+    border-inline-start: 3px solid var(--stratum-info);
+  }
+
+  .stratum-priority-list__label {
+    font-weight: var(--stratum-weight-medium);
+    overflow-wrap: anywhere;
+  }
+
+  .stratum-priority-list__description {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+    line-height: var(--stratum-leading-snug);
+  }
+
+  .stratum-priority-list__meta {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+  }
+
+  .stratum-priority-list__hits {
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-secondary);
+    white-space: nowrap;
+  }
+  /* Not measured is not zero. The italic sans face carries that without asking
+   * the reader to notice a colour difference. */
+  .stratum-priority-list__hits[data-unobserved] {
+    font-family: var(--stratum-font-sans);
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+  /* Counters that survived a reorder are no longer attributable to the row they
+   * sit next to. The dashed underline says so at the value itself, next to the
+   * message above the list. */
+  .stratum-priority-list__hits[data-stale] {
+    text-decoration: underline dashed;
+    text-underline-offset: 3px;
+    color: var(--stratum-text-muted);
+  }
+
+  @media (max-width: 640px) {
+    /* The meta column is the first thing to wrap; the rank, grip and actions
+     * all have to stay on the row or the reorder controls become unreachable. */
+    .stratum-priority-list__row {
+      flex-wrap: wrap;
+    }
+    .stratum-priority-list__meta {
+      order: 1;
+      width: 100%;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-priority-list__row[data-shadowed],
+    .stratum-priority-list__row[data-state='dirty'],
+    .stratum-priority-list__row[data-state='pending'] {
+      border-inline-start-color: CanvasText;
+      border-inline-start-width: 3px;
+    }
+    .stratum-priority-list__row[data-disabled] .stratum-priority-list__label {
+      color: GrayText;
+    }
+  }
+}

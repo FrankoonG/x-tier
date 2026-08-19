@@ -1,0 +1,33 @@
+@layer stratum.components {
+  /* Both classes so this beats `.stratum-button[data-variant=…]`, which sets
+   * the same custom property at equal specificity. Same layer, so the extra
+   * class is what decides it — no `!important`, no import-order dependency. */
+  .stratum-button.stratum-copy-button[data-status='copied'] {
+    --_fg: var(--stratum-success-fg);
+    --_bg-hover: var(--stratum-success-subtle);
+    --_bg-active: var(--stratum-success-subtle);
+  }
+
+  .stratum-button.stratum-copy-button[data-status='error'] {
+    --_fg: var(--stratum-danger-fg);
+    --_bg-hover: var(--stratum-danger-subtle);
+    --_bg-active: var(--stratum-danger-subtle);
+  }
+
+  /* The icon swap is a hard cut rather than a cross-fade. Two glyphs
+   * dissolving through each other at 18px reads as a rendering glitch, and the
+   * state change is already carried by colour, shape and the live region. */
+  .stratum-copy-button > .stratum-button__icon {
+    transition: color var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-button.stratum-copy-button[data-status='copied'],
+    .stratum-button.stratum-copy-button[data-status='error'] {
+      /* Colour cannot carry the outcome here; the glyph change does, which is
+       * why the copied and failed icons are different shapes rather than the
+       * same shape in two colours. */
+      color: ButtonText;
+    }
+  }
+}

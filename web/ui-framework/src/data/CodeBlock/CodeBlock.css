@@ -1,0 +1,177 @@
+@layer stratum.components {
+  .stratum-code {
+    --_bg: var(--stratum-code-bg);
+    --_fg: var(--stratum-code-fg);
+    --_border: var(--stratum-border);
+    --_fs: var(--stratum-text-xs);
+    --_leading: 1.6;
+    --_num-w: 3ch;
+
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* -- Header -------------------------------------------------------------- */
+
+  .stratum-code__header {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    padding: var(--stratum-space-2) var(--stratum-space-3) var(--stratum-space-2)
+      var(--stratum-space-5);
+    font-family: var(--stratum-font-sans);
+    background: var(--stratum-surface);
+    border-bottom: 1px solid var(--stratum-border);
+    border-start-start-radius: inherit;
+    border-start-end-radius: inherit;
+  }
+
+  .stratum-code__title {
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stratum-code__language {
+    padding: 1px var(--stratum-space-3);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-code-meta);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-sm);
+    /* Decorative: it names the grammar, and this component highlights nothing,
+     * so it is hidden from assistive tech rather than announced as a fact
+     * about the content. */
+    text-transform: lowercase;
+  }
+
+  .stratum-code__actions {
+    display: flex;
+    gap: var(--stratum-space-1);
+    margin-inline-start: auto;
+  }
+
+  .stratum-code__action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    font-size: var(--stratum-text-md);
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-code__action:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-code__action[aria-pressed='true'] {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent-border);
+  }
+  .stratum-code__action[data-copy-state='copied'] { color: var(--stratum-success); }
+  .stratum-code__action[data-copy-state='error'] { color: var(--stratum-danger); }
+
+  /* -- Body ---------------------------------------------------------------- */
+
+  .stratum-code__pre {
+    margin: 0;
+    padding: var(--stratum-space-4) 0;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+    overscroll-behavior: contain;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    line-height: var(--_leading);
+    font-variant-numeric: var(--stratum-numeric);
+    border-end-start-radius: inherit;
+    border-end-end-radius: inherit;
+  }
+
+  .stratum-code__code {
+    display: block;
+    min-width: max-content;
+    font: inherit;
+  }
+  .stratum-code[data-wrap] .stratum-code__code {
+    min-width: 100%;
+  }
+
+  .stratum-code__line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    /* An empty line still occupies a row; without this the numbering and the
+     * content visibly drift apart. */
+    min-height: calc(1em * var(--_leading));
+  }
+  .stratum-code[data-line-numbers] .stratum-code__line {
+    grid-template-columns: calc(var(--_num-w) + var(--stratum-space-8)) minmax(0, 1fr);
+  }
+
+  .stratum-code__num {
+    padding-inline: var(--stratum-space-4) var(--stratum-space-4);
+    color: var(--stratum-code-gutter-fg);
+    text-align: end;
+    /* Excluded from selection: pasting `12  server {` into a config file is the
+     * classic line-number gutter failure. */
+    user-select: none;
+  }
+
+  .stratum-code__text {
+    padding-inline: var(--stratum-space-5);
+    white-space: pre;
+    tab-size: 4;
+  }
+  .stratum-code[data-line-numbers] .stratum-code__text {
+    padding-inline-start: 0;
+  }
+  .stratum-code[data-wrap] .stratum-code__text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* Marked lines. The tint is one channel; the inset rule is the second, and a
+   * hidden textual marker in the DOM is the third. Under forced colours only
+   * the rule survives, which is why it exists. */
+  .stratum-code__line[data-highlight] {
+    background: var(--stratum-code-line-highlight);
+    box-shadow: inset 3px 0 0 0 var(--stratum-code-line-highlight-border);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-code {
+      border-color: CanvasText;
+    }
+    /* `box-shadow` is stripped in forced colours, so the marking rule has to
+     * become an outline. The hidden textual marker in the DOM is the channel
+     * that survives regardless. */
+    .stratum-code__line[data-highlight] {
+      background: Canvas;
+      box-shadow: none;
+      outline: 1px solid CanvasText;
+      outline-offset: -1px;
+    }
+    .stratum-code__action[aria-pressed='true'] {
+      border-color: Highlight;
+      color: Highlight;
+    }
+    .stratum-code__language {
+      border-color: CanvasText;
+      color: CanvasText;
+    }
+  }
+}

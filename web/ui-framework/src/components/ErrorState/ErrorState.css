@@ -1,0 +1,231 @@
+@layer stratum.components {
+  .stratum-error-state {
+    --_tone: var(--stratum-danger);
+    --_tone-fg: var(--stratum-danger-fg);
+    --_tone-subtle: var(--stratum-danger-subtle);
+    --_tone-border: var(--stratum-danger-border);
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--_gap);
+    width: 100%;
+    padding: var(--_py) var(--stratum-space-8);
+    text-align: center;
+  }
+
+  .stratum-error-state[data-align='start'] {
+    align-items: flex-start;
+    text-align: start;
+  }
+
+  .stratum-error-state[data-size='sm'] {
+    --_py: var(--stratum-space-12);
+    --_gap: var(--stratum-space-3);
+    --_icon: var(--stratum-space-12);
+    --_title: var(--stratum-text-md);
+    --_max: 40ch;
+  }
+  .stratum-error-state[data-size='md'] {
+    --_py: var(--stratum-space-20);
+    --_gap: var(--stratum-space-4);
+    --_icon: var(--stratum-space-16);
+    --_title: var(--stratum-text-lg);
+    --_max: 50ch;
+  }
+  .stratum-error-state[data-size='lg'] {
+    --_py: var(--stratum-space-32);
+    --_gap: var(--stratum-space-5);
+    --_icon: var(--stratum-space-20);
+    --_title: var(--stratum-text-xl);
+    --_max: 58ch;
+  }
+
+  .stratum-error-state[data-variant='warning'] {
+    --_tone: var(--stratum-warning);
+    --_tone-fg: var(--stratum-warning-fg);
+    --_tone-subtle: var(--stratum-warning-subtle);
+    --_tone-border: var(--stratum-warning-border);
+  }
+  .stratum-error-state[data-variant='neutral'] {
+    --_tone: var(--stratum-unknown);
+    --_tone-fg: var(--stratum-unknown-fg);
+    --_tone-subtle: var(--stratum-unknown-subtle);
+    --_tone-border: var(--stratum-unknown-border);
+  }
+
+  .stratum-error-state[data-bordered] {
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-lg);
+    background: var(--stratum-surface);
+  }
+
+  /* The glyph sits in a tinted disc so the tone is carried by an area rather
+   * than by a hairline stroke, which is what makes it readable at a glance
+   * across a wide panel. */
+  .stratum-error-state__icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--_icon);
+    height: var(--_icon);
+    font-size: calc(var(--_icon) * 0.5);
+    color: var(--_tone-fg);
+    background: var(--_tone-subtle);
+    border: 1px solid var(--_tone-border);
+    border-radius: var(--stratum-radius-full);
+  }
+
+  /* Carries the live region, scoped to the message so the details disclosure
+   * and the copy acknowledgement sit outside it. It reproduces the root's
+   * column layout exactly, so the extra element is invisible to layout. */
+  .stratum-error-state__message {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--_gap);
+    max-width: 100%;
+  }
+  .stratum-error-state[data-align='start'] .stratum-error-state__message {
+    align-items: flex-start;
+  }
+
+  .stratum-error-state__title {
+    font-size: var(--_title);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+  }
+
+  .stratum-error-state__description {
+    max-width: var(--_max);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-normal);
+    color: var(--stratum-text-muted);
+    text-wrap: pretty;
+  }
+
+  .stratum-error-state__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-4);
+    margin-block-start: var(--stratum-space-2);
+  }
+  .stratum-error-state[data-align='start'] .stratum-error-state__actions {
+    justify-content: flex-start;
+  }
+
+  /* -- Details disclosure --------------------------------------------------- */
+  .stratum-error-state__details {
+    width: 100%;
+    max-width: var(--_max);
+    margin-block-start: var(--stratum-space-2);
+    text-align: start;
+  }
+  .stratum-error-state[data-align='start'] .stratum-error-state__details {
+    max-width: 100%;
+  }
+
+  .stratum-error-state__summary {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    padding: var(--stratum-space-2) var(--stratum-space-3);
+    margin-inline-start: calc(-1 * var(--stratum-space-3));
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-secondary);
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    user-select: none;
+    /* Removes the UA triangle in every engine; the chevron below replaces it
+     * and rotates, which the UA marker cannot be made to do portably. */
+    list-style: none;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-error-state__summary::-webkit-details-marker {
+    display: none;
+  }
+  .stratum-error-state__summary::marker {
+    content: '';
+  }
+  .stratum-error-state__summary:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+
+  .stratum-error-state__chevron {
+    /* The reset paints every `svg` with `fill: currentColor`; this one is
+     * stroke-drawn. */
+    fill: none;
+    transition: rotate var(--stratum-duration-sm) var(--stratum-ease-out);
+  }
+  .stratum-error-state__details[open] .stratum-error-state__chevron {
+    rotate: 90deg;
+  }
+
+  .stratum-error-state__details-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    margin-block-start: var(--stratum-space-3);
+  }
+
+  .stratum-error-state__code {
+    max-height: 240px;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+    padding: var(--stratum-space-5);
+    font-size: var(--stratum-text-2xs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-secondary);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-sm);
+    /* Preserve the original wrapping of a stack trace but never let a single
+     * long token blow the container out horizontally. */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .stratum-error-state__copy {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+  }
+
+  .stratum-error-state__copied {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-success-fg);
+    opacity: 0;
+    transition: opacity var(--stratum-duration-xs) var(--stratum-ease-out);
+  }
+  .stratum-error-state__copied[data-visible] {
+    opacity: 1;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-error-state__icon {
+      color: CanvasText;
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-error-state__title,
+    .stratum-error-state__description,
+    .stratum-error-state__summary,
+    .stratum-error-state__code,
+    .stratum-error-state__copied {
+      color: CanvasText;
+    }
+    .stratum-error-state__code {
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-error-state[data-bordered] {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+  }
+}

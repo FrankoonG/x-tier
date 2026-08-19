@@ -1,0 +1,175 @@
+@layer stratum.components {
+  .stratum-pagination {
+    --_h: 30px;
+    --_fs: var(--stratum-text-sm);
+    --_gap: var(--stratum-space-2);
+    /* Same height, published under a name the nested <Select> does not define
+     * so it survives into that subtree. `--_h` cannot be read there: Select
+     * sets its own `--_h` on itself, which shadows anything inherited. */
+    --_control-h: var(--_h);
+
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-8);
+    min-width: 0;
+    font-size: var(--_fs);
+  }
+
+  .stratum-pagination[data-size='sm'] {
+    --_h: 24px;
+    --_fs: var(--stratum-text-xs);
+    --_gap: var(--stratum-space-1);
+  }
+
+  .stratum-pagination__summary {
+    color: var(--stratum-text-muted);
+    white-space: nowrap;
+  }
+
+  /* -- Page size ------------------------------------------------------------- */
+  .stratum-pagination__page-size {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+  }
+
+  .stratum-pagination__page-size-label {
+    color: var(--stratum-text-muted);
+    white-space: nowrap;
+  }
+
+  /* The page-size control is the framework's <Select>, so the trigger, the
+   * popup, the keyboard model and the forced-colours handling all come from
+   * Select.css. Only two things are tuned here.
+   *
+   * 1. HEIGHT. Select's own step is 32px (26px at `sm`) to line up with Button
+   *    in a toolbar; this row is 30px (24px), so the picker has to come down to
+   *    the page buttons standing next to it rather than the other way round.
+   * 2. UNAVAILABLE STATE. This control is marked `aria-disabled`, never
+   *    `disabled` (see the component doc comment), so none of Select's
+   *    `:disabled` rules fire and the greyed treatment is restated here.
+   *
+   * Both are expressed through Select's private custom properties, which is the
+   * retheming hook it exposes for exactly this. The selectors carry an extra
+   * class or state so they clear `.stratum-select[data-size]` (0,2,0) and
+   * `.stratum-select:hover:not(:disabled)` (0,3,0) outright, instead of winning
+   * on stylesheet order — which depends on import order and would flip. */
+  .stratum-pagination__page-size .stratum-pagination__select[data-size] {
+    --_h: var(--_control-h);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* Unavailable, but still focusable — see the component doc comment. */
+  .stratum-pagination__page-size .stratum-pagination__select[aria-disabled='true'],
+  .stratum-pagination__page-size .stratum-pagination__select[aria-disabled='true']:hover {
+    --_bg: var(--stratum-surface-disabled);
+    --_fg: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+  /* The chevron sets its own colour, so it does not follow `--_fg`. */
+  .stratum-pagination__select[aria-disabled='true'] .stratum-select__chevron {
+    color: var(--stratum-text-disabled);
+  }
+
+  /* -- Page list ------------------------------------------------------------- */
+  .stratum-pagination__list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--_gap);
+    margin: 0;
+    margin-inline-start: auto;
+    padding: 0;
+    list-style: none;
+  }
+
+  .stratum-pagination__item {
+    display: inline-flex;
+  }
+
+  .stratum-pagination__button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--_h);
+    height: var(--_h);
+    padding-inline: var(--stratum-space-3);
+    font: inherit;
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-none);
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-md);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-pagination__button:hover:not([aria-disabled='true']) {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+
+  /* The current page carries a fill, a border AND a weight change: fill alone
+   * disappears under forced colours and weight alone is too quiet at 13px. */
+  .stratum-pagination__button[data-current] {
+    color: var(--stratum-accent-fg);
+    font-weight: var(--stratum-weight-semibold);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent-border);
+  }
+  .stratum-pagination__button[data-current]:hover {
+    background: var(--stratum-accent-subtle-hover);
+  }
+
+  .stratum-pagination__button--step {
+    padding-inline: 0;
+    color: var(--stratum-text-muted);
+  }
+  .stratum-pagination__button--step > svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* Unavailable, but still focusable — see the component doc comment. */
+  .stratum-pagination__button[aria-disabled='true'] {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-pagination__ellipsis {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--_h);
+    height: var(--_h);
+    color: var(--stratum-text-subtle);
+    user-select: none;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-pagination__button {
+      color: ButtonText;
+      border-color: ButtonBorder;
+    }
+    .stratum-pagination__button[data-current] {
+      color: HighlightText;
+      background: Highlight;
+      border-color: Highlight;
+    }
+    .stratum-pagination__button[aria-disabled='true'] {
+      color: GrayText;
+      border-color: GrayText;
+    }
+    /* Select.css already paints the trigger with the system control colours;
+     * only the `aria-disabled` case is missing there, because that file keys the
+     * greyed treatment on the real `:disabled` state. */
+    .stratum-pagination__select[aria-disabled='true'] {
+      color: GrayText;
+      border-color: GrayText;
+    }
+  }
+}

@@ -1,0 +1,140 @@
+@layer stratum.components {
+  .stratum-badge {
+    /* The full styling contract for badges AND tags. Tag.css reuses the same
+     * private property names so the two families cannot drift apart. */
+    --_bg: var(--stratum-surface-sunken);
+    --_fg: var(--stratum-text-secondary);
+    --_border: var(--stratum-border);
+    --_dot: var(--stratum-text-muted);
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--_gap);
+
+    min-block-size: var(--_h);
+    padding-inline: var(--_px);
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-tight);
+    /* Badges hold identifiers, versions and counts. Tabular figures stop a
+     * live-updating count from jittering the row. */
+    font-variant-numeric: var(--stratum-numeric);
+    white-space: nowrap;
+    vertical-align: middle;
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-sm);
+  }
+
+  /* -- Size ------------------------------------------------------------------ */
+  .stratum-badge[data-size='xs'] {
+    --_h: 16px;
+    --_px: var(--stratum-space-2);
+    --_gap: var(--stratum-space-1);
+    --_fs: var(--stratum-text-2xs);
+  }
+  .stratum-badge[data-size='sm'] {
+    --_h: 19px;
+    --_px: var(--stratum-space-3);
+    --_gap: var(--stratum-space-2);
+    --_fs: var(--stratum-text-2xs);
+  }
+  .stratum-badge[data-size='md'] {
+    --_h: 22px;
+    --_px: var(--stratum-space-4);
+    --_gap: var(--stratum-space-2);
+    --_fs: var(--stratum-text-xs);
+  }
+
+  .stratum-badge[data-pill] {
+    border-radius: var(--stratum-radius-full);
+  }
+
+  /* -- Variants -------------------------------------------------------------- */
+  .stratum-badge[data-variant='accent'] {
+    --_bg: var(--stratum-accent-subtle);
+    --_fg: var(--stratum-accent-fg);
+    --_border: var(--stratum-accent-border);
+    --_dot: var(--stratum-accent);
+  }
+  .stratum-badge[data-variant='success'] {
+    --_bg: var(--stratum-success-subtle);
+    --_fg: var(--stratum-success-fg);
+    --_border: var(--stratum-success-border);
+    --_dot: var(--stratum-success);
+  }
+  .stratum-badge[data-variant='warning'] {
+    --_bg: var(--stratum-warning-subtle);
+    --_fg: var(--stratum-warning-fg);
+    --_border: var(--stratum-warning-border);
+    --_dot: var(--stratum-warning);
+  }
+  .stratum-badge[data-variant='danger'] {
+    --_bg: var(--stratum-danger-subtle);
+    --_fg: var(--stratum-danger-fg);
+    --_border: var(--stratum-danger-border);
+    --_dot: var(--stratum-danger);
+  }
+  .stratum-badge[data-variant='info'] {
+    --_bg: var(--stratum-info-subtle);
+    --_fg: var(--stratum-info-fg);
+    --_border: var(--stratum-info-border);
+    --_dot: var(--stratum-info);
+  }
+  .stratum-badge[data-variant='unknown'] {
+    --_bg: var(--stratum-unknown-subtle);
+    --_fg: var(--stratum-unknown-fg);
+    --_border: var(--stratum-unknown-border);
+    --_dot: var(--stratum-unknown);
+  }
+
+  /* Outline drops the fill but keeps the hue on the border and the text, so
+   * the badge still reads as its status at a glance in a dense list. */
+  .stratum-badge[data-outline] {
+    --_bg: transparent;
+  }
+
+  /* -- Parts ----------------------------------------------------------------- */
+  .stratum-badge__dot {
+    inline-size: var(--stratum-space-2);
+    block-size: var(--stratum-space-2);
+    flex: 0 0 auto;
+    border-radius: var(--stratum-radius-full);
+    background: var(--_dot);
+  }
+  .stratum-badge[data-size='xs'] .stratum-badge__dot {
+    inline-size: var(--stratum-space-1);
+    block-size: var(--stratum-space-1);
+  }
+
+  .stratum-badge__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15em;
+    flex: 0 0 auto;
+  }
+  .stratum-badge__icon > svg {
+    inline-size: 1em;
+    block-size: 1em;
+  }
+
+  .stratum-badge__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-inline-size: 0;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-badge {
+      color: CanvasText;
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-badge__dot {
+      background: CanvasText;
+    }
+  }
+}

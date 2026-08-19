@@ -1,0 +1,256 @@
+@layer stratum.components {
+  .stratum-transfer-list {
+    --_list-height: 16rem;
+
+    display: block;
+    min-inline-size: 0;
+
+    /* Query container for the layout below. The grid lives on a child because
+     * a container cannot query itself. */
+    container-type: inline-size;
+    container-name: stratum-transfer-list;
+  }
+
+  .stratum-transfer-list__layout {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: stretch;
+    gap: var(--stratum-space-6);
+    min-inline-size: 0;
+  }
+
+  /* Below roughly a tablet the three-column layout stops working: the panes
+   * are too narrow to read and the control column has nothing to point at.
+   * Stacking turns the arrows into up/down, which the labels still describe
+   * correctly because they name the destination pane, not a direction. */
+  @container stratum-transfer-list (max-width: 42rem) {
+    .stratum-transfer-list__layout {
+      grid-template-columns: 1fr;
+    }
+    .stratum-transfer-list__controls {
+      flex-direction: row;
+      justify-content: center;
+    }
+  }
+
+  /* -- Pane ---------------------------------------------------------------- */
+  .stratum-transfer-list__pane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-inline-size: 0;
+  }
+
+  .stratum-transfer-list__pane-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--stratum-space-4);
+  }
+
+  .stratum-transfer-list__pane-title {
+    margin: 0;
+    font-size: var(--stratum-text-sm);
+    font-weight: var(--stratum-weight-semibold);
+    color: var(--stratum-text);
+  }
+
+  .stratum-transfer-list__pane-count {
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Options ------------------------------------------------------------- */
+  .stratum-transfer-list__options {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-px);
+
+    block-size: var(--_list-height);
+    margin: 0;
+    padding: var(--stratum-space-2);
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-y: auto;
+    list-style: none;
+
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  .stratum-transfer-list__option {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-px);
+    padding: var(--stratum-space-3) var(--stratum-space-4);
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    user-select: none;
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-transfer-list__option:hover {
+    background: var(--stratum-surface-hover);
+  }
+
+  /* Marked is a fill; active is a border. Two separate channels, because an
+   * option is very often both and one indicator cannot say so. */
+  .stratum-transfer-list__option[aria-selected='true'] {
+    background: var(--stratum-selected-bg);
+    border-color: var(--stratum-selected-border);
+  }
+  .stratum-transfer-list__option[aria-selected='true']:hover {
+    background: var(--stratum-selected-bg-hover);
+  }
+
+  .stratum-transfer-list__option[data-active] {
+    border-color: var(--stratum-accent);
+  }
+  /* The active option is only meaningful while the list has focus; showing it
+   * otherwise implies a keyboard position the user does not have. */
+  .stratum-transfer-list__options:not(:focus-within) .stratum-transfer-list__option[data-active] {
+    border-color: transparent;
+  }
+  .stratum-transfer-list__options:not(:focus-within)
+    .stratum-transfer-list__option[data-active][aria-selected='true'] {
+    border-color: var(--stratum-selected-border);
+  }
+
+  .stratum-transfer-list__option[aria-disabled='true'] {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-transfer-list__option-label {
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-tight);
+    color: inherit;
+    overflow-wrap: anywhere;
+  }
+
+  .stratum-transfer-list__option-description {
+    font-size: var(--stratum-text-2xs);
+    line-height: var(--stratum-leading-snug);
+    /* `text-muted`, not `text-disabled` — a description is real content. */
+    color: var(--stratum-text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .stratum-transfer-list__empty {
+    padding: var(--stratum-space-6) var(--stratum-space-4);
+    font-size: var(--stratum-text-xs);
+    text-align: center;
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Pane footer --------------------------------------------------------- */
+  .stratum-transfer-list__pane-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-5);
+  }
+
+  .stratum-transfer-list__link {
+    padding: 0;
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-accent-fg);
+    background: transparent;
+    border: 0;
+    /* Underlined at rest: colour alone is not a sufficient affordance. */
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .stratum-transfer-list__link:hover:not(:disabled) {
+    color: var(--stratum-accent-hover);
+  }
+  .stratum-transfer-list__link:disabled {
+    color: var(--stratum-text-disabled);
+    text-decoration: none;
+    cursor: not-allowed;
+  }
+
+  /* -- Transfer controls --------------------------------------------------- */
+  .stratum-transfer-list__controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-3);
+  }
+
+  .stratum-transfer-list__control-gap {
+    display: block;
+    inline-size: var(--stratum-space-8);
+    block-size: var(--stratum-space-4);
+  }
+
+  .stratum-transfer-list__move {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-16);
+    block-size: var(--stratum-space-16);
+    padding: 0;
+    color: var(--stratum-text-secondary);
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-md);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-transfer-list__move:hover:not(:disabled) {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-surface-hover);
+    border-color: var(--stratum-accent);
+  }
+  .stratum-transfer-list__move:active:not(:disabled) {
+    background: var(--stratum-surface-active);
+  }
+  /* Nothing marked: still focusable, still reachable, visibly inert. Compound
+   * selectors so this survives any later generic `[aria-disabled]` rule. */
+  .stratum-transfer-list__move:disabled,
+  .stratum-transfer-list .stratum-transfer-list__move[aria-disabled='true'] {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .stratum-transfer-list .stratum-transfer-list__move[aria-disabled='true']:hover {
+    color: var(--stratum-text-secondary);
+    background: var(--stratum-surface);
+    border-color: var(--stratum-border-strong);
+  }
+
+  .stratum-transfer-list[data-disabled] {
+    cursor: not-allowed;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-transfer-list__options {
+      border-color: ButtonBorder;
+    }
+    .stratum-transfer-list__option[aria-selected='true'] {
+      background: Highlight;
+      color: HighlightText;
+      border-color: Highlight;
+    }
+    .stratum-transfer-list__option[data-active] {
+      outline: 1px dashed CanvasText;
+      outline-offset: -2px;
+    }
+    .stratum-transfer-list__option[aria-disabled='true'] {
+      color: GrayText;
+    }
+    .stratum-transfer-list__move {
+      border-color: ButtonBorder;
+      color: ButtonText;
+    }
+    .stratum-transfer-list__move:disabled,
+    .stratum-transfer-list .stratum-transfer-list__move[aria-disabled='true'] {
+      color: GrayText;
+      border-color: GrayText;
+      opacity: 1;
+    }
+  }
+}

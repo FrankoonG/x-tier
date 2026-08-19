@@ -1,0 +1,9 @@
+/* ---------------------------------------------------------------------------
+ * Cascade layers.
+ *
+ * Declared once, first, so the order is fixed regardless of import order.
+ * Consumers who write plain unlayered CSS automatically win over everything
+ * here — unlayered styles beat layered ones in the cascade — so overriding a
+ * Stratum component never requires a specificity fight or `!important`.
+ * ------------------------------------------------------------------------- */
+@layer stratum.reset, stratum.tokens, stratum.base, stratum.components, stratum.overrides;

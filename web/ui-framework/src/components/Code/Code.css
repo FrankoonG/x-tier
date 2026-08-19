@@ -1,0 +1,50 @@
+@layer stratum.components {
+  .stratum-code {
+    --_bg: var(--stratum-surface-sunken);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border-subtle);
+
+    font-family: var(--stratum-font-mono);
+    /* Relative, not a type-scale step: a monospace face at the same nominal
+     * size reads larger than the surrounding sans, and this has to be right
+     * in body copy, in a table cell and inside a badge. */
+    font-size: 0.92em;
+    font-variant-numeric: var(--stratum-numeric);
+    line-height: inherit;
+
+    padding-inline: var(--stratum-space-2);
+    padding-block: var(--stratum-space-px);
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-sm);
+    /* Keeps a two-line wrap from overlapping the line above it. */
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  .stratum-code[data-variant='subtle'] {
+    --_bg: transparent;
+    --_fg: var(--stratum-text-secondary);
+    --_border: transparent;
+    padding-inline: 0;
+  }
+
+  .stratum-code[data-variant='plain'] {
+    --_bg: transparent;
+    --_fg: inherit;
+    --_border: transparent;
+    padding: 0;
+  }
+
+  .stratum-code[data-break-all] {
+    overflow-wrap: anywhere;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-code[data-variant='default'] {
+      border-color: CanvasText;
+    }
+  }
+}

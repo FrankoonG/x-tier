@@ -1,0 +1,283 @@
+@layer stratum.components {
+  .stratum-json {
+    --_bg: var(--stratum-code-bg);
+    --_fg: var(--stratum-code-fg);
+    --_border: var(--stratum-border);
+    --_fs: var(--stratum-text-xs);
+    --_leading: 1.6;
+    --_indent: var(--stratum-space-8);
+
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* -- Toolbar ------------------------------------------------------------- */
+
+  .stratum-json__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    padding: var(--stratum-space-3) var(--stratum-space-4);
+    font-family: var(--stratum-font-sans);
+    background: var(--stratum-surface);
+    border-bottom: 1px solid var(--stratum-border);
+    border-start-start-radius: inherit;
+    border-start-end-radius: inherit;
+  }
+
+  /* Layout slot only. The field is a <SearchInput>, so its border, radius,
+   * typography, focus ring, clear button and forced-colors treatment come from
+   * Input.css instead of being restated here. */
+  .stratum-json__search {
+    flex: 1 1 10rem;
+    min-width: 7rem;
+  }
+
+  .stratum-json__count {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  .stratum-json__toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    margin-inline-start: auto;
+  }
+
+  .stratum-json__control {
+    height: 24px;
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-json__control:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+    border-color: var(--stratum-border-strong);
+  }
+
+  .stratum-json__copy-state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    font-size: var(--stratum-text-2xs);
+  }
+  .stratum-json__copy-state[data-copy-state='copied'] { color: var(--stratum-success-fg); }
+  .stratum-json__copy-state[data-copy-state='error'] { color: var(--stratum-danger-fg); }
+
+  /* -- Tree ---------------------------------------------------------------- */
+
+  .stratum-json__body {
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .stratum-json__tree {
+    padding-block: var(--stratum-space-2);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    line-height: var(--_leading);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  .stratum-json__row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--stratum-space-2);
+    /* Indentation as padding, not margin, so the hover and active fills span
+     * the full row width rather than starting at the text. */
+    padding-inline: calc(var(--stratum-space-3) + (var(--_level, 1) - 1) * var(--_indent))
+      var(--stratum-space-4);
+    white-space: pre;
+    cursor: default;
+  }
+
+  .stratum-json__row:hover {
+    background: var(--stratum-surface-hover);
+  }
+
+  .stratum-json__row[data-active] {
+    background: var(--stratum-selected-bg);
+    box-shadow: inset 2px 0 0 0 var(--stratum-accent);
+  }
+
+  /* A search hit that is not the active row still needs to be findable when
+   * scrolling past it, so the row itself is marked, not only the text. */
+  .stratum-json__row[data-match] .stratum-json__key,
+  .stratum-json__row[data-match] .stratum-json__value {
+    text-underline-offset: 3px;
+  }
+
+  .stratum-json__twisty {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 1em;
+    height: 1em;
+    color: var(--stratum-text-subtle);
+    /* The chevron rotates in place rather than swapping glyphs, so the change
+     * reads as the same control moving instead of two different controls. */
+    transition: color var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+
+  .stratum-json__key {
+    color: var(--stratum-code-key);
+  }
+  .stratum-json__key[data-key-kind='index'] {
+    color: var(--stratum-code-gutter-fg);
+  }
+
+  .stratum-json__punct {
+    color: var(--stratum-code-punct);
+  }
+
+  .stratum-json__value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-json__value[data-kind='string']  { color: var(--stratum-code-string); }
+  .stratum-json__value[data-kind='number']  { color: var(--stratum-code-number); }
+  .stratum-json__value[data-kind='bigint']  { color: var(--stratum-code-number); }
+  .stratum-json__value[data-kind='boolean'] { color: var(--stratum-code-boolean); }
+  .stratum-json__value[data-kind='null']    { color: var(--stratum-code-null); }
+  .stratum-json__value[data-kind='date']    { color: var(--stratum-code-string); }
+  .stratum-json__value[data-kind='regexp']  { color: var(--stratum-code-string); }
+
+  /* Roles that are not values the document asserted, but facts about the
+   * inspection itself. Italic separates them from real content — reading
+   * `undefined` in the same face as `null` invites treating them as the same
+   * fact, and they are not. */
+  .stratum-json__value[data-kind='undefined'],
+  .stratum-json__value[data-kind='symbol'],
+  .stratum-json__value[data-kind='function'],
+  .stratum-json__value[data-kind='accessor'],
+  .stratum-json__value[data-kind='circular'] {
+    color: var(--stratum-code-meta);
+    font-style: italic;
+  }
+  .stratum-json__value[data-kind='circular'] {
+    color: var(--stratum-warning-fg);
+  }
+  .stratum-json__value[data-kind='error'] {
+    color: var(--stratum-danger-fg);
+  }
+
+  .stratum-json__summary {
+    color: var(--stratum-code-meta);
+  }
+
+  .stratum-json__truncated {
+    color: var(--stratum-warning-fg);
+    font-style: italic;
+  }
+
+  .stratum-json__match {
+    color: inherit;
+    background: var(--stratum-code-match);
+    box-shadow: inset 0 -1px 0 0 var(--stratum-code-match-rule);
+    border-radius: var(--stratum-radius-xs);
+  }
+
+  /* -- Row actions --------------------------------------------------------- */
+
+  .stratum-json__row-actions {
+    display: inline-flex;
+    gap: var(--stratum-space-1);
+    margin-inline-start: auto;
+    padding-inline-start: var(--stratum-space-6);
+    opacity: 0;
+    transition: opacity var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+  .stratum-json__row:hover .stratum-json__row-actions,
+  .stratum-json__row[data-active] .stratum-json__row-actions,
+  .stratum-json__row-actions:focus-within {
+    opacity: 1;
+  }
+
+  .stratum-json__row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    font-size: 11px;
+    color: var(--stratum-text-subtle);
+    background: transparent;
+    border: none;
+    border-radius: var(--stratum-radius-xs);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-json__row-action:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-active);
+  }
+
+  /* -- Show more ------------------------------------------------------------ */
+
+  .stratum-json__row--more {
+    cursor: pointer;
+  }
+
+  .stratum-json__more {
+    padding: 0 var(--stratum-space-4);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-accent-fg);
+    border: 1px dashed var(--stratum-accent-border);
+    border-radius: var(--stratum-radius-sm);
+  }
+  .stratum-json__row--more:hover .stratum-json__more {
+    background: var(--stratum-accent-subtle);
+  }
+
+  /* -- Forced colours ------------------------------------------------------ */
+
+  @media (forced-colors: active) {
+    .stratum-json {
+      border-color: CanvasText;
+    }
+    .stratum-json__row[data-active] {
+      background: Highlight;
+      color: HighlightText;
+      box-shadow: none;
+      outline: 2px solid Highlight;
+      outline-offset: -2px;
+    }
+    .stratum-json__match {
+      background: Highlight;
+      color: HighlightText;
+      forced-color-adjust: none;
+    }
+    /* Every value hue collapses to CanvasText here, so the italic on the
+     * inspection-fact roles becomes the only channel that distinguishes them
+     * from real values. It is deliberately kept. */
+    .stratum-json__value[data-kind='undefined'],
+    .stratum-json__value[data-kind='symbol'],
+    .stratum-json__value[data-kind='function'],
+    .stratum-json__value[data-kind='accessor'],
+    .stratum-json__value[data-kind='circular'] {
+      color: GrayText;
+      font-style: italic;
+    }
+    .stratum-json__more {
+      border-color: CanvasText;
+    }
+  }
+}

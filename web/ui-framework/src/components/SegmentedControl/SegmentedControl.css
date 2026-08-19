@@ -1,0 +1,168 @@
+@layer stratum.components {
+  .stratum-segmented {
+    --_item-h: 26px;
+    --_pad: 2px;
+    --_px: var(--stratum-space-5);
+    --_fs: var(--stratum-text-sm);
+    --_dir: 1;
+
+    position: relative;
+    isolation: isolate;
+    display: inline-grid;
+    /* Equal columns are what makes the indicator offset a pure multiple of its
+     * own width — no measurement anywhere in this component. */
+    grid-template-columns: repeat(var(--_count, 1), minmax(0, 1fr));
+    gap: 0;
+    padding: var(--_pad);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    user-select: none;
+  }
+
+  .stratum-segmented:dir(rtl) {
+    --_dir: -1;
+  }
+
+  .stratum-segmented[data-full-width] {
+    display: grid;
+    width: 100%;
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-segmented[data-size='sm'] {
+    --_item-h: 20px;
+    --_px: var(--stratum-space-4);
+    --_fs: var(--stratum-text-xs);
+  }
+  .stratum-segmented[data-size='md'] {
+    --_item-h: 26px;
+    --_px: var(--stratum-space-5);
+    --_fs: var(--stratum-text-sm);
+  }
+  .stratum-segmented[data-size='lg'] {
+    --_item-h: 32px;
+    --_px: var(--stratum-space-6);
+    --_fs: var(--stratum-text-md);
+  }
+
+  /* -- Indicator -----------------------------------------------------------
+   * Absolutely positioned, so it takes no grid track and cannot affect the
+   * layout it is tracking. 100% here resolves against the padding box, and
+   * 100% inside `translate` resolves against the indicator's own width — which
+   * is exactly one column. */
+  .stratum-segmented__indicator {
+    position: absolute;
+    z-index: 0;
+    inset-block: var(--_pad);
+    inset-inline-start: var(--_pad);
+    width: calc((100% - 2 * var(--_pad)) / var(--_count, 1));
+    background: var(--stratum-surface);
+    border-radius: var(--stratum-radius-sm);
+    box-shadow: var(--stratum-shadow-sm);
+    /* Not scaled by --stratum-motion-distance: this offset encodes which
+     * segment is selected. Reduced motion halves the duration instead. */
+    translate: calc(var(--_index, 0) * var(--_dir) * 100%) 0;
+    transition:
+      translate var(--stratum-duration-md) var(--stratum-ease-signature),
+      opacity var(--stratum-duration-xs) var(--stratum-ease-out);
+  }
+
+  /* Nothing selected yet: no indicator to place. */
+  .stratum-segmented[data-empty] .stratum-segmented__indicator {
+    opacity: 0;
+  }
+
+  /* -- Items --------------------------------------------------------------- */
+  .stratum-segmented__item {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    height: var(--_item-h);
+    padding-inline: var(--_px);
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-none);
+    white-space: nowrap;
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-segmented__item[data-icon-only] {
+    padding-inline: 0;
+  }
+
+  .stratum-segmented__item:hover:not(:disabled):not([data-state='checked']) {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+
+  .stratum-segmented__item[data-state='checked'] {
+    color: var(--stratum-text);
+    font-weight: var(--stratum-weight-semibold);
+  }
+
+  .stratum-segmented__item:disabled {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-segmented__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-segmented__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15em;
+  }
+  .stratum-segmented__icon > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-segmented[data-disabled] {
+    background: var(--stratum-surface-disabled);
+  }
+  .stratum-segmented[data-disabled] .stratum-segmented__indicator {
+    box-shadow: none;
+    background: var(--stratum-surface);
+  }
+
+  /* Forced colours drop the indicator's fill and shadow entirely, so the
+   * selected segment needs a real border plus system colours to stay legible. */
+  @media (forced-colors: active) {
+    .stratum-segmented {
+      border-color: ButtonBorder;
+    }
+    .stratum-segmented__indicator {
+      background: Highlight;
+      border: 1px solid Highlight;
+    }
+    .stratum-segmented__item {
+      color: ButtonText;
+    }
+    .stratum-segmented__item[data-state='checked'] {
+      color: HighlightText;
+    }
+    /* --stratum-focus-ring resolves to Highlight here, and the indicator behind
+     * the selected segment is repainted Highlight above — so the inset ring
+     * would be invisible on exactly the segment the roving tab index sends
+     * focus to. */
+    .stratum-segmented__item[data-state='checked']:focus-visible {
+      outline-color: HighlightText;
+    }
+    .stratum-segmented__item:disabled {
+      color: GrayText;
+    }
+  }
+}

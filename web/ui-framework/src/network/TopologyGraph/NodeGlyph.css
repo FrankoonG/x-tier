@@ -1,0 +1,148 @@
+@layer stratum.components {
+  /* Node paint. Every value traces to a --stratum-mesh-* token, which is
+   * literal sRGB hex on purpose — see the header of tokens.mesh.css for why SVG
+   * paint must not resolve through an OKLCH variable chain. */
+  .stratum-node-glyph {
+    /* Geometry has no token ramp in this framework (Button.css hardcodes its
+     * 1px borders and pixel heights for the same reason), so it is exposed as
+     * private custom properties instead: a consumer retheming one graph sets
+     * these rather than fighting selectors. */
+    --_stroke-width: 2;
+    --_inner-opacity: 1;
+
+    /* --_role-colour / --_role-fill / --_role-dash are what a REGISTERED role
+     * sets inline. They are read here rather than written to `stroke` directly
+     * for one reason: an inline declaration outranks every stylesheet rule, so
+     * a value set inline could never be neutralised under forced-colors. Going
+     * through --_stroke keeps the override in the stylesheet's hands, where the
+     * forced-colors block below can still take it back. A built-in role passes
+     * none of these, so its paint stays purely token-driven. */
+    --_stroke: var(--_role-colour, var(--stratum-mesh-nested));
+    --_fill: var(--_role-fill, var(--stratum-mesh-nested-fill));
+  }
+
+  .stratum-node-glyph[data-role='self'] {
+    --_stroke: var(--_role-colour, var(--stratum-mesh-self));
+    --_fill: var(--_role-fill, var(--stratum-mesh-self-fill));
+  }
+  .stratum-node-glyph[data-role='reachable'] {
+    --_stroke: var(--_role-colour, var(--stratum-mesh-reachable));
+    --_fill: var(--_role-fill, var(--stratum-mesh-reachable-fill));
+  }
+  .stratum-node-glyph[data-role='medium'] {
+    --_stroke: var(--_role-colour, var(--stratum-mesh-medium));
+    --_fill: var(--_role-fill, var(--stratum-mesh-medium-fill));
+  }
+  .stratum-node-glyph[data-role='offline'] {
+    --_stroke: var(--_role-colour, var(--stratum-mesh-offline));
+    --_fill: var(--_role-fill, var(--stratum-mesh-offline-fill));
+  }
+  .stratum-node-glyph[data-role='native'] {
+    --_stroke: var(--_role-colour, var(--stratum-mesh-native));
+    --_fill: var(--_role-fill, var(--stratum-mesh-native-fill));
+  }
+  .stratum-node-glyph[data-role='nested'] {
+    --_stroke: var(--_role-colour, var(--stratum-mesh-nested));
+    --_fill: var(--_role-fill, var(--stratum-mesh-nested-fill));
+  }
+  .stratum-node-glyph[data-role='disabled'] {
+    --_stroke: var(--_role-colour, var(--stratum-mesh-disabled));
+    --_fill: var(--_role-fill, var(--stratum-mesh-disabled-fill));
+  }
+
+  .stratum-node-glyph__disc {
+    fill: var(--_fill);
+    stroke: var(--_stroke);
+    stroke-width: var(--_stroke-width);
+    /* `none` is the initial value, so a role that sets no dash is unaffected. */
+    stroke-dasharray: var(--_role-dash, none);
+  }
+
+  /* A registered role can drop its fill the way `nested` and `disabled` do.
+   * Two classes deep on purpose: it has to outrank the forced-colors
+   * `fill: Canvas` below, exactly as the built-in hollow roles do. */
+  .stratum-node-glyph[data-hollow] .stratum-node-glyph__disc {
+    fill: none;
+  }
+
+  /* A transit node already reads as important through its larger radius; the
+   * heavier stroke stops that extra size from looking like a rendering
+   * accident at small zoom. */
+  .stratum-node-glyph[data-transit] {
+    --_stroke-width: 2.6;
+  }
+
+  /* self — concentric inner disc. */
+  .stratum-node-glyph__inner {
+    fill: var(--_stroke);
+    stroke: none;
+  }
+
+  /* medium — partial ring. Deliberately open, so it cannot be mistaken for the
+   * closed stroke of a plain disc at a glance. */
+  .stratum-node-glyph__ring {
+    fill: none;
+    stroke: var(--_stroke);
+    stroke-width: calc(var(--_stroke-width) * 0.9);
+    stroke-linecap: round;
+  }
+
+  /* offline — cross. */
+  .stratum-node-glyph__cross {
+    fill: none;
+    stroke: var(--_stroke);
+    stroke-width: calc(var(--_stroke-width) * 0.85);
+    stroke-linecap: round;
+  }
+
+  /* nested — dashed and hollow. */
+  .stratum-node-glyph[data-role='nested'] .stratum-node-glyph__disc {
+    fill: none;
+    stroke-dasharray: 4 3;
+  }
+
+  /* disabled — hollow, solid stroke, faded. Per tokens.mesh.css this is the one
+   * role permitted to sit under a strict reading of SC 1.4.11, because 1.4.11
+   * exempts inactive components. */
+  .stratum-node-glyph[data-role='disabled'] {
+    opacity: 0.55;
+  }
+  .stratum-node-glyph[data-role='disabled'] .stratum-node-glyph__disc {
+    fill: none;
+  }
+
+  /* Forced colours: the mesh tokens already map to system keywords, so the job
+   * is to stop the UA repainting on top of that mapping and to make sure every
+   * shape distinction survives. Fills go to Canvas, strokes to CanvasText or
+   * GrayText, and the seven glyphs remain separable by shape alone. */
+  @media (forced-colors: active) {
+    .stratum-node-glyph {
+      forced-color-adjust: none;
+    }
+    /* A consumer's literal colour cannot be remapped by the OS, so every role —
+     * built-in or registered — is pinned to a system keyword here and the shape
+     * and dash are left to carry the meaning. `[data-role]` rather than the bare
+     * class so this matches the per-role rules above on specificity and wins on
+     * order; `data-role` is always present. The two keyword values reproduce
+     * exactly what tokens.mesh.css maps the built-in roles to. */
+    .stratum-node-glyph[data-role] {
+      --_stroke: CanvasText;
+      --_fill: Canvas;
+    }
+    .stratum-node-glyph[data-role='nested'],
+    .stratum-node-glyph[data-role='disabled'] {
+      --_stroke: GrayText;
+    }
+    .stratum-node-glyph__disc {
+      fill: Canvas;
+      stroke: var(--_stroke);
+    }
+    .stratum-node-glyph[data-role='disabled'] {
+      opacity: 1;
+    }
+    /* Without a fill the inner disc of `self` would vanish into Canvas. */
+    .stratum-node-glyph__inner {
+      fill: var(--_stroke);
+    }
+  }
+}

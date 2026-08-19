@@ -1,0 +1,16 @@
+@layer stratum.components {
+  /* The mark draws itself at an exact pixel size, so this wrapper no longer
+   * sets one — a `width` here would scale a drawing that was already sized,
+   * defeating the optical compensation that makes the small cuts legible. */
+  .stratum-spinner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: inherit;
+  }
+
+  /* Motion, reduced motion and forced colours are all the mark's business now;
+   * see Mark.css. Nothing is restated here, because a second copy of a rule is
+   * a second thing to keep in sync. */
+}

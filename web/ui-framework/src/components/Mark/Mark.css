@@ -1,0 +1,498 @@
+/* ===========================================================================
+ * THE MARK, AND THE LOADERS BUILT OUT OF IT
+ *
+ * PORTABILITY
+ * -----------
+ * Every framework token read here carries a fallback, and that is not
+ * defensive tidiness — it is the difference between working and not. A `var()`
+ * with no fallback whose token is undefined makes the ENTIRE declaration
+ * invalid at computed-value time. `fill: var(--_ink)` with no accent defined
+ * does not fall back to something sensible, it falls back to inherited, which
+ * on an `svg[fill="none"]` root means the mark renders as nothing at all. A
+ * duration of `calc(2600ms * var(--some-token))` with no such token defined
+ * resolves to an invalid time, so `animation-duration` is dropped, so the
+ * loader simply never animates — silently, with no error.
+ * Both failures were reachable by dropping this file into a project that had
+ * not loaded the token layer. They are not any more.
+ *
+ * Layered into `stratum.components` like every other component here, so a
+ * consuming application can still override any of it with plain unlayered CSS.
+ *
+ * MOTION RULES THIS FILE OBEYS
+ * ----------------------------
+ * 1. No `var()` inside a keyframe. A `var()` in a keyframe is a substitution
+ *    value, which makes the whole animation DISCRETE — it snaps between two
+ *    values instead of interpolating. This cost a day when the topology flow
+ *    froze; the fix is a literal keyframe driving an `@property`-registered
+ *    number, with consumers deriving from it in `calc()`. See tokens.motion.css.
+ * 2. THE LOOPS DO NOT READ `--stratum-motion-scale`, and that is deliberate.
+ *
+ *    The multiplier shortens transitions, where halving a 470ms dialog
+ *    entrance genuinely is less movement. Applying the same factor to a LOOP
+ *    inverts it: halving the period does not shorten the motion, it doubles
+ *    the rate. The loaders were spinning at twice speed for anyone with the
+ *    preference set — strictly more movement, from the setting meant to
+ *    reduce it.
+ *
+ *    Nothing is lost by dropping it, because reduced motion is already handled
+ *    categorically here rather than by degree: under `reduce` the animations
+ *    are never declared at all. There is no tempo to scale. The determinate
+ *    `progress` variant still uses the scaled duration tokens, because that is
+ *    a transition and the multiplier means what it says there.
+ * 3. NOTHING LOOPS under `prefers-reduced-motion: reduce` — enforced by never
+ *    declaring the animation in the first place. See the LOADERS header.
+ * 4. NO `stroke-width` OR `r` DECLARED HERE for the mark's own parts. Those are
+ *    computed per size in the component and written as attributes; a CSS
+ *    declaration would beat the attribute and silently flatten the optical
+ *    sizing back to a single weight.
+ * ======================================================================== */
+
+@layer stratum.components {
+
+  .stratum-mark {
+    display: block;
+    flex-shrink: 0;
+  }
+
+  /* Brand tone: the mark owns its colour. Used where the surface is neutral and
+   * the mark is being the brand — topbar, favicon, app icon, splash, docs.
+   * Inherit tone: the mark takes `currentColor` and behaves like an icon. Used
+   * where it sits inside coloured or monochrome chrome — on an accent-filled
+   * button, in print, in forced-colors, or inline in a run of text. */
+  .stratum-mark[data-tone='brand'] {
+    --_ink: var(--stratum-accent, #5b5bd6);
+    --_quiet: currentColor;
+    /* An OPAQUE muted colour, not a faded ink. The resting node used to be
+     * `currentColor` at 45%, so the two edges behind it showed straight through
+     * the disc — a see-through dot with lines crossing inside it. A real token
+     * that already adapts across themes gives a solid disc instead, and the
+     * edges are trimmed at its rim as well, so there is nothing left to show
+     * through even if a future theme makes this translucent. */
+    --_muted: var(--stratum-text-muted, #6b7280);
+    --_muted-alpha: 1;
+  }
+  .stratum-mark[data-tone='inherit'] {
+    --_ink: currentColor;
+    --_quiet: currentColor;
+    /* Monochrome has no second colour to spend. `currentColor` at full strength
+     * would make the resting node identical to the three on the path, so here —
+     * and only here — the distinction stays tonal. The trimmed edges mean it
+     * still reads as a clean disc rather than a window. */
+    --_muted: currentColor;
+    --_muted-alpha: 0.5;
+  }
+
+  .stratum-mark__diamond {
+    stroke: var(--_quiet);
+    fill: none;
+  }
+
+  .stratum-mark__wedge {
+    fill: var(--_ink);
+  }
+
+  .stratum-mark__route {
+    fill: none;
+    stroke: var(--_ink);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .stratum-mark__node {
+    fill: var(--_ink);
+  }
+
+  /* The fourth node. Not on the chosen path — which is not the same as absent,
+   * so it keeps its full shape and only steps back in tone. */
+  .stratum-mark__node[data-node='rest'] {
+    fill: var(--_muted);
+    opacity: var(--_muted-alpha);
+  }
+
+  /* Fills and opacity are discarded by the OS here, so anything whose meaning
+   * rides on a tone difference vanishes. The quiet half is given a real dash
+   * instead, which is stroke geometry and therefore survives. */
+  @media (forced-colors: active) {
+    .stratum-mark__diamond {
+      opacity: 1 !important;
+      stroke-dasharray: 2 2;
+    }
+    .stratum-mark__node[data-node='rest'] {
+      opacity: 1;
+    }
+  }
+
+  /* ===========================================================================
+   * LOADERS
+   *
+   * Two, both built on the same idea: the mark assembles itself out of its own
+   * parts. They differ in which part leads. `spiral` is led by the arrival —
+   * everything converges and the figure settles. `swarm` is led by the departure
+   * — the figure exists briefly and is then carried apart.
+   *
+   * WHY EVERY ANIMATION LIVES INSIDE `no-preference`
+   * ------------------------------------------------
+   * An earlier cut declared them unconditionally and switched them off again in a
+   * `reduce` block. That silently failed: the reset selector was (0,3,0) and the
+   * rule it had to beat was (0,4,0), so twenty animations kept looping under the
+   * preference and nothing caught it, because a loop is invisible in a
+   * screenshot. Declaring them only under `no-preference` removes the race —
+   * with the preference set the animation is never declared, so there is nothing
+   * to out-specify. Never write a rule whose correctness depends on winning a
+   * specificity fight.
+   * ======================================================================== */
+
+  .stratum-mark[data-loading='spiral'],
+  .stratum-mark[data-loading='swarm'] {
+    /* Both throw parts past the frame; clipping keeps a loader inside the box
+     * the layout gave it instead of painting over its neighbours. */
+    overflow: hidden;
+  }
+
+  /* FOUR transform levels, each owning one kind of movement so they compose
+   * instead of overwriting each other — an element has exactly one transform.
+   *
+   *   __figure  the whole mark. Whole-figure squeeze, whole-figure orbit.
+   *   __nodes   the constellation, relative to the figure. Converge and revolve.
+   *   __slot    one node's place in the ring, for a staggered arrival.
+   *   __node    the dot itself, about its own centre, to swell in place.
+   */
+  .stratum-mark[data-loading] .stratum-mark__figure,
+  .stratum-mark[data-loading] .stratum-mark__nodes,
+  .stratum-mark[data-loading] .stratum-mark__slot {
+    transform-box: view-box;
+    /* The mark's centre in user units. The view box grows symmetrically about
+     * this point when `bleed` widens it, so the value holds for every bleed —
+     * but it is a consequence of that symmetry, not a constant, which is why it
+     * is named here rather than scattered through the keyframes. */
+    transform-origin: var(--_centre, 12px) var(--_centre, 12px);
+  }
+  .stratum-mark[data-loading] .stratum-mark__node {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  /* -- determinate: real progress --------------------------------------------
+   * Not a loading ANIMATION but a progress display, and the only variant needing
+   * no reduced-motion special case. */
+  .stratum-mark[data-loading='progress'] .stratum-mark__route {
+    stroke-dasharray: 1;
+    stroke-dashoffset: calc(1 - var(--_progress, 0));
+    transition: stroke-dashoffset var(--stratum-duration-lg, 250ms) var(--stratum-ease-standard, ease-out);
+  }
+  .stratum-mark[data-loading='progress'] .stratum-mark__wedge {
+    opacity: var(--_progress, 0);
+    transition: opacity var(--stratum-duration-xl, 320ms) linear;
+  }
+
+  /* -- spiral ----------------------------------------------------------------
+   * ONE ELEMENT, ONE CURVE, NO SEAM.
+   *
+   * Three cuts failed here and all three failed the same way: the motion was
+   * split across two levels — the nodes converging, the figure compressing — and
+   * a handover between two eased curves is a velocity trough by construction.
+   * Each one decelerates into its own target and accelerates out of it, so where
+   * they meet, both are near zero. Measured on the second cut the composite
+   * speed ran 0.025 -> 0.0067 -> 0.0125 per percent: a dip and a recovery, which
+   * is precisely what "stops and then starts again" looks like in numbers.
+   * Retiming it moved the trough around; it could not remove it.
+   *
+   * So the split is gone. The entire journey — rotate -165deg to +20deg, scale
+   * 2.7 down to 0.8 — is a SINGLE transform interpolation on a single element,
+   * from 0% straight through to 44%, under one easing curve. Home (scale 1) is
+   * not a keyframe and not an event; it is just a value the interpolation passes
+   * through on its way down. There is no seam to smooth because there is no
+   * join. The rebound is the only other segment, and it springs.
+   *
+   * The edges ride inside that element, so they are turned and pulled with
+   * everything else for free. They only need to be told when to appear.
+   */
+  @keyframes stratum-mark-spiral {
+    0% {
+      transform: rotate(-165deg) scale(2.7);
+      opacity: 0;
+      /* Monotone ease-out. Any monotone curve is enough — what matters is that
+       * nothing else interrupts this segment, so the speed can only ever fall,
+       * never dip and recover. */
+      animation-timing-function: cubic-bezier(0.25, 0.6, 0.45, 1);
+    }
+    6% { opacity: 1; }
+    32% {
+      transform: rotate(20deg) scale(0.8);
+      animation-timing-function: cubic-bezier(0.3, 1.5, 0.6, 1);
+    }
+    46% { transform: rotate(0deg) scale(1); }
+    /* THE HOLD. Watching it frame by frame, the old timing spent three quarters
+     * of the cycle in transit and showed the finished mark for barely a fifth —
+     * it read as a thing that never arrives. Arrival is the payoff, so the whole
+     * approach is compressed into the first third and the assembled figure now
+     * holds for 42% of the cycle. */
+    88% { transform: rotate(0deg) scale(1); opacity: 1; }
+    100% { transform: rotate(150deg) scale(2.4); opacity: 0; }
+  }
+  /* Staging, the one thing still separate — opacity has no seam to give away.
+   *
+   * The edges used to fade up from 4%, so a full-size ghost outline was already
+   * hanging there at 10% while the figure was still 1.8x oversize and nowhere
+   * near home. They now wait until 22%, by which point the figure is about its
+   * final size, so what appears is a diamond rather than a halo. They are in
+   * place before the 32% compression, which is the point — they have to exist to
+   * be dragged inward.
+   *
+   * Both edges and wedge stay lit right through the exit and only release at the
+   * very end, so the mark leaves as a complete mark instead of being dismantled
+   * before it goes. */
+  @keyframes stratum-mark-spiral-edges {
+    0%, 12%  { opacity: 0; }
+    22%, 90% { opacity: 1; }
+    100%     { opacity: 0; }
+  }
+  @keyframes stratum-mark-spiral-wedge {
+    0%, 34%  { opacity: 0; }
+    48%, 90% { opacity: 1; }
+    100%     { opacity: 0; }
+  }
+
+  /*
+   * ONE UNBROKEN TURN WITH ONE DELIBERATE REST. The rotation is a single
+   * 0 -> 360 keyframe pair; every bit of speed variation lives in the timing
+   * function.
+   *
+   * Two wrong versions preceded this. The first spelled the slowdown out in
+   * keyframes and eased each segment — and a keyframe with easing either side is
+   * a velocity zero, so the orbit stopped dead three times a cycle. The second
+   * over-corrected into a curve that never rests at all, which loses the beat
+   * where the square snaps into formation and is worth looking at.
+   *
+   * What is wanted is a rest in exactly one place. `linear()` is a piecewise
+   * curve through explicit samples, so a repeated sample value is a genuine hold
+   * and everywhere else the slope is whatever the samples say. Here it holds flat
+   * for the first 10% — the mark formed, motionless, the one moment it is a logo
+   * rather than a swarm — then accelerates away, cruises, and decelerates back
+   * into formation. The hold sits at the loop seam, so the deceleration at 95-100%
+   * and the hold at 0-10% are read as a single pause.
+   */
+  @keyframes stratum-mark-swarm-figure {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  /* Radial drift, kept entirely inside the window where the edges are already
+   * invisible. Applied to the nodes rather than the figure so it cannot pull the
+   * dots away from lines they are supposed to be rigidly carrying. */
+  @keyframes stratum-mark-swarm-drift {
+    0%, 54%   { transform: scale(1); }
+    70%       { transform: scale(1.18); }
+    82%, 100% { transform: scale(1); }
+  }
+  /* The quiet structure may arrive early — it is the frame the mark settles into,
+   * so seeing it a moment before the constellation lands reads as anticipation
+   * rather than as a mistake. */
+  @keyframes stratum-mark-swarm-lines {
+    /* The return fade lands EXACTLY on formation — full at 100%, not before.
+     *
+     * It used to finish at 96%, so the outline was already at full strength
+     * while the constellation still had 14 degrees to travel. That reads as the
+     * lines arriving early and then waiting, which drains the arrival of the
+     * thing it is supposed to deliver. Running 76% to 100% instead makes the
+     * fade a 620ms approach that completes on the beat: the outline is still
+     * materialising right up to the moment the square locks into place. */
+    0%, 46% { opacity: 1; }
+    56%, 89% {
+      opacity: 0;
+      /* Confined to the low cruise and the final brake — 89% to 100%, the only
+       * stretch of the cycle that is quiet.
+       *
+       * Retiming the fade was never going to fix this on its own, which is what
+       * three previous attempts got wrong. While the outline was materialising
+       * over a fast-moving stretch, it looked early no matter what the numbers
+       * said, because it finished its work in a part of the cycle that had
+       * plainly not arrived yet. It needed somewhere calm to happen, and now
+       * there is one. */
+      animation-timing-function: cubic-bezier(0.45, 0, 0.72, 0.68);
+    }
+    100% { opacity: 1; }
+  }
+  /* THE FILL IS NOT ALLOWED TO ANTICIPATE.
+   *
+   * The wedge and the accent route used to share the lines keyframe, so they
+   * faded up during the approach — the mark was wearing its finished face while
+   * still visibly out of position. The completed figure has to be the reward for
+   * arriving, not a preview of it. Formation is the loop seam, so this starts at
+   * ZERO at 0%, fades in over the first 6% once the rotation has actually
+   * stopped, and is gone again before the constellation moves. */
+  @keyframes stratum-mark-swarm-fill {
+    /* FULL FOR THE WHOLE HOLD. The previous cut started draining at 36% while
+     * the hold ran to 43%, so the mark stood perfectly still for 180ms watching
+     * its own fill leak away — which is the same defect spiral had, where the
+     * finished figure came apart before it moved. Nothing may dismantle itself
+     * while it is stationary.
+     *
+     * Entry cannot start before 0% without anticipating the arrival, so all of
+     * it happens after the stop — and it took two tries to get right. 3% (78ms,
+     * five frames) is not a fade, it is a pop. 9% with a fast-start curve was
+     * better but still front-loaded: it hit 58% opacity in the first 52ms, which
+     * the eye reads as most of a pop followed by a tail. It now runs 0-11% on
+     * the same symmetric curve as the exit, so in and out are 286ms each and
+     * match. Exit is late on purpose, so the mark departs complete and dissolves
+     * on the way out, exactly as spiral does. */
+    0% {
+      opacity: 0;
+      animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+    }
+    11%, 43% {
+      opacity: 1;
+      animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+    }
+    54%, 100% { opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* ---- spiral ---- */
+    /* Spiral needs no phase shift: its 0% already IS the entry, with the nodes
+     * out at 2.7x and still invisible. It opens on the fly-in by construction,
+     * which is what swarm has to be offset to achieve. */
+    .stratum-mark[data-loading='spiral'] .stratum-mark__figure,
+    .stratum-mark[data-loading='spiral'] .stratum-mark__edges,
+    .stratum-mark[data-loading='spiral'] .stratum-mark__wedge,
+    .stratum-mark[data-loading='spiral'] .stratum-mark__route {
+      animation-duration: var(--_cycle, 2800ms);
+      animation-iteration-count: infinite;
+    }
+    .stratum-mark[data-loading='spiral'] .stratum-mark__figure {
+      animation-name: stratum-mark-spiral;
+      /* Per-keyframe easings inside the keyframes; nothing to set here. */
+      animation-timing-function: linear;
+    }
+    .stratum-mark[data-loading='spiral'] .stratum-mark__edges {
+      animation-name: stratum-mark-spiral-edges;
+      animation-timing-function: linear;
+    }
+    .stratum-mark[data-loading='spiral'] .stratum-mark__wedge,
+    .stratum-mark[data-loading='spiral'] .stratum-mark__route {
+      animation-name: stratum-mark-spiral-wedge;
+      animation-timing-function: linear;
+    }
+
+    /* ---- swarm ---- */
+    /* WHERE THE CYCLE STARTS.
+     *
+     * The keyframes are authored with formation at the loop seam, which is the
+     * right place to WRITE them — the hold spans 0-43% and every other phase is
+     * measured from it. But it is the wrong place to BEGIN: a loader that
+     * appears already formed and motionless spends its first 1120ms looking
+     * like a static logo that has failed to start.
+     *
+     * A negative delay opens the cycle at 78% instead, the moment the
+     * constellation accelerates into its last fast run. What you see on mount
+     * is a sprint, a deceleration, the low cruise, and the mark locking into
+     * place — measured at 500ms to formation and 796ms to a filled mark, so the
+     * arrival is the first thing the loader does rather than the thing it has
+     * apparently already finished. Spiral reaches formation at 504ms from its
+     * own 0%, so the two open at the same rhythm without being timed to.
+     *
+     * The delay is applied to every animated part at once. Split across them it
+     * would phase-shift the outline against the geometry it belongs to. */
+    .stratum-mark[data-loading='swarm'] .stratum-mark__figure,
+    .stratum-mark[data-loading='swarm'] .stratum-mark__nodes,
+    .stratum-mark[data-loading='swarm'] .stratum-mark__edges,
+    .stratum-mark[data-loading='swarm'] .stratum-mark__wedge,
+    .stratum-mark[data-loading='swarm'] .stratum-mark__route {
+      animation-duration: var(--_cycle, 2600ms);
+      animation-delay: calc(var(--_cycle, 2600ms) * -0.78);
+      animation-iteration-count: infinite;
+    }
+    .stratum-mark[data-loading='swarm'] .stratum-mark__figure {
+      animation-name: stratum-mark-swarm-figure;
+      /* A LONG HOLD, THEN TWO FAST RUNS WITH REAL RAMPS BETWEEN THEM.
+       *
+       * Three things are being balanced and they all pull against each other,
+       * because the turn is a fixed 360 degrees: a longer hold, a faster peak,
+       * and a wider slow patch all want the same budget. The only free variable
+       * is the cycle length, so it is 2600ms and the hold takes 43% of it —
+       * about 1120ms, which is the same register as spiral's 1176ms assembled
+       * hold rather than the 220ms blink it was.
+       *
+       * FIVE PHASES, and every junction between them is a ramp.
+       *
+       *   43-46  leaving the hold
+       *   46-57  fast run one
+       *   57-75  the slow patch opposite formation
+       *   75-86  fast run two
+       *   86-90  DECELERATION into...
+       *   90-95  ...a short LOW CRUISE, about 130ms at 111 deg/s
+       *   95-100 final brake to a stop
+       *
+       * The low cruise is the new piece. Before it the approach went straight
+       * from top speed into the brake, so the outline had nowhere quiet to
+       * appear and had to fade in over the fast run — which is why it kept
+       * reading as arriving early however the fade itself was retimed. Now there
+       * is a calm stretch just before formation for it to materialise in.
+       *
+       * Both of its junctions are graded rather than stepped. Coming in:
+       * .0291 / .0228 / .0140 / .0088 / .0080 across 84-91%. Going out:
+       * .0080 / .0074 / .0057 / .0039 / .0023 / .0007 / 0 across 95-100%. The
+       * mark never changes pace in one frame anywhere in the cycle. */
+      animation-timing-function: linear(
+        0,
+        0 43%,
+        0.0175 45%,
+        0.063 47%,
+        0.1516 50%,
+        0.3679 57%,
+        0.4523 60%,
+        0.5169 63%,
+        0.5576 66%,
+        0.5797 69%,
+        0.5953 72%,
+        0.6174 75%,
+        0.6581 78%,
+        0.7227 81%,
+        0.8077 84%,
+        0.8659 86%,
+        0.9114 88%,
+        0.9393 90%,
+        0.9481 91%,
+        0.98 95%,
+        0.9874 96%,
+        0.9931 97%,
+        0.997 98%,
+        0.9993 99%,
+        1
+      );
+    }
+    .stratum-mark[data-loading='swarm'] .stratum-mark__nodes {
+      animation-name: stratum-mark-swarm-drift;
+      animation-timing-function: ease-in-out;
+    }
+    /* The accent ROUTE travels with the edges, not with the fill.
+     *
+     * It was grouped with the wedge, which meant that at the formation instant
+     * the mark was a grey square with four dots and no accent anywhere — the one
+     * frame the whole animation exists to deliver, and it was not the logo. A
+     * stroke is a line; only the wedge is the fill. Split this way the outline of
+     * the real mark is already in place as it lands, and arriving home is what
+     * fills it in. */
+    .stratum-mark[data-loading='swarm'] .stratum-mark__edges,
+    .stratum-mark[data-loading='swarm'] .stratum-mark__route {
+      animation-name: stratum-mark-swarm-lines;
+      animation-timing-function: ease-in-out;
+    }
+    .stratum-mark[data-loading='swarm'] .stratum-mark__wedge {
+      animation-name: stratum-mark-swarm-fill;
+      animation-timing-function: ease-in-out;
+    }
+  }
+
+  /* ===========================================================================
+   * REDUCED MOTION
+   *
+   * Nothing above is declared under the preference, so there is nothing to stop
+   * here — this only guarantees the resting pose is the finished mark rather than
+   * whichever half-built frame a keyframe happened to start on.
+   * ======================================================================== */
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-mark[data-loading]:not([data-loading='progress']) .stratum-mark__diamond {
+      stroke-dashoffset: 0;
+    }
+  }
+}

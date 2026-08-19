@@ -1,0 +1,406 @@
+@layer stratum.components {
+  /* The wrapper carries the border, fill and focus ring. Putting them on the
+   * <input> itself is what makes adornment slots look bolted on: the ring ends
+   * up around the text box only, and the prefix sits outside it. */
+  .stratum-input {
+    --_bg: var(--stratum-surface);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border-strong);
+    --_bg-hover: var(--stratum-surface-hover);
+    --_border-focus: var(--stratum-accent);
+    --_ring: var(--stratum-focus-ring);
+    --_placeholder: var(--stratum-text-subtle);
+    --_adornment-fg: var(--stratum-text-muted);
+    --_action-fg: var(--stratum-text-muted);
+    --_action-fg-hover: var(--stratum-text);
+    --_action-bg-hover: var(--stratum-surface-active);
+    /* Action buttons inset themselves inside the field rather than using a
+     * second size scale that would drift from --_h. */
+    --_action: calc(var(--_h) - var(--stratum-space-5));
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+
+    height: var(--_h);
+    padding-inline: var(--_px);
+    font-size: var(--_fs);
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+    cursor: text;
+
+    transition: var(--stratum-transition-control), var(--stratum-transition-focus);
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-input[data-size='sm'] { --_h: 26px; --_px: var(--stratum-space-4); --_fs: var(--stratum-text-xs); }
+  .stratum-input[data-size='md'] { --_h: 32px; --_px: var(--stratum-space-5); --_fs: var(--stratum-text-sm); }
+  .stratum-input[data-size='lg'] { --_h: 38px; --_px: var(--stratum-space-6); --_fs: var(--stratum-text-md); }
+
+  .stratum-input[data-full-width] {
+    display: flex;
+    width: 100%;
+  }
+
+  /* -- Variants ------------------------------------------------------------
+   * `subtle` keeps a real border rather than going borderless. In dark mode
+   * `surface-sunken` resolves to the same value as the page background — the
+   * fill alone would leave the field completely invisible, which is both a
+   * WCAG 1.4.11 failure and a usability one: a text field the user cannot see
+   * is a text field they will not type in. Quieter than `default` is the
+   * intent, not absent. */
+  .stratum-input[data-variant='subtle'] {
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border);
+    --_bg-hover: var(--stratum-surface-hover);
+  }
+
+  /* -- States -------------------------------------------------------------- */
+  .stratum-input:hover:not([data-disabled]):not(:focus-within) {
+    background: var(--_bg-hover);
+  }
+
+  .stratum-input:focus-within {
+    border-color: var(--_border-focus);
+  }
+
+  /* The ring belongs to the whole field, so it is driven by the inner control's
+   * :focus-visible rather than the wrapper's — the wrapper is not focusable.
+   * An action button inside keeps its own ring from the global rule. */
+  .stratum-input:has(.stratum-input__control:focus-visible) {
+    outline: var(--stratum-focus-ring-width) solid var(--_ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+
+  /* Invalid recolours the ring too: an accent-coloured ring on a red field
+   * reads as "this is fine now", which it is not. */
+  .stratum-input[data-invalid] {
+    --_border: var(--stratum-danger);
+    --_border-focus: var(--stratum-danger);
+    --_ring: var(--stratum-danger);
+  }
+
+  .stratum-input[data-readonly] {
+    --_bg: var(--stratum-surface-sunken);
+    cursor: default;
+  }
+
+  .stratum-input[data-disabled] {
+    --_bg: var(--stratum-surface-disabled);
+    --_fg: var(--stratum-text-disabled);
+    --_border: var(--stratum-border);
+    --_placeholder: var(--stratum-text-disabled);
+    --_adornment-fg: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  /* -- Control ------------------------------------------------------------- */
+  .stratum-input__control {
+    flex: 1 1 auto;
+    /* Allows the field to shrink inside a flex or grid parent. The wrapper
+     * still gets a sensible intrinsic width from the input's default `size`. */
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    color: inherit;
+    background: none;
+    border: 0;
+    font: inherit;
+    text-overflow: ellipsis;
+  }
+
+  /* Ring is on the wrapper; a second one here would double up. */
+  .stratum-input__control:focus-visible {
+    outline: none;
+  }
+
+  .stratum-input__control::placeholder {
+    /* Firefox applies a default placeholder opacity that would compound with
+     * the token's own lightness. */
+    color: var(--_placeholder);
+    opacity: 1;
+  }
+
+  .stratum-input__control:disabled {
+    cursor: not-allowed;
+    color: var(--stratum-text-disabled);
+    /* iOS Safari overrides `color` on disabled controls; this is the only
+     * property it honours. */
+    -webkit-text-fill-color: var(--stratum-text-disabled);
+    opacity: 1;
+  }
+
+  /* Autofill: the engine's own background cannot be removed reliably without a
+   * 1000px inset-shadow hack, so only the text colour is corrected — which is
+   * the part that actually becomes illegible in dark mode. Split into two rules
+   * because an unknown selector would invalidate the whole block. */
+  .stratum-input__control:-webkit-autofill {
+    -webkit-text-fill-color: var(--stratum-text);
+    caret-color: var(--stratum-text);
+  }
+  .stratum-input__control:autofill {
+    caret-color: var(--stratum-text);
+  }
+
+  /* -- Native per-type chrome ----------------------------------------------
+   * `type` is passed straight through from InputHTMLAttributes, so this field
+   * has to survive every input type a consumer can hand it — not just the ones
+   * the built-on variants use. Each type below paints UA chrome inside the
+   * field that no other rule here can reach, and left alone it is the one part
+   * of a Stratum control that does not look like Stratum: platform metrics,
+   * platform corner radii, and a fixed glyph colour that does not follow the
+   * theme, so it goes near-invisible in dark mode.
+   *
+   * type=number gets native spinners that duplicate NumberInput's steppers and
+   * change value on wheel; type=search gets a second clear button. */
+  .stratum-input__control[type='number'] {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+  .stratum-input__control[type='number']::-webkit-outer-spin-button,
+  .stratum-input__control[type='number']::-webkit-inner-spin-button {
+    appearance: none;
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .stratum-input__control[type='search'] {
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  .stratum-input__control[type='search']::-webkit-search-cancel-button,
+  .stratum-input__control[type='search']::-webkit-search-decoration {
+    appearance: none;
+    -webkit-appearance: none;
+    display: none;
+  }
+
+  /* Date and time types paint a calendar/clock button whose glyph is a fixed
+   * dark bitmap: it survives `color` and goes almost invisible on the dark
+   * theme's surface. It is redrawn as a mask painted with the field's own
+   * adornment token, so the glyph tracks the theme like every other icon here.
+   *
+   * `appearance: none` is deliberately NOT set on the control for these types.
+   * On WebKit it takes the whole date editor with it — the segmented
+   * day/month/year fields stop rendering — so only the indicator is restyled.
+   *
+   * The colour inside the data URI is not a colour decision: a mask reads alpha
+   * only, so every visible pixel is painted by `background` above. */
+  .stratum-input__control::-webkit-calendar-picker-indicator {
+    --_picker-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M5 1.9v2.3M11 1.9v2.3M2.7 7h10.6M3.7 3.4h8.6a1.2 1.2 0 0 1 1.2 1.2v8.2a1.2 1.2 0 0 1-1.2 1.2H3.7a1.2 1.2 0 0 1-1.2-1.2V4.6a1.2 1.2 0 0 1 1.2-1.2Z' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+
+    inline-size: 1em;
+    block-size: 1em;
+    margin: 0;
+    margin-inline-start: var(--stratum-space-3);
+    padding: 0;
+    cursor: pointer;
+    opacity: 1;
+    background: var(--_adornment-fg);
+    -webkit-mask: var(--_picker-glyph) center / contain no-repeat;
+    mask: var(--_picker-glyph) center / contain no-repeat;
+  }
+  .stratum-input__control::-webkit-calendar-picker-indicator:hover {
+    background: var(--_action-fg-hover);
+  }
+  /* Firefox draws its own picker button and exposes no pseudo-element for it.
+   * It does honour `color-scheme`, which ThemeProvider already sets, so the
+   * glyph at least follows light/dark there. Nothing further is portable. */
+
+  /* type=file is a real native control and has to stay one: the file picker
+   * cannot be opened from script without a genuine user gesture on a genuine
+   * file input, so this can never become a styled <Button>. Only its button
+   * pseudo-element is restyled — to the same metrics and tokens as a small
+   * `default` Button — so the field stops looking like a raw form control. */
+  .stratum-input__control[type='file'] {
+    padding-block: 0;
+    cursor: pointer;
+  }
+  .stratum-input__control[type='file']::file-selector-button {
+    block-size: var(--_action);
+    margin: 0;
+    margin-inline-end: var(--stratum-space-4);
+    padding-inline: var(--stratum-space-4);
+    font: inherit;
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-none);
+    color: var(--stratum-text);
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-input__control[type='file']::file-selector-button:hover {
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-input__control[type='file']:disabled::file-selector-button {
+    color: var(--stratum-text-disabled);
+    background: var(--stratum-surface-disabled);
+    border-color: var(--stratum-border);
+    cursor: not-allowed;
+  }
+
+  /* type=color must also stay native — it is the only way to reach the
+   * platform colour picker. The UA wraps the swatch in its own padded box with
+   * a platform border; both are replaced so the swatch reads as a Stratum
+   * control. The two engine prefixes live in separate rules because an unknown
+   * pseudo-element would invalidate the whole block. */
+  .stratum-input__control[type='color'] {
+    flex: 0 0 auto;
+    inline-size: var(--_action);
+    block-size: var(--_action);
+    padding: 0;
+    background: none;
+    cursor: pointer;
+  }
+  .stratum-input__control[type='color']::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+  .stratum-input__control[type='color']::-webkit-color-swatch {
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-xs);
+  }
+  .stratum-input__control[type='color']::-moz-color-swatch {
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-xs);
+  }
+
+  /* Forced colours: the swatch and the file button are the two places here that
+   * carry meaning through a fill, so both need a real system-keyword boundary
+   * once the OS discards ours. */
+  @media (forced-colors: active) {
+    .stratum-input__control::-webkit-calendar-picker-indicator {
+      background: ButtonText;
+    }
+    .stratum-input__control[type='file']::file-selector-button {
+      color: ButtonText;
+      background: ButtonFace;
+      border-color: ButtonBorder;
+    }
+    .stratum-input__control[type='file']:disabled::file-selector-button {
+      color: GrayText;
+      border-color: GrayText;
+    }
+    .stratum-input__control[type='color']::-webkit-color-swatch {
+      border-color: CanvasText;
+    }
+    .stratum-input__control[type='color']::-moz-color-swatch {
+      border-color: CanvasText;
+    }
+  }
+
+  /* -- Adornments ---------------------------------------------------------- */
+  .stratum-input__adornment {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    flex-shrink: 0;
+    color: var(--_adornment-fg);
+    /* Icons ride the type step so the field never looks top-heavy. */
+    font-size: 1.05em;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .stratum-input__adornment > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  /* Action buttons rendered inside a suffix slot would otherwise inherit the
+   * adornment's 1.05em and compound it with their own. */
+  .stratum-input__adornment .stratum-input__action {
+    font-size: 1em;
+  }
+
+  /* -- In-field action buttons (clear, reveal, generate, steppers) ---------- */
+  .stratum-input__action {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+
+    width: var(--_action);
+    height: var(--_action);
+    font-size: 1.05em;
+
+    color: var(--_action-fg);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+
+    transition: var(--stratum-transition-control);
+  }
+
+  /* WCAG 2.2 SC 2.5.8 wants a 24x24 target. At sm the visible button is
+   * smaller than that, so the hit area is expanded with a transparent outset
+   * instead of inflating the visual box. min() keeps lg from being shrunk. */
+  .stratum-input__action::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, calc((var(--_action) - var(--stratum-space-12)) / 2));
+  }
+
+  .stratum-input__action:hover:not(:disabled) {
+    color: var(--_action-fg-hover);
+    background: var(--_action-bg-hover);
+  }
+
+  .stratum-input__action:active:not(:disabled) {
+    background: var(--stratum-surface-active);
+  }
+
+  .stratum-input__action:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .stratum-input__action > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-input__action[aria-pressed='true'] {
+    color: var(--stratum-accent-fg);
+  }
+
+  /* -- Forced colours ------------------------------------------------------
+   * The OS repaints fills and drops shadows, so the field's boundary has to be
+   * a real border, and "invalid" cannot be signalled by colour: it becomes a
+   * heavier border, alongside the error text the Field wrapper renders. */
+  @media (forced-colors: active) {
+    .stratum-input {
+      background: Field;
+      color: FieldText;
+      border-color: ButtonBorder;
+    }
+    .stratum-input:focus-within {
+      border-color: Highlight;
+    }
+    .stratum-input[data-invalid] {
+      border-width: 2px;
+    }
+    .stratum-input[data-disabled] {
+      color: GrayText;
+      border-color: GrayText;
+    }
+    .stratum-input__control:disabled {
+      color: GrayText;
+      -webkit-text-fill-color: GrayText;
+    }
+    .stratum-input__action {
+      color: ButtonText;
+    }
+    .stratum-input__action:disabled {
+      color: GrayText;
+      opacity: 1;
+    }
+    .stratum-input__action[aria-pressed='true'] {
+      color: Highlight;
+    }
+  }
+}

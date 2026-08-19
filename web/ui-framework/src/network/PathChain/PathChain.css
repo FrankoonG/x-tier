@@ -1,0 +1,114 @@
+@layer stratum.components {
+  .stratum-path-chain {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-tight);
+    /* Never grows the row. A path with twelve hops and three alternates has to
+     * occupy exactly the same vertical space as a single-hop path. */
+    white-space: nowrap;
+  }
+
+  .stratum-path-chain[data-size='sm'] { --_fs: var(--stratum-text-2xs); }
+  .stratum-path-chain[data-size='md'] { --_fs: var(--stratum-text-xs); }
+
+  .stratum-path-chain[data-muted] {
+    opacity: 0.6;
+  }
+
+  .stratum-path-chain__inline {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-path-chain__hop {
+    color: var(--_hop);
+    /* Bottom border rather than underline: it sits clear of descenders in a
+     * monospace face and survives forced-colors, where colour is discarded. */
+    border-bottom: 1px solid transparent;
+  }
+
+  .stratum-path-chain__hop[data-status='ok']       { --_hop: var(--stratum-mesh-hop-ok); }
+  .stratum-path-chain__hop[data-status='degraded'] { --_hop: var(--stratum-mesh-hop-degraded); }
+  .stratum-path-chain__hop[data-status='broken']   { --_hop: var(--stratum-mesh-hop-broken); }
+  .stratum-path-chain__hop[data-status='unknown']  { --_hop: var(--stratum-mesh-hop-unknown); }
+
+  /* Degraded and unknown get a non-colour channel too, so the three states
+   * remain separable for colour-vision-deficient users and under forced
+   * colours (WCAG 1.4.1). Broken is left plain: it is the tail-dye case and is
+   * already distinguished by position and by every hop after it matching. */
+  .stratum-path-chain__hop[data-status='degraded'] {
+    border-bottom-color: currentColor;
+  }
+  .stratum-path-chain__hop[data-status='unknown'] {
+    border-bottom-style: dotted;
+    border-bottom-color: currentColor;
+  }
+
+  /* A hop whose own report was overridden by path semantics — it says it is
+   * fine, but an earlier hop is down so it cannot be reached this way. The
+   * override is marked with a DASHED underline rather than reduced opacity:
+   * fading it measured 3.56:1 and failed AA, and dimming text that is already
+   * an error state is the wrong signal anyway. Dashed is distinct from
+   * `degraded`'s solid rule and `unknown`'s dotted one, so all three remain
+   * separable without colour. */
+  .stratum-path-chain__hop[data-subordinated] {
+    border-bottom-style: dashed;
+    border-bottom-color: currentColor;
+  }
+
+  .stratum-path-chain__sep,
+  .stratum-path-chain__ellipsis {
+    color: var(--stratum-mesh-hop-sep);
+    padding-inline: 1px;
+  }
+
+  .stratum-path-chain__ellipsis {
+    cursor: default;
+  }
+
+  .stratum-path-chain__overflow {
+    flex-shrink: 0;
+    padding: 0 var(--stratum-space-2);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: 1.5;
+    color: var(--stratum-text-muted);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-path-chain__overflow:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+    border-color: var(--stratum-border-strong);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-path-chain__hop {
+      color: CanvasText;
+      /* Colour is gone here, so every non-ok state must be carried by the
+       * border style alone. */
+      border-bottom-color: currentColor;
+    }
+    .stratum-path-chain__hop[data-status='ok'] {
+      border-bottom-color: transparent;
+    }
+    .stratum-path-chain__hop[data-status='broken'] {
+      border-bottom-style: double;
+      border-bottom-width: 3px;
+    }
+    .stratum-path-chain__hop[data-subordinated] {
+      color: GrayText;
+    }
+  }
+}

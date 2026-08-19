@@ -1,0 +1,109 @@
+@layer stratum.components {
+  .stratum-avatar {
+    --_size: 32px;
+    --_fs: var(--stratum-text-xs);
+    /* The colour a group uses to separate overlapping avatars. Override it
+     * when the avatars sit on a surface other than the default one. */
+    --_ring: var(--stratum-surface);
+
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+
+    inline-size: var(--_size);
+    block-size: var(--_size);
+    overflow: hidden;
+    user-select: none;
+    vertical-align: middle;
+
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-none);
+    color: var(--stratum-text-secondary);
+    background: var(--stratum-surface-active);
+    border-radius: var(--stratum-radius-full);
+  }
+
+  .stratum-avatar[data-size='xs'] { --_size: 20px; --_fs: var(--stratum-text-2xs); }
+  .stratum-avatar[data-size='sm'] { --_size: 24px; --_fs: var(--stratum-text-2xs); }
+  .stratum-avatar[data-size='md'] { --_size: 32px; --_fs: var(--stratum-text-xs); }
+  .stratum-avatar[data-size='lg'] { --_size: 40px; --_fs: var(--stratum-text-md); }
+  .stratum-avatar[data-size='xl'] { --_size: 56px; --_fs: var(--stratum-text-lg); }
+
+  .stratum-avatar[data-shape='square'] {
+    border-radius: var(--stratum-radius-md);
+  }
+
+  .stratum-avatar__image {
+    inline-size: 100%;
+    block-size: 100%;
+    object-fit: cover;
+    /* An avatar is a crop of a photo, never a stretched one. */
+    object-position: center;
+  }
+
+  .stratum-avatar__initials {
+    /* Slightly tightened: two capitals at default tracking read as two words. */
+    letter-spacing: 0.01em;
+  }
+
+  .stratum-avatar__fallback {
+    display: inline-flex;
+    inline-size: 62%;
+    block-size: 62%;
+    color: var(--stratum-text-subtle);
+  }
+  .stratum-avatar__fallback > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  /* -- Group -----------------------------------------------------------------
+   * The ring is what makes an overlapped stack readable. It is a box-shadow
+   * rather than a border so it does not eat into the avatar's own box and
+   * change the size between grouped and ungrouped use. */
+  .stratum-avatar-group {
+    display: inline-flex;
+    align-items: center;
+    /* Deliberately NOT row-reverse. Reversing the visual order to control
+     * which avatar paints on top desynchronises the reading order from the
+     * visual one (WCAG 1.3.2) and puts the "+N" chip at the start of the row.
+     * Natural paint order — each avatar over the previous one — gives the same
+     * fanned look with the DOM order intact. */
+    flex-direction: row;
+  }
+
+  .stratum-avatar-group > .stratum-avatar {
+    box-shadow: 0 0 0 2px var(--_ring);
+  }
+
+  .stratum-avatar-group > .stratum-avatar:not(:first-child) {
+    margin-inline-start: calc(-1 * var(--stratum-space-3));
+  }
+
+  .stratum-avatar--overflow {
+    background: var(--stratum-surface-sunken);
+    color: var(--stratum-text-muted);
+    border: 1px solid var(--stratum-border);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-avatar {
+      border: 1px solid CanvasText;
+      background: Canvas;
+      color: CanvasText;
+    }
+    /* The separating ring is a shadow, which the OS drops; the border above
+     * takes over, and the overlap offset is widened so two adjacent borders
+     * do not merge into one thick line. */
+    .stratum-avatar-group > .stratum-avatar {
+      box-shadow: none;
+    }
+    .stratum-avatar-group > .stratum-avatar:not(:first-child) {
+      margin-inline-start: calc(-1 * var(--stratum-space-1));
+    }
+  }
+}

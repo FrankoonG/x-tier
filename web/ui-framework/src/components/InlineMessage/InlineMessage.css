@@ -1,0 +1,66 @@
+@layer stratum.components {
+  .stratum-inline-message {
+    --_fg: var(--stratum-text-secondary);
+    --_icon: var(--stratum-unknown);
+
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--_fg);
+  }
+
+  .stratum-inline-message[data-size='xs'] { --_fs: var(--stratum-text-2xs); }
+  .stratum-inline-message[data-size='sm'] { --_fs: var(--stratum-text-xs); }
+
+  .stratum-inline-message[data-variant='info'] {
+    --_fg: var(--stratum-info-fg);
+    --_icon: var(--stratum-info);
+  }
+  .stratum-inline-message[data-variant='success'] {
+    --_fg: var(--stratum-success-fg);
+    --_icon: var(--stratum-success);
+  }
+  .stratum-inline-message[data-variant='warning'] {
+    --_fg: var(--stratum-warning-fg);
+    --_icon: var(--stratum-warning);
+  }
+  .stratum-inline-message[data-variant='danger'] {
+    --_fg: var(--stratum-danger-fg);
+    --_icon: var(--stratum-danger);
+  }
+  .stratum-inline-message[data-variant='neutral'] {
+    --_fg: var(--stratum-text-muted);
+    --_icon: var(--stratum-unknown);
+  }
+  .stratum-inline-message[data-variant='accent'] {
+    --_fg: var(--stratum-accent-fg);
+    --_icon: var(--stratum-accent);
+  }
+
+  .stratum-inline-message__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    /* Optically centred on the first line of text rather than on the whole
+     * block, so a two-line message does not float its glyph to the middle. */
+    height: calc(var(--_fs) * var(--stratum-leading-snug));
+    font-size: 1.15em;
+    color: var(--_icon);
+  }
+
+  .stratum-inline-message__text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-inline-message,
+    .stratum-inline-message__icon {
+      color: CanvasText;
+    }
+  }
+}

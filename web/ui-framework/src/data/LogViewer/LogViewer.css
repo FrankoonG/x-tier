@@ -1,0 +1,538 @@
+@layer stratum.components {
+  .stratum-log {
+    /* Per-instance contract. A consumer retheming one pane sets these rather
+     * than fighting selectors. */
+    --_bg: var(--stratum-code-bg);
+    --_fg: var(--stratum-code-fg);
+    --_border: var(--stratum-border);
+    --_fs: var(--stratum-text-xs);
+    --_leading: 1.5;
+    /* CONTENT width in characters, exclusive of the trailing gutter padding,
+     * which the width calc adds back. Under `box-sizing: border-box` a bare
+     * `13ch` silently eats the padding out of the text's own space and clips
+     * the last glyph — the column must fit its widest rendering, because a
+     * fixed-width column gives no reflow to make the collision obvious. */
+    --_gutter-time: 12.5ch;
+    --_gutter-level: 5.5ch;
+    --_gutter-actions: 20px;
+    --_viewport-h: 24rem;
+
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* `datetime` carries a full localised date; `relative` is a short phrase. */
+  .stratum-log[data-ts-format='datetime'] { --_gutter-time: 24.5ch; }
+  .stratum-log[data-ts-format='relative'] { --_gutter-time: 8.5ch; }
+
+  .stratum-log[data-density='comfortable'] {
+    --_fs: var(--stratum-text-sm);
+    --_leading: 1.65;
+  }
+
+  .stratum-log[data-density='comfortable'][data-wrap] {
+    --_leading: 1.7;
+  }
+
+  /* -- Toolbar ------------------------------------------------------------- */
+
+  .stratum-log__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    padding: var(--stratum-space-3) var(--stratum-space-4);
+    background: var(--stratum-surface);
+    border-bottom: 1px solid var(--stratum-border);
+    border-start-start-radius: inherit;
+    border-start-end-radius: inherit;
+  }
+
+  /* Layout slot only. The field itself is a <SearchInput>, so its border,
+   * radius, typography, focus ring, clear button and forced-colors treatment
+   * all come from Input.css rather than being restated here. */
+  .stratum-log__search {
+    flex: 1 1 12rem;
+    min-width: 8rem;
+  }
+
+  /* An unparseable filter pattern is a WARNING, not an error: the operator is
+   * mid-typing and nothing is wrong yet. Input's `invalid` state is danger-red
+   * by default, so the three boundary properties are retinted through the
+   * component's own private custom properties — no selector fight, and the
+   * amber matches `__filter-error` below. */
+  .stratum-log__search[data-invalid] {
+    --_border: var(--stratum-warning);
+    --_border-focus: var(--stratum-warning);
+    --_ring: var(--stratum-warning);
+  }
+
+  .stratum-log__filter-error {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-warning-fg);
+  }
+
+  .stratum-log__levels {
+    display: flex;
+    gap: var(--stratum-space-1);
+  }
+
+  .stratum-log__level-chip {
+    --_chip-fg: var(--stratum-text-subtle);
+    padding: 2px var(--stratum-space-3);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: 1.5;
+    color: var(--_chip-fg);
+    background: transparent;
+    /* A real border, not a fill: the on/off distinction has to survive forced
+     * colours, where background-color is discarded. */
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-log__level-chip:hover {
+    background: var(--stratum-surface-hover);
+  }
+
+  /* Off is the marked state — struck through, so "excluded" is legible without
+   * relying on the colour difference alone (WCAG 1.4.1). `text-muted` rather
+   * than `text-disabled`: the chip is not disabled, it is a live toggle, and an
+   * operator has to be able to read WHICH level they switched off. */
+  .stratum-log__level-chip:not([data-on]) {
+    color: var(--stratum-text-muted);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+
+  .stratum-log__level-chip[data-on][data-level='trace'] { --_chip-fg: var(--stratum-log-trace); }
+  .stratum-log__level-chip[data-on][data-level='debug'] { --_chip-fg: var(--stratum-log-debug); }
+  .stratum-log__level-chip[data-on][data-level='info']  { --_chip-fg: var(--stratum-log-info); }
+  .stratum-log__level-chip[data-on][data-level='warn']  { --_chip-fg: var(--stratum-log-warn); }
+  .stratum-log__level-chip[data-on][data-level='error'] { --_chip-fg: var(--stratum-log-error); }
+  .stratum-log__level-chip[data-on][data-level='fatal'] { --_chip-fg: var(--stratum-log-fatal); }
+  .stratum-log__level-chip[data-on] {
+    border-color: currentColor;
+  }
+
+  .stratum-log__actions {
+    display: flex;
+    gap: var(--stratum-space-1);
+    margin-inline-start: auto;
+  }
+
+  .stratum-log__action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    font-size: var(--stratum-text-md);
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-log__action:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-log__action[aria-pressed='true'] {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent-border);
+  }
+  .stratum-log__action[data-copy-state='copied'] { color: var(--stratum-success); }
+  .stratum-log__action[data-copy-state='error'] { color: var(--stratum-danger); }
+
+  /* -- Viewport ------------------------------------------------------------ */
+
+  .stratum-log__frame {
+    position: relative;
+    min-width: 0;
+  }
+
+  .stratum-log__viewport {
+    position: relative;
+    height: var(--_viewport-h);
+    overflow: auto;
+    /* `overscroll-behavior` keeps a tailing pane from chaining its scroll to
+     * the page, which is the fastest way to lose your place in a long log. */
+    overscroll-behavior: contain;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    line-height: var(--_leading);
+    font-variant-numeric: var(--stratum-numeric);
+    /* Layout and paint containment, but deliberately NOT `size`: the viewport's
+     * inline size still has to come from its parent. Without containment the
+     * engine re-evaluates layout against the whole (very tall) spacer on each
+     * scroll frame, which is where virtualization jank usually comes from. */
+    contain: layout paint;
+  }
+
+  /* Structurally identical to a real row, so the message column's available
+   * width and the font's advance are measured rather than assumed. Absolutely
+   * positioned against the viewport so it reports the VIEWPORT width even when
+   * the spacer is wider. */
+  .stratum-log__metrics {
+    position: absolute;
+    top: 0;
+    inset-inline: 0;
+    display: flex;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .stratum-log__probe {
+    display: inline-block;
+    white-space: pre;
+  }
+
+  .stratum-log__spacer {
+    position: relative;
+    min-width: 100%;
+  }
+
+  /* -- Rows ---------------------------------------------------------------- */
+
+  .stratum-log__row {
+    position: absolute;
+    inset-inline-start: 0;
+    display: flex;
+    align-items: flex-start;
+    /* Width comes from the spacer, which in no-wrap mode is sized to the
+     * longest line in the DATA rather than to whichever rows are mounted. That
+     * is what stops the horizontal scrollbar jittering during vertical scroll. */
+    width: 100%;
+    /* Selection has to work across the window, so nothing here may disable it
+     * except the deliberately excluded gutters. */
+    user-select: text;
+  }
+
+  .stratum-log__row:hover {
+    background: var(--stratum-surface-hover);
+  }
+
+  .stratum-log__row[data-active] {
+    background: var(--stratum-selected-bg);
+    /* The active row is a cursor, not a selection, so it also gets a solid
+     * leading rule — visible under forced colours where the fill is dropped. */
+    box-shadow: inset 2px 0 0 0 var(--stratum-accent);
+  }
+
+  .stratum-log__cell {
+    flex: 0 0 auto;
+  }
+
+  .stratum-log__actions-cell {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--_gutter-actions);
+    height: calc(1em * var(--_leading));
+    user-select: none;
+  }
+
+  .stratum-log__row-copy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    font-size: 11px;
+    color: var(--stratum-text-subtle);
+    background: transparent;
+    border: none;
+    border-radius: var(--stratum-radius-xs);
+    opacity: 0;
+    transition: var(--stratum-transition-control), opacity var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+  .stratum-log__row:hover .stratum-log__row-copy,
+  .stratum-log__row[data-active] .stratum-log__row-copy,
+  .stratum-log__row-copy:focus-visible {
+    opacity: 1;
+  }
+  .stratum-log__row-copy:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-active);
+  }
+
+  .stratum-log__time {
+    width: calc(var(--_gutter-time) + var(--stratum-space-4));
+    padding-inline-end: var(--stratum-space-4);
+    color: var(--stratum-code-gutter-fg);
+    text-align: end;
+    user-select: none;
+    /* Safety net for a locale whose formatting is wider than the column: clip
+     * rather than let it run into the level column. */
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-log__level {
+    width: calc(var(--_gutter-level) + var(--stratum-space-4));
+    padding-inline-end: var(--stratum-space-4);
+    overflow: hidden;
+    white-space: nowrap;
+    font-weight: var(--stratum-weight-medium);
+    text-align: end;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    user-select: none;
+  }
+
+  .stratum-log__row[data-level='trace'] .stratum-log__level { color: var(--stratum-log-trace); }
+  .stratum-log__row[data-level='debug'] .stratum-log__level { color: var(--stratum-log-debug); }
+  .stratum-log__row[data-level='info']  .stratum-log__level { color: var(--stratum-log-info); }
+  .stratum-log__row[data-level='warn']  .stratum-log__level { color: var(--stratum-log-warn); }
+  .stratum-log__row[data-level='error'] .stratum-log__level { color: var(--stratum-log-error); }
+  .stratum-log__row[data-level='fatal'] .stratum-log__level { color: var(--stratum-log-fatal); }
+
+  /* Severity is never carried by the level column's colour alone. error and
+   * fatal also get a coloured rule down the message column, and fatal gets a
+   * tinted row — three channels, so the two most important states survive both
+   * colour-vision deficiency and forced colours. */
+  .stratum-log__row[data-level='error'] .stratum-log__text,
+  .stratum-log__row[data-level='fatal'] .stratum-log__text {
+    border-inline-start: 2px solid var(--stratum-log-error);
+    padding-inline-start: var(--stratum-space-2);
+    margin-inline-start: calc(-1 * var(--stratum-space-2) - 2px);
+  }
+  .stratum-log__row[data-level='fatal'] {
+    background: var(--stratum-danger-subtle);
+  }
+  .stratum-log__row[data-level='fatal'] .stratum-log__text {
+    border-inline-start-color: var(--stratum-log-fatal);
+  }
+  .stratum-log__row[data-level='warn'] .stratum-log__text {
+    border-inline-start: 2px solid var(--stratum-log-warn);
+    padding-inline-start: var(--stratum-space-2);
+    margin-inline-start: calc(-1 * var(--stratum-space-2) - 2px);
+  }
+
+  /* NOT OBSERVED. An unobserved timestamp or level must never look like a
+   * measured one, and must never look like a failure either — hence the em dash
+   * plus italic, matching StateMatrix's treatment.
+   *
+   * `unknown-fg`, not `unknown`: the latter is the marker/graphic role and
+   * measures ~3.7:1 as 11px text on the code surface. This is text. */
+  .stratum-log__time[data-unobserved],
+  .stratum-log__level[data-unobserved] {
+    color: var(--stratum-unknown-fg);
+    font-style: italic;
+  }
+
+  .stratum-log__text {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-inline-end: var(--stratum-space-4);
+    /* Default is no wrapping; the row is one text line tall and the spacer
+     * supplies the horizontal scroll extent. */
+    white-space: pre;
+    tab-size: 4;
+  }
+
+  .stratum-log[data-wrap] .stratum-log__row .stratum-log__text {
+    white-space: pre-wrap;
+    /* `break-all`, NOT `overflow-wrap: anywhere`.
+     *
+     * This is load-bearing for the virtualizer, not a typographic preference.
+     * `anywhere` still prefers a word boundary: a line reading `row0 <200-char
+     * token>` moves the whole token to the next line, wasting the remainder of
+     * the first — so the row occupies one more line than a character count
+     * predicts, and an absolutely positioned row then paints over its
+     * neighbour. `break-all` breaks at the column, exactly like a terminal,
+     * which makes `ceil(chars / charsPerLine)` an EXACT height for monospace
+     * text rather than an estimate.
+     *
+     * Log lines also routinely contain unbroken base64 blobs and hashes, which
+     * have to break somewhere regardless. */
+    word-break: break-all;
+    overflow-wrap: anywhere;
+  }
+
+  .stratum-log__source {
+    margin-inline-end: var(--stratum-space-3);
+    color: var(--stratum-code-meta);
+  }
+
+  /* -- ANSI ---------------------------------------------------------------- */
+
+  .stratum-log__span[data-bold]      { font-weight: var(--stratum-weight-bold); }
+  /* SGR 2 (faint). A COLOUR, not an opacity multiplier.
+   *
+   * `opacity: 0.65` composited the default log foreground down from ~13:1 to
+   * ~2.5:1 — a straight 1.4.3 failure on ordinary log text — and, because
+   * opacity applies to the composited result, it dragged every ANSI hue and
+   * every search hit down with it. `code-meta` is the neutral the source prefix
+   * already uses, so faint still reads as a step below normal at 5.6:1.
+   *
+   * Two exemptions fall out of the cascade, both wanted:
+   *   - an ANSI colour arrives as an INLINE style and outranks any layered
+   *     rule, so a coloured faint span keeps its hue at full strength;
+   *   - `:not(.stratum-log__match)` because the highlight owns BOTH of its
+   *     colours on purpose (see below). This selector would otherwise outweigh
+   *     it and repaint the hit, and a search hit is the one run of text that
+   *     must never be the quiet one. */
+  .stratum-log__span[data-dim]:not(.stratum-log__match) {
+    color: var(--stratum-code-meta);
+  }
+  .stratum-log__span[data-italic]    { font-style: italic; }
+  .stratum-log__span[data-underline] { text-decoration-line: underline; text-underline-offset: 2px; }
+  .stratum-log__span[data-strike]    { text-decoration-line: line-through; }
+  .stratum-log__span[data-underline][data-strike] {
+    text-decoration-line: underline line-through;
+  }
+  /* SGR 8. The characters stay in the DOM so selection and copy still see
+   * them — hiding text by removing it would silently corrupt a copied line. */
+  .stratum-log__span[data-conceal] {
+    color: transparent;
+  }
+
+  /* The highlight owns both of its colours. ANSI paint is dropped for the
+   * length of the match (see LogViewer.tsx) precisely so this pair is the one
+   * that applies — an author-chosen foreground on this background is regularly
+   * unreadable, and an illegible search hit defeats the search. */
+  .stratum-log__match {
+    color: var(--stratum-code-fg);
+    background: var(--stratum-code-match);
+    /* Not only a background: the rule keeps the hit identifiable in the middle
+     * of a heavily coloured line. */
+    box-shadow: inset 0 -1px 0 0 var(--stratum-code-match-rule);
+    border-radius: var(--stratum-radius-xs);
+  }
+
+  /* -- Overlays ------------------------------------------------------------ */
+
+  .stratum-log__empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    margin: 0;
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-muted);
+    pointer-events: none;
+  }
+
+  .stratum-log__jump {
+    position: absolute;
+    inset-block-end: var(--stratum-space-6);
+    inset-inline-end: var(--stratum-space-8);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    height: 26px;
+    padding-inline: var(--stratum-space-5);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-full);
+    box-shadow: var(--stratum-shadow-md);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-log__jump:hover {
+    background: var(--stratum-surface-hover);
+  }
+  /* New lines arrived while detached — the one state here worth calling
+   * attention to, so it takes the accent fill. It does not pulse: a log that
+   * blinks at you continuously is noise, and per the motion rules only
+   * anomalies loop. */
+  .stratum-log__jump[data-new] {
+    color: var(--stratum-accent-on-solid);
+    background: var(--stratum-accent);
+    border-color: var(--stratum-accent);
+  }
+  .stratum-log__jump[data-new]:hover {
+    background: var(--stratum-accent-hover);
+  }
+
+  .stratum-log__summary {
+    display: flex;
+    gap: var(--stratum-space-4);
+    margin: 0;
+    padding: var(--stratum-space-2) var(--stratum-space-4);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+    background: var(--stratum-surface);
+    border-top: 1px solid var(--stratum-border);
+    border-end-start-radius: inherit;
+    border-end-end-radius: inherit;
+  }
+
+  .stratum-log__copy-state[data-copy-state='copied'] { color: var(--stratum-success-fg); }
+  .stratum-log__copy-state[data-copy-state='error'] { color: var(--stratum-danger-fg); }
+
+  /* -- Forced colours ------------------------------------------------------
+   * Fills and author colours are discarded by the OS, so every distinction
+   * that normally rides on one needs a border or a text channel here. */
+  @media (forced-colors: active) {
+    .stratum-log {
+      border-color: CanvasText;
+    }
+    .stratum-log__row[data-active] {
+      background: Highlight;
+      color: HighlightText;
+      box-shadow: none;
+      outline: 2px solid Highlight;
+      outline-offset: -2px;
+    }
+    .stratum-log__row[data-level='error'] .stratum-log__text,
+    .stratum-log__row[data-level='fatal'] .stratum-log__text,
+    .stratum-log__row[data-level='warn'] .stratum-log__text {
+      border-inline-start-color: CanvasText;
+    }
+    .stratum-log__row[data-level='fatal'] {
+      background: Canvas;
+      outline: 1px solid CanvasText;
+      outline-offset: -1px;
+    }
+    .stratum-log__time[data-unobserved],
+    .stratum-log__level[data-unobserved] {
+      color: GrayText;
+    }
+    .stratum-log__match {
+      background: Highlight;
+      color: HighlightText;
+      forced-color-adjust: none;
+    }
+    .stratum-log__level-chip[data-on] {
+      border-color: CanvasText;
+    }
+    .stratum-log__level-chip:not([data-on]) {
+      color: GrayText;
+    }
+    .stratum-log__action[aria-pressed='true'] {
+      border-color: Highlight;
+      color: Highlight;
+    }
+    .stratum-log__jump[data-new] {
+      background: Highlight;
+      color: HighlightText;
+      border-color: Highlight;
+    }
+    /* ANSI colours are author-supplied and get repainted by the OS; the
+     * non-colour attributes still carry meaning, so they are left alone.
+     * GrayText is the system's own "faint", and unlike an inline ANSI colour it
+     * is not overridden here because forced-colors discards inline colours.
+     *
+     * The match exemption is repeated: this selector outweighs
+     * `.stratum-log__match` above, and GrayText on Highlight is exactly the
+     * unreadable pairing forced colours exists to prevent. */
+    .stratum-log__span[data-dim]:not(.stratum-log__match) {
+      color: GrayText;
+    }
+  }
+}

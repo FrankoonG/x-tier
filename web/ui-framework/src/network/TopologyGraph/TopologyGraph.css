@@ -1,0 +1,414 @@
+@layer stratum.components {
+  .stratum-topology {
+    /* -- Public per-instance knobs ---------------------------------------- */
+
+    /* One shared budget for the whole path draw. Each edge is given a slice of
+     * it proportional to its length, so a 1-hop and a 5-hop path finish at the
+     * same instant — see TopologyGraph.tsx. Because it resolves to a motion
+     * token it already carries --stratum-motion-scale, so reduced motion
+     * halves it without any JavaScript. */
+    --stratum-topology-draw-total: var(--stratum-duration-2xl);
+
+    /* Time for the flow pulse to advance ONE dash step. Per-edge it is
+     * multiplied by 0.33-1.75 according to observed throughput, so a busy link
+     * visibly marches faster than a quiet one: roughly 2.0 steps/second at the
+     * top of the range down to 0.4 at the bottom.
+     *
+     * The x3.2 factor is not arbitrary. An earlier revision used x8 against a
+     * keyframe that marched 50 dash periods per cycle, which put the busiest
+     * edge near 40 steps/second — fast enough to strobe, and misread as a
+     * refresh-rate artefact because a 240Hz display resolves that motion while
+     * a 60Hz one aliases it into a stutter. The keyframe now advances exactly
+     * one step per cycle, so this token finally means what it says. */
+    --stratum-topology-flow-period: calc(var(--stratum-duration-2xl) * 3.2);
+
+    /* INVARIANT: --stratum-flow-step MUST equal the sum of the dash pattern.
+     * The stratum-flow keyframe advances by exactly one step per cycle, which
+     * is what makes the loop seamless — every dash lands where its neighbour
+     * just was. Change the dash and you must change the step with it, or the
+     * animation develops a visible jump on every restart. They are declared
+     * adjacent so the pair is hard to break by accident. */
+    --stratum-topology-flow-dash: 6 14;
+    --stratum-flow-step: 20;
+
+    --stratum-topology-dim: 0.2;
+
+    position: relative;
+    display: block;
+    /* Fills a sized parent; falls back to `min-height` when the parent is
+     * auto-height. The canvas is taken out of flow below so the SVG's intrinsic
+     * viewBox aspect ratio can never dictate the panel's height — which is what
+     * makes an unconstrained graph render a thousand pixels tall. */
+    height: 100%;
+    min-height: 320px;
+    color: var(--stratum-text-secondary);
+    background: var(--stratum-mesh-canvas);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-lg);
+    overflow: hidden;
+    /* A drag that starts on a node must not select the labels behind it. */
+    user-select: none;
+  }
+
+  .stratum-topology__canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .stratum-topology[data-interactive] .stratum-topology__canvas {
+    /* Pinch and pan are handled from pointer events; without this the browser
+     * claims the gesture and scrolls the page instead. */
+    touch-action: none;
+    cursor: grab;
+  }
+  .stratum-topology[data-interactive] .stratum-topology__canvas:active {
+    cursor: grabbing;
+  }
+
+  .stratum-topology__empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    margin: 0;
+    padding: var(--stratum-space-8);
+    color: var(--stratum-text-muted);
+    font-size: var(--stratum-text-sm);
+    font-style: italic;
+  }
+
+  /* -- Canvas ------------------------------------------------------------- */
+
+  .stratum-topology__grid-dot {
+    fill: var(--stratum-mesh-grid);
+  }
+
+  /* -- Consumer layers -----------------------------------------------------
+   * An injected annotation must never take a node's or an edge's pointer
+   * target away, so a layer is transparent to the pointer by default. A
+   * consumer who wants an interactive annotation sets `pointer-events` on
+   * their own element, which works normally inside a `none` parent.
+   */
+  .stratum-topology__layer {
+    pointer-events: none;
+  }
+
+  /* -- Edges --------------------------------------------------------------
+   * STATUS and TRAFFIC are independent channels and are never merged:
+   *   status  -> stroke colour AND dash pattern
+   *   traffic -> stroke width, opacity, flow animation
+   * A healthy link whose throughput was never measured is a real and common
+   * state, and it must not be drawn as a link measured at zero.
+   */
+
+  /* --_status-colour / --_status-dash are what a REGISTERED status sets inline,
+   * and they are read through --_edge-colour rather than written to `stroke`
+   * directly. Inline declarations outrank every stylesheet rule, so a colour
+   * applied inline could never be neutralised under forced-colors; going
+   * through the private property keeps that override in the stylesheet's hands.
+   * A built-in status sets neither and resolves purely from tokens. */
+  .stratum-topology__edge-group {
+    --_edge-colour: var(--_status-colour, var(--stratum-mesh-edge-idle));
+    --_edge-dash: var(--_status-dash, none);
+    transition: opacity var(--stratum-duration-sm) var(--stratum-ease-out);
+  }
+
+  .stratum-topology__edge-group[data-status='ok'] {
+    --_edge-colour: var(--_status-colour, var(--stratum-mesh-edge-idle));
+    --_edge-dash: var(--_status-dash, none);
+  }
+  .stratum-topology__edge-group[data-status='degraded'] {
+    --_edge-colour: var(--_status-colour, var(--stratum-mesh-medium));
+    --_edge-dash: var(--_status-dash, 9 5);
+  }
+  .stratum-topology__edge-group[data-status='down'] {
+    --_edge-colour: var(--_status-colour, var(--stratum-mesh-edge-down));
+    --_edge-dash: var(--_status-dash, 3 4);
+  }
+  /* Not observed. Dotted, never coloured — an unknown link is not a warning. */
+  .stratum-topology__edge-group[data-status='unknown'] {
+    --_edge-colour: var(--_status-colour, var(--stratum-mesh-edge-idle));
+    --_edge-dash: var(--_status-dash, 1 5);
+  }
+
+  .stratum-topology__edge {
+    fill: none;
+    stroke: var(--_edge-colour);
+    stroke-width: var(--_edge-width, 1.4);
+    stroke-dasharray: var(--_edge-dash);
+    stroke-linecap: round;
+  }
+
+  /* Traffic never observed: the stroke fades but the link is still plainly
+   * there. Distinct from `status: unknown`, which changes the dash instead —
+   * two independent facts, two independent channels. */
+  .stratum-topology__edge-group[data-traffic='unobserved'] .stratum-topology__edge {
+    opacity: 0.6;
+  }
+
+  /* Capacity ghost, drawn behind the live stroke. Width encodes what the link
+   * could carry, so the stroke on top reads as utilisation. */
+  .stratum-topology__edge-ghost {
+    fill: none;
+    stroke: var(--_edge-colour);
+    stroke-width: var(--_ghost-width, 2);
+    stroke-linecap: round;
+    opacity: 0.22;
+  }
+
+  /* Flow. Only edges with observed, non-zero throughput get this element at
+   * all, so a resting graph is completely still. */
+  .stratum-topology__edge-flow {
+    fill: none;
+    stroke: var(--stratum-mesh-edge-flow);
+    stroke-width: calc(var(--_edge-width, 1.4) * 0.62);
+    stroke-linecap: round;
+    stroke-dasharray: var(--stratum-topology-flow-dash);
+    /* Derived from the registered number the keyframe animates, rather than
+     * animated directly — see the stratum-flow keyframe in tokens.motion.css
+     * for why animating this property against a var() silently goes discrete
+     * and freezes the line. */
+    stroke-dashoffset: calc(var(--stratum-flow-pos) * var(--stratum-flow-step, 20));
+    /* tokens.motion.css defines --stratum-anim-flow only inside its
+     * reduced-motion block, so the fallback is the animation and the token is
+     * the off switch. */
+    animation: var(--stratum-anim-flow, stratum-flow var(--_flow-duration) linear infinite);
+  }
+  .stratum-topology__edge-group[data-flow-direction='reverse'] .stratum-topology__edge-flow {
+    animation-direction: reverse;
+  }
+
+  /* Selected path. `both` fill-mode holds the pre-delay state, so an edge later
+   * in the path is invisible until its slice of the shared budget begins. */
+  .stratum-topology__edge-path {
+    fill: none;
+    stroke: var(--stratum-mesh-edge-active);
+    stroke-width: calc(var(--_edge-width, 1.4) + 2.4);
+    stroke-linecap: round;
+    stroke-dasharray: var(--stratum-path-len, 1000);
+    /* Derived, not animated directly — same substitution trap as the flow edge. */
+    stroke-dashoffset: calc(var(--stratum-draw-pos) * var(--stratum-path-len, 1000));
+    animation: stratum-draw var(--_draw-duration, var(--stratum-duration-2xl))
+      var(--stratum-ease-out) var(--_draw-delay, 0ms) both;
+  }
+
+  .stratum-topology__edge-arrow {
+    fill: var(--_edge-colour);
+    stroke: none;
+  }
+  .stratum-topology__edge-group[data-traffic='unobserved'] .stratum-topology__edge-arrow {
+    opacity: 0.6;
+  }
+  .stratum-topology__edge-group[data-on-path] .stratum-topology__edge-arrow {
+    fill: var(--stratum-mesh-edge-active);
+  }
+
+  .stratum-topology__edge-label {
+    fill: var(--stratum-mesh-edge-label);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    text-anchor: middle;
+    /* Halo, so a label crossing another edge stays readable without a plate
+     * that would occlude the geometry underneath. */
+    paint-order: stroke;
+    stroke: var(--stratum-mesh-canvas);
+    stroke-width: 3;
+    stroke-linejoin: round;
+  }
+
+  /* An 8px pointer target on a 1.4px line, with no change to what is drawn. */
+  .stratum-topology__edge-hit {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 14;
+    pointer-events: stroke;
+    cursor: pointer;
+  }
+
+  /* -- Nodes -------------------------------------------------------------- */
+
+  .stratum-topology__node {
+    transition: opacity var(--stratum-duration-sm) var(--stratum-ease-out);
+  }
+  .stratum-topology[data-interactive] .stratum-topology__node {
+    cursor: grab;
+  }
+  .stratum-topology[data-interactive] .stratum-topology__node:active {
+    cursor: grabbing;
+  }
+
+  .stratum-topology__node-hit {
+    fill: transparent;
+    stroke: none;
+    /* `all` rather than relying on the transparent fill being hit-tested,
+     * which is not consistent across engines. */
+    pointer-events: all;
+  }
+
+  /* The focus ring is drawn rather than left to `outline`, because outline on
+   * an SVG group is clipped or ignored depending on the engine, and a focus
+   * ring that renders in three of four browsers is not a focus ring. */
+  .stratum-topology__node:focus {
+    outline: none;
+  }
+  .stratum-topology__node-focus {
+    fill: none;
+    stroke: var(--stratum-focus-ring);
+    stroke-width: var(--stratum-focus-ring-width);
+    opacity: 0;
+  }
+  .stratum-topology__node:focus-visible .stratum-topology__node-focus {
+    opacity: 1;
+  }
+
+  .stratum-topology__node-selected {
+    fill: none;
+    stroke: var(--stratum-mesh-edge-active);
+    stroke-width: 1.6;
+    stroke-dasharray: 3 3;
+  }
+
+  .stratum-topology__node-label {
+    fill: currentColor;
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    text-anchor: middle;
+    paint-order: stroke;
+    stroke: var(--stratum-mesh-canvas);
+    stroke-width: 3;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
+
+  .stratum-topology__node[data-selected] .stratum-topology__node-label {
+    font-weight: var(--stratum-weight-semibold);
+    fill: var(--stratum-text);
+  }
+
+  /* -- Emphasis -----------------------------------------------------------
+   * Hovering or focusing a node dims everything it does not touch. Anything on
+   * the selected path stays legible regardless, because the path is a
+   * deliberate selection and must not be hidden by an incidental hover.
+   */
+  .stratum-topology__node[data-emphasis='off'],
+  .stratum-topology__edge-group[data-emphasis='off'] {
+    opacity: var(--stratum-topology-dim);
+  }
+  .stratum-topology__node[data-emphasis='off'][data-on-path],
+  .stratum-topology__edge-group[data-emphasis='off'][data-on-path] {
+    opacity: 0.62;
+  }
+
+  /* -- Controls ------------------------------------------------------------ */
+
+  .stratum-topology__controls {
+    position: absolute;
+    right: var(--stratum-space-6);
+    bottom: var(--stratum-space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    padding: var(--stratum-space-1);
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    box-shadow: var(--stratum-shadow-sm);
+  }
+
+  .stratum-topology__control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-topology__control:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-topology__control:active {
+    background: var(--stratum-surface-active);
+  }
+
+  /* -- Reduced motion ------------------------------------------------------
+   * The flow pulse is removed outright, not merely slowed: a perpetual loop is
+   * exactly what this preference exists to stop, and throughput is still
+   * carried by stroke width and by the rate label. The one-shot path draw
+   * survives at half duration, since it is a state change rather than a loop.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-topology__edge-flow {
+      display: none;
+    }
+  }
+
+  /* -- Forced colours ------------------------------------------------------
+   * tokens.mesh.css already remaps every --stratum-mesh-* value to a system
+   * keyword here, so the work is to stop the UA repainting on top of that and
+   * to make sure each meaning still has a non-colour carrier: dash patterns for
+   * link status, glyph shape for node role, a heavier stroke for the path.
+   */
+  @media (forced-colors: active) {
+    .stratum-topology {
+      forced-color-adjust: none;
+      background: Canvas;
+      border-color: CanvasText;
+      color: CanvasText;
+    }
+    .stratum-topology__grid-dot {
+      fill: Canvas;
+    }
+    .stratum-topology__edge,
+    .stratum-topology__edge-ghost {
+      stroke: CanvasText;
+    }
+    .stratum-topology__edge-group[data-status='unknown'] .stratum-topology__edge {
+      stroke: GrayText;
+    }
+    .stratum-topology__edge-ghost {
+      opacity: 0.35;
+    }
+    .stratum-topology__edge-arrow {
+      fill: CanvasText;
+    }
+    .stratum-topology__edge-path,
+    .stratum-topology__node-selected {
+      stroke: Highlight;
+    }
+    .stratum-topology__edge-flow {
+      stroke: Highlight;
+    }
+    .stratum-topology__edge-label,
+    .stratum-topology__node-label {
+      fill: CanvasText;
+      stroke: Canvas;
+    }
+    .stratum-topology__node-focus {
+      stroke: Highlight;
+    }
+    /* Opacity is not a reliable channel once the OS owns the palette, so the
+     * de-emphasised state falls back to full strength rather than becoming an
+     * unreadable ghost. */
+    .stratum-topology__node[data-emphasis='off'],
+    .stratum-topology__edge-group[data-emphasis='off'] {
+      opacity: 1;
+    }
+    .stratum-topology__controls {
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-topology__control {
+      color: ButtonText;
+    }
+  }
+}

@@ -1,0 +1,165 @@
+@layer stratum.components {
+  .stratum-topology-legend {
+    --_gap: var(--stratum-space-6);
+    --_fs: var(--stratum-text-xs);
+
+    display: flex;
+    gap: var(--stratum-space-12);
+    min-width: 0;
+    font-size: var(--_fs);
+    color: var(--stratum-text-secondary);
+  }
+
+  .stratum-topology-legend[data-size='sm'] {
+    --_gap: var(--stratum-space-4);
+    --_fs: var(--stratum-text-2xs);
+  }
+
+  .stratum-topology-legend[data-orientation='horizontal'] {
+    flex-flow: row wrap;
+    align-items: flex-start;
+  }
+  .stratum-topology-legend[data-orientation='vertical'] {
+    flex-direction: column;
+    gap: var(--stratum-space-8);
+  }
+
+  .stratum-topology-legend__section {
+    min-width: 0;
+  }
+
+  .stratum-topology-legend__heading {
+    margin: 0 0 var(--stratum-space-3);
+    /* Uppercase micro-label: the section names are chrome, the rows are the
+     * content, so they must not compete. Same treatment as StateMatrix axes. */
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-semibold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-topology-legend__list {
+    display: flex;
+    flex-flow: row wrap;
+    gap: var(--_gap) var(--stratum-space-10);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .stratum-topology-legend[data-orientation='vertical'] .stratum-topology-legend__list {
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+  }
+
+  .stratum-topology-legend__item {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+  }
+
+  .stratum-topology-legend__glyph {
+    flex-shrink: 0;
+    overflow: visible;
+  }
+
+  .stratum-topology-legend__text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: var(--stratum-leading-tight);
+  }
+
+  .stratum-topology-legend__label {
+    white-space: nowrap;
+  }
+
+  .stratum-topology-legend__note {
+    color: var(--stratum-text-muted);
+    font-size: var(--stratum-text-2xs);
+  }
+
+  /* -- Link samples --------------------------------------------------------
+   * Deliberately the same colour + dash pairs the graph uses, so status is
+   * identifiable from the dash alone once colour is unavailable.
+   */
+  .stratum-topology-legend__line {
+    fill: none;
+    stroke: var(--_line-colour, var(--stratum-mesh-edge-idle));
+    stroke-width: var(--_line-width, 2);
+    stroke-dasharray: var(--_line-dash, none);
+    stroke-linecap: round;
+  }
+
+  .stratum-topology-legend__item[data-status='ok'] {
+    --_line-colour: var(--stratum-mesh-edge-idle);
+    --_line-dash: none;
+  }
+  .stratum-topology-legend__item[data-status='degraded'] {
+    --_line-colour: var(--stratum-mesh-medium);
+    --_line-dash: 9 5;
+  }
+  .stratum-topology-legend__item[data-status='down'] {
+    --_line-colour: var(--stratum-mesh-edge-down);
+    --_line-dash: 3 4;
+  }
+  .stratum-topology-legend__item[data-status='unknown'] {
+    --_line-colour: var(--stratum-mesh-edge-idle);
+    --_line-dash: 1 5;
+  }
+
+  /* Traffic samples. Width is the channel, exactly as in the graph: a thick
+   * line is a fast link, a thin one a slow or unmeasured one. */
+  .stratum-topology-legend__item[data-traffic='active'] {
+    --_line-width: 5;
+  }
+  .stratum-topology-legend__item[data-traffic='idle'] {
+    --_line-width: 1.6;
+  }
+  .stratum-topology-legend__item[data-traffic='unobserved'] {
+    --_line-width: 1.6;
+  }
+  .stratum-topology-legend__item[data-traffic='unobserved'] .stratum-topology-legend__line {
+    opacity: 0.6;
+  }
+
+  .stratum-topology-legend__flow {
+    fill: none;
+    stroke: var(--stratum-mesh-edge-flow);
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-dasharray: 6 14;
+    /* 6 + 14 = 20, the flow step. Derived from the keyframe's registered number
+     * rather than animated directly — see tokens.motion.css. */
+    stroke-dashoffset: calc(var(--stratum-flow-pos) * var(--stratum-flow-step, 20));
+    animation: var(--stratum-anim-flow, stratum-flow calc(var(--stratum-duration-2xl) * 8) linear infinite);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-topology-legend__flow {
+      display: none;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-topology-legend {
+      forced-color-adjust: none;
+      color: CanvasText;
+    }
+    .stratum-topology-legend__line {
+      stroke: CanvasText;
+    }
+    .stratum-topology-legend__item[data-status='unknown'] .stratum-topology-legend__line,
+    .stratum-topology-legend__item[data-traffic='unobserved'] .stratum-topology-legend__line {
+      stroke: GrayText;
+      opacity: 1;
+    }
+    .stratum-topology-legend__flow {
+      stroke: Highlight;
+    }
+    .stratum-topology-legend__note {
+      color: GrayText;
+    }
+  }
+}

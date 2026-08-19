@@ -1,0 +1,47 @@
+@layer stratum.components {
+  .stratum-byte-size-input {
+    min-width: 0;
+  }
+
+  .stratum-byte-size-input__control .stratum-net-input {
+    min-width: 4ch;
+  }
+
+  /* The unit picker is the framework's <Select>, flattened into a segment of the
+   * shared control shell rather than a second bordered box inside it. See the
+   * long note in DurationInput.css — same treatment, same reason, and the same
+   * reason `block-size` is left to `auto` so the picker stays exactly as tall as
+   * the number input beside it. */
+  .stratum-byte-size-input .stratum-net-control .stratum-byte-size-input__unit {
+    block-size: auto;
+    padding-block: 0;
+    padding-inline: var(--stratum-space-3) var(--stratum-space-2);
+    gap: var(--stratum-space-2);
+    color: var(--stratum-text-secondary);
+    background: none;
+    border: none;
+    border-inline-start: 1px solid var(--stratum-divider);
+    border-radius: 0;
+    line-height: var(--stratum-leading-tight);
+    /* `KiB` and `kB` are compared letter by letter, and tabular figures would
+     * only apply to the digit in the label. */
+    font-variant-numeric: normal;
+    cursor: pointer;
+  }
+  .stratum-byte-size-input .stratum-net-control .stratum-byte-size-input__unit:disabled {
+    cursor: not-allowed;
+  }
+
+  /* Sized for `KiB`/`MiB` so switching unit does not resize the control and
+   * shift everything to its right. On the value, not the trigger, so the chevron
+   * and the padding are not counted into the character measure. */
+  .stratum-byte-size-input__unit .stratum-select__value {
+    min-inline-size: 4.5ch;
+  }
+
+  /* The resolved byte count. This exists specifically so a KiB/kB mix-up is
+   * visible before submission rather than after a quota misbehaves. */
+  .stratum-byte-size-input .stratum-net-meta {
+    padding-inline-start: var(--stratum-space-1);
+  }
+}

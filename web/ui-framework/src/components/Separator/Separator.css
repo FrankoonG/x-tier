@@ -1,0 +1,81 @@
+@layer stratum.components {
+  .stratum-separator {
+    --_color: var(--stratum-divider);
+    --_thickness: 1px;
+    --_inset: var(--stratum-space-0);
+
+    border: 0;
+    flex: 0 0 auto;
+  }
+
+  .stratum-separator[data-inset='sm'] { --_inset: var(--stratum-space-6); }
+  .stratum-separator[data-inset='md'] { --_inset: var(--stratum-space-8); }
+  .stratum-separator[data-inset='lg'] { --_inset: var(--stratum-space-12); }
+
+  /* -- Plain rule ------------------------------------------------------------ */
+  .stratum-separator[data-orientation='horizontal'] {
+    inline-size: auto;
+    block-size: var(--_thickness);
+    background: var(--_color);
+    margin-inline: var(--_inset);
+  }
+
+  .stratum-separator[data-orientation='vertical'] {
+    inline-size: var(--_thickness);
+    /* `align-self: stretch` makes it span the row inside a flex container
+     * without the consumer having to know the row's height. */
+    align-self: stretch;
+    min-block-size: var(--stratum-space-8);
+    background: var(--_color);
+    margin-block: var(--_inset);
+  }
+
+  /* -- Labelled -------------------------------------------------------------- */
+  .stratum-separator[data-labelled] {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-6);
+    background: none;
+  }
+
+  .stratum-separator[data-labelled][data-orientation='horizontal'] {
+    block-size: auto;
+  }
+
+  .stratum-separator[data-labelled][data-orientation='vertical'] {
+    flex-direction: column;
+    inline-size: auto;
+  }
+
+  .stratum-separator__line {
+    flex: 1 1 auto;
+    background: var(--_color);
+  }
+
+  .stratum-separator[data-orientation='horizontal'] > .stratum-separator__line {
+    block-size: var(--_thickness);
+  }
+
+  .stratum-separator[data-orientation='vertical'] > .stratum-separator__line {
+    inline-size: var(--_thickness);
+  }
+
+  .stratum-separator__label {
+    flex: 0 0 auto;
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-none);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--stratum-text-muted);
+    white-space: nowrap;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-separator[data-orientation='horizontal']:not([data-labelled]),
+    .stratum-separator[data-orientation='vertical']:not([data-labelled]),
+    .stratum-separator__line {
+      background: CanvasText;
+    }
+  }
+}

@@ -1,0 +1,263 @@
+@layer stratum.components {
+  .stratum-capability-grid {
+    /* Per-state paint, in TWO grades. Overridable per instance without a
+     * specificity fight.
+     *
+     * `-fg` paints the state WORD and answers to SC 1.4.3's 4.5:1. `-mark`
+     * paints the glyph — a meaningful graphic, which SC 1.4.11 puts at 3:1 and
+     * which would look washed out at text contrast. Driving both from one
+     * token is what left `confirmed` at 4.02:1: green-600 is a fill colour, not
+     * a text colour.
+     *
+     * NOTE what is NOT here: no danger role. Neither `unsupported` nor
+     * `not-applicable` is a fault, and painting either red would make an
+     * operator chase a problem that does not exist. */
+    --_confirmed-fg: var(--stratum-success-fg);
+    --_confirmed-mark: var(--stratum-success);
+    --_unconfirmed-fg: var(--stratum-unknown-fg);
+    --_unconfirmed-mark: var(--stratum-unknown);
+    --_unsupported-fg: var(--stratum-text-secondary);
+    --_unsupported-mark: var(--stratum-text-secondary);
+    /* `not-applicable` recedes furthest, but it is still a claim the grid is
+     * making and therefore still content: `text-muted`, not `text-disabled`. */
+    --_not-applicable-fg: var(--stratum-text-muted);
+    --_not-applicable-mark: var(--stratum-text-subtle);
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+    font-size: var(--_fs);
+  }
+
+  .stratum-capability-grid[data-size='sm'] { --_fs: var(--stratum-text-2xs); --_cell-y: var(--stratum-space-2); }
+  .stratum-capability-grid[data-size='md'] { --_fs: var(--stratum-text-xs);  --_cell-y: var(--stratum-space-3); }
+
+  /* The grid scrolls horizontally rather than wrapping. A capability matrix
+   * that reflows loses the column alignment that makes it readable at all. */
+  .stratum-capability-grid__scroll {
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  .stratum-capability-grid__table {
+    border-collapse: collapse;
+    /* Fixed layout would truncate long subject names; auto keeps the subject
+     * column as wide as it needs and lets the capability columns stay even. */
+    width: 100%;
+    color: var(--stratum-text);
+  }
+
+  /* -- Header ---------------------------------------------------------------- */
+  .stratum-capability-grid__corner,
+  .stratum-capability-grid__col-head {
+    padding: var(--stratum-space-3) var(--stratum-space-4);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--stratum-text-subtle);
+    text-align: start;
+    vertical-align: bottom;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--stratum-border);
+  }
+
+  .stratum-capability-grid__col-head {
+    text-align: center;
+  }
+
+  .stratum-capability-grid__col-label {
+    display: block;
+  }
+
+  .stratum-capability-grid__col-desc {
+    display: block;
+    max-width: 18ch;
+    margin-top: var(--stratum-space-1);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-normal);
+    letter-spacing: normal;
+    text-transform: none;
+    color: var(--stratum-text-subtle);
+    white-space: normal;
+  }
+
+  /* -- Rows ------------------------------------------------------------------ */
+  .stratum-capability-grid__row-head {
+    padding: var(--_cell-y) var(--stratum-space-4);
+    font-weight: var(--stratum-weight-normal);
+    text-align: start;
+    vertical-align: middle;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--stratum-border-subtle);
+  }
+
+  .stratum-capability-grid__subject {
+    display: block;
+    color: var(--stratum-text);
+  }
+
+  .stratum-capability-grid__subject-detail {
+    display: block;
+    margin-top: var(--stratum-space-1);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-capability-grid__cell {
+    padding: var(--_cell-y) var(--stratum-space-4);
+    text-align: center;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--stratum-border-subtle);
+    cursor: help;
+  }
+
+  .stratum-capability-grid__cell-inner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-3);
+    color: var(--_fg);
+  }
+
+  .stratum-capability-grid__glyph {
+    flex-shrink: 0;
+    /* Glyphs sit one step above the type size so a 4-state matrix still reads
+     * as symbols rather than as punctuation. */
+    font-size: 1.25em;
+    /* Painted at graphic grade. The SVG strokes `currentColor`, so this is the
+     * seam where the glyph stops inheriting the text colour. */
+    color: var(--_mark);
+  }
+
+  .stratum-capability-grid__cell-text {
+    white-space: nowrap;
+  }
+
+  .stratum-capability-grid__cell-note {
+    display: block;
+    margin-top: var(--stratum-space-1);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-subtle);
+    white-space: normal;
+  }
+
+  /* -- State paint ----------------------------------------------------------
+   * Colour is a reinforcement here, not the signal. The glyph silhouettes are
+   * what carry the four states; see CapabilityGrid.tsx. */
+  .stratum-capability-grid__cell[data-state='confirmed'] {
+    --_fg: var(--_confirmed-fg);      --_mark: var(--_confirmed-mark);
+  }
+  .stratum-capability-grid__cell[data-state='unconfirmed'] {
+    --_fg: var(--_unconfirmed-fg);    --_mark: var(--_unconfirmed-mark);
+  }
+  .stratum-capability-grid__cell[data-state='unsupported'] {
+    --_fg: var(--_unsupported-fg);    --_mark: var(--_unsupported-mark);
+  }
+  .stratum-capability-grid__cell[data-state='not-applicable'] {
+    --_fg: var(--_not-applicable-fg); --_mark: var(--_not-applicable-mark);
+  }
+
+  /* `unconfirmed` also gets a typographic channel: italic, in the sans face,
+   * so it does not read as a measured result even when skimmed. */
+  .stratum-capability-grid__cell[data-state='unconfirmed'] .stratum-capability-grid__cell-text {
+    font-style: italic;
+  }
+
+  /* `not-applicable` recedes. It is not a gap in knowledge — the question
+   * simply does not arise — so it should attract no attention at all.
+   *
+   * The recession is expressed by the quieter `-fg`/`-mark` pair above, NOT by
+   * opacity: opacity multiplies contrast down, and a cell whose text is already
+   * placed against the 4.5:1 floor cannot afford a 0.75 multiplier. The bare
+   * slash glyph is the other half of the signal — it is the only state with no
+   * ring at all. */
+
+  /* -- Sticky subject column ------------------------------------------------- */
+  .stratum-capability-grid[data-sticky] .stratum-capability-grid__corner,
+  .stratum-capability-grid[data-sticky] .stratum-capability-grid__row-head {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: var(--stratum-z-raised);
+    background: var(--stratum-surface);
+    /* A real border rather than a shadow, so the seam survives forced-colors
+     * and does not vanish against surface-sunken. */
+    border-inline-end: 1px solid var(--stratum-border);
+  }
+
+  /* -- Legend ----------------------------------------------------------------
+   * Shipped on by default. Four states is one more than an operator will
+   * reverse-engineer from glyphs alone, and the whole value of the component
+   * is lost if `unconfirmed` gets read as `unsupported`. */
+  .stratum-capability-grid__legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-3) var(--stratum-space-8);
+    padding-top: var(--stratum-space-1);
+    font-size: var(--stratum-text-2xs);
+  }
+
+  .stratum-capability-grid__legend-title {
+    color: var(--stratum-text-subtle);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .stratum-capability-grid__legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    color: var(--_fg);
+    cursor: help;
+  }
+
+  .stratum-capability-grid__legend-item[data-state='confirmed'] {
+    --_fg: var(--_confirmed-fg);      --_mark: var(--_confirmed-mark);
+  }
+  .stratum-capability-grid__legend-item[data-state='unconfirmed'] {
+    --_fg: var(--_unconfirmed-fg);    --_mark: var(--_unconfirmed-mark);
+  }
+  .stratum-capability-grid__legend-item[data-state='unsupported'] {
+    --_fg: var(--_unsupported-fg);    --_mark: var(--_unsupported-mark);
+  }
+  .stratum-capability-grid__legend-item[data-state='not-applicable'] {
+    --_fg: var(--_not-applicable-fg); --_mark: var(--_not-applicable-mark);
+  }
+
+  .stratum-capability-grid__legend-label {
+    color: var(--stratum-text-secondary);
+  }
+  .stratum-capability-grid__legend-item[data-state='unconfirmed'] .stratum-capability-grid__legend-label {
+    font-style: italic;
+  }
+
+  /* Under forced colours our four hues collapse to two system colours, so the
+   * glyph silhouettes become the entire signal — which is exactly why they
+   * were drawn as four different shapes rather than four tints of one. */
+  @media (forced-colors: active) {
+    .stratum-capability-grid__cell-inner,
+    .stratum-capability-grid__legend-item {
+      color: CanvasText;
+    }
+    .stratum-capability-grid__cell[data-state='unconfirmed'] .stratum-capability-grid__cell-inner,
+    .stratum-capability-grid__cell[data-state='not-applicable'] .stratum-capability-grid__cell-inner,
+    .stratum-capability-grid__legend-item[data-state='unconfirmed'],
+    .stratum-capability-grid__legend-item[data-state='not-applicable'] {
+      color: GrayText;
+    }
+    /* The glyph opts back into inheritance so the OS colour above reaches it;
+     * left on `--_mark` it would keep painting an author colour. */
+    .stratum-capability-grid__glyph {
+      color: inherit;
+    }
+    .stratum-capability-grid[data-sticky] .stratum-capability-grid__corner,
+    .stratum-capability-grid[data-sticky] .stratum-capability-grid__row-head {
+      background: Canvas;
+    }
+  }
+}

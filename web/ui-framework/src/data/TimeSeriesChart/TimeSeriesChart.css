@@ -1,0 +1,319 @@
+@layer stratum.components {
+  .stratum-time-series {
+    --_grid: var(--stratum-border-subtle);
+    --_axis: var(--stratum-border);
+    --_tick: var(--stratum-text-muted);
+    --_crosshair: var(--stratum-text-subtle);
+    --_area-opacity: 0.13;
+    --_line-width: 2px;
+    --_tooltip-max: 240px;
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    /* Hugs the plot so the legend and axis captions line up with it rather
+     * than stretching to the width of whatever card the chart is dropped in. */
+    width: max-content;
+    max-width: 100%;
+    min-width: 0;
+    color: var(--stratum-text);
+  }
+
+  .stratum-time-series__plot {
+    position: relative;
+    min-width: 0;
+  }
+
+  .stratum-time-series__svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+
+  /* -- Chrome -------------------------------------------------------------- */
+
+  /* Gridlines are solid hairlines one step off the surface. Dashing them adds
+   * ink that carries no information and reads as "threshold" or "projected". */
+  .stratum-time-series__grid {
+    color: var(--_grid);
+    stroke-width: 1;
+  }
+  .stratum-time-series__axis {
+    color: var(--_axis);
+    stroke-width: 1;
+  }
+
+  .stratum-time-series__ticks {
+    fill: var(--_tick);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    /* Axis ticks are a column of numbers, so they align — this is exactly the
+     * case tabular figures are for. */
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* -- Series -------------------------------------------------------------- */
+
+  .stratum-time-series__series {
+    color: var(--stratum-series-1);
+  }
+  .stratum-time-series__series[data-series='1'] { color: var(--stratum-series-1); }
+  .stratum-time-series__series[data-series='2'] { color: var(--stratum-series-2); }
+  .stratum-time-series__series[data-series='3'] { color: var(--stratum-series-3); }
+  .stratum-time-series__series[data-series='4'] { color: var(--stratum-series-4); }
+  .stratum-time-series__series[data-series='5'] { color: var(--stratum-series-5); }
+  .stratum-time-series__series[data-series='6'] { color: var(--stratum-series-6); }
+  .stratum-time-series__series[data-series='7'] { color: var(--stratum-series-7); }
+  .stratum-time-series__series[data-series='8'] { color: var(--stratum-series-8); }
+
+  .stratum-time-series__line {
+    stroke-width: var(--_line-width);
+  }
+
+  .stratum-time-series__area {
+    opacity: var(--_area-opacity);
+  }
+
+  /* Markers and the crosshair dots carry a ring in the surface colour so they
+   * stay legible where two series cross. A stroke around the mark would add
+   * data-weight ink; a surface-coloured ring reads as negative space. */
+  .stratum-time-series__marker,
+  .stratum-time-series__hit,
+  .stratum-time-series__island {
+    stroke: var(--stratum-surface);
+    stroke-width: 2;
+    paint-order: stroke fill;
+  }
+
+  .stratum-time-series__island {
+    /* A lone observation between two holes. Hollowed slightly so it is not
+     * mistaken for a point on a continuous run. */
+    opacity: 0.9;
+  }
+
+  .stratum-time-series__crosshair {
+    color: var(--_crosshair);
+    stroke-width: 1;
+  }
+
+  /* -- Interaction surface -------------------------------------------------- */
+
+  .stratum-time-series__surface {
+    position: absolute;
+    /* Inset percentages are supplied inline; they mirror the SVG padding so
+     * the hit area is exactly the plot rect. */
+    cursor: crosshair;
+    touch-action: none;
+  }
+
+  /* -- Tooltip -------------------------------------------------------------- */
+
+  .stratum-time-series__tooltip {
+    position: absolute;
+    inset-block-start: 0;
+    z-index: var(--stratum-z-tooltip);
+    min-width: max-content;
+    max-width: var(--_tooltip-max);
+    padding: var(--stratum-space-3) var(--stratum-space-4);
+    pointer-events: none;
+
+    font-size: var(--stratum-text-2xs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    box-shadow: var(--stratum-shadow-md);
+
+    opacity: 1;
+    transition:
+      opacity var(--stratum-duration-2xs) var(--stratum-ease-out),
+      translate var(--stratum-duration-xs) var(--stratum-ease-signature);
+  }
+  /* Flips to the other side of the crosshair near the right edge so it never
+   * runs out of the plot. */
+  .stratum-time-series__tooltip[data-side='end'] {
+    translate: var(--stratum-space-4) 0;
+  }
+  .stratum-time-series__tooltip[data-side='start'] {
+    translate: calc(-100% - var(--stratum-space-4)) 0;
+  }
+
+  /* Enter only. A crosshair tooltip that fades out trails the cursor as a
+   * ghost, which reads as lag rather than as polish — so exit is instant. */
+  @starting-style {
+    .stratum-time-series__tooltip {
+      opacity: 0;
+    }
+  }
+
+  .stratum-time-series__tooltip-head {
+    margin-block-end: var(--stratum-space-2);
+    padding-block-end: var(--stratum-space-2);
+    color: var(--stratum-text-secondary);
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    border-block-end: 1px solid var(--stratum-divider);
+  }
+
+  .stratum-time-series__tooltip-rows {
+    display: grid;
+    gap: var(--stratum-space-1);
+    margin: 0;
+  }
+
+  .stratum-time-series__tooltip-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--stratum-space-6);
+  }
+  .stratum-time-series__tooltip-row > dt {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    /* Labels wear text ink, never the series colour — a light categorical hue
+     * is illegible as text. Identity comes from the swatch beside it. */
+    color: var(--stratum-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .stratum-time-series__tooltip-row > dd {
+    margin: 0;
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text);
+  }
+
+  /* A series with no sample at the crosshair. Italic and muted, matching the
+   * framework's "not observed" presentation everywhere else — never blank,
+   * never zero.
+   *
+   * `unknown-fg`, not `unknown`: the base token is the marker/graphic grade
+   * (3:1, SC 1.4.11) and measures ~3.4:1 as text. This is a value a human
+   * reads, so it takes the text grade (4.5:1, SC 1.4.3). */
+  .stratum-time-series__tooltip-row[data-unobserved] > dd {
+    font-family: var(--stratum-font-sans);
+    font-style: italic;
+    color: var(--stratum-unknown-fg);
+  }
+
+  /* -- Legend --------------------------------------------------------------- */
+
+  .stratum-time-series__legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--stratum-space-2) var(--stratum-space-6);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .stratum-time-series__legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    padding: var(--stratum-space-1) var(--stratum-space-2);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-time-series__legend-item:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  /* A hidden series is struck through as well as dimmed, so the off state is
+   * not carried by opacity alone.
+   *
+   * `text-muted`, NOT `text-disabled`. The legend item is a live toggle, not an
+   * inactive control, so WCAG's exemption for disabled controls does not apply
+   * and `text-disabled` (2.52:1) is a straight 1.4.3 failure. The strike-through
+   * is what carries "off"; the colour only has to stay readable, because an
+   * operator has to be able to tell WHICH series they switched off. */
+  .stratum-time-series__legend-item[data-off] {
+    color: var(--stratum-text-muted);
+    text-decoration: line-through;
+  }
+  .stratum-time-series__legend-item[data-off] .stratum-time-series__swatch {
+    opacity: 0.4;
+  }
+
+  .stratum-time-series__swatch {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--stratum-series-1);
+  }
+  .stratum-time-series__swatch[data-series='1'] { color: var(--stratum-series-1); }
+  .stratum-time-series__swatch[data-series='2'] { color: var(--stratum-series-2); }
+  .stratum-time-series__swatch[data-series='3'] { color: var(--stratum-series-3); }
+  .stratum-time-series__swatch[data-series='4'] { color: var(--stratum-series-4); }
+  .stratum-time-series__swatch[data-series='5'] { color: var(--stratum-series-5); }
+  .stratum-time-series__swatch[data-series='6'] { color: var(--stratum-series-6); }
+  .stratum-time-series__swatch[data-series='7'] { color: var(--stratum-series-7); }
+  .stratum-time-series__swatch[data-series='8'] { color: var(--stratum-series-8); }
+
+  /* -- Axis captions and empty state ---------------------------------------- */
+
+  .stratum-time-series__axis-labels {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--stratum-space-6);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-subtle);
+  }
+
+  /* Text grade: `unknown-fg`, not the graphic-grade `unknown`. */
+  .stratum-time-series__empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    margin: 0;
+    font-size: var(--stratum-text-xs);
+    font-style: italic;
+    color: var(--stratum-unknown-fg);
+  }
+
+  /* -- Forced colours -------------------------------------------------------
+   * The OS discards our palette. Series stay separable because the dash
+   * pattern and the marker shape are independent of hue — which is why they
+   * exist. The surface ring around markers is repainted as Canvas so the
+   * negative space survives. */
+  @media (forced-colors: active) {
+    .stratum-time-series__series,
+    .stratum-time-series__swatch {
+      color: CanvasText;
+    }
+    .stratum-time-series__grid,
+    .stratum-time-series__axis,
+    .stratum-time-series__ticks {
+      color: GrayText;
+      fill: GrayText;
+    }
+    .stratum-time-series__crosshair {
+      color: Highlight;
+    }
+    .stratum-time-series__marker,
+    .stratum-time-series__hit,
+    .stratum-time-series__island {
+      stroke: Canvas;
+    }
+    .stratum-time-series__area {
+      opacity: 0.2;
+    }
+    .stratum-time-series__tooltip {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+    .stratum-time-series__legend-item[data-off] {
+      color: GrayText;
+    }
+  }
+}

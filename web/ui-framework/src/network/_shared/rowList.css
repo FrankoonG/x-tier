@@ -1,0 +1,343 @@
+@layer stratum.components {
+  /* -------------------------------------------------------------------------
+   * The shared shell for every ordered list in the network layer.
+   *
+   * One shell, four components: a rules list, an address list, a range list and
+   * a chain builder must line up on the same gutter, use the same grip and the
+   * same dashed add plate, or the panel reads as four different products.
+   * ---------------------------------------------------------------------- */
+  .stratum-row-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    min-width: 0;
+    position: relative;
+  }
+
+  /* Scoped to the list, never to <body>. A drag that ends because the row
+   * unmounted therefore cannot leave the document unselectable. */
+  .stratum-row-list[data-dragging] {
+    user-select: none;
+    cursor: grabbing;
+  }
+
+  .stratum-row-list__row {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    position: relative;
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    padding: var(--stratum-space-3);
+
+    /* Live displacement. `--_shift` is written straight to the element by the
+     * reorder hook while a drag is in flight — never through React state, which
+     * cannot keep up with a finger.
+     *
+     * `translate`, not `transform`: the dragged row needs its own independent
+     * offset and the two must not overwrite each other, and it leaves
+     * `transform` free for anything a consumer puts on the row. Both are
+     * composited, so neither costs layout.
+     *
+     * The distance is multiplied by --stratum-motion-distance so reduced motion
+     * collapses the slide to nothing while the drag itself keeps working — the
+     * drop indicator below still says where the row will land. */
+    translate: 0 calc(var(--_shift, 0px) * var(--stratum-motion-distance));
+    transition: translate var(--stratum-duration-md) var(--stratum-ease-signature);
+  }
+
+  /* The lifted row. Elevation and a coloured edge, no scale: scale would be a
+   * transform fighting the translate that follows the pointer, and the shadow
+   * already reads as "picked up" at any motion setting.
+   *
+   * `transition: none` is load-bearing. The row has to track the pointer 1:1;
+   * with the sibling transition still attached it would lag a fixed 200ms
+   * behind the finger, which is the single thing that makes a drag feel broken.
+   * The offset is NOT scaled by --stratum-motion-distance either: this one
+   * follows the pointer, and a user who asked for less motion did not ask for
+   * the thing under their finger to stop moving. */
+  .stratum-row-list__row[data-dragging] {
+    z-index: 2;
+    border-color: var(--stratum-accent);
+    background: var(--stratum-surface-elevated);
+    box-shadow: var(--stratum-shadow-lg);
+    translate: 0 var(--_drag-dy, 0px);
+    transition: none;
+    will-change: translate;
+  }
+
+  /* The drop. The row springs the last of the distance between where you let go
+   * and where its slot actually is — the residual, which is generally a few
+   * pixels to half a row. An underdamped curve rather than the signature
+   * ease-out, because this is the one moment in the gesture that should read as
+   * weight settling rather than as a UI transition, and the slight overshoot is
+   * what sells it as physical.
+   *
+   * Only the dragged row does this. Every other row finished moving during the
+   * drag and has nothing left to travel, so animating them would be inventing
+   * motion rather than completing it.
+   *
+   * Elevated for the duration so the settle happens above its neighbours, the
+   * same way it was picked up. */
+  .stratum-row-list__row[data-settling] {
+    z-index: 2;
+    transition: translate var(--stratum-duration-settle) var(--stratum-ease-settle);
+  }
+
+  /* Keyboard lift. A dashed accent edge, distinct from the drag treatment so a
+   * mouse drag and a keyboard grab are never mistaken for each other. */
+  .stratum-row-list__row[data-grabbed] {
+    border-color: var(--stratum-accent);
+    border-style: dashed;
+    background: var(--stratum-accent-subtle);
+  }
+
+  /* Drop indicator, kept alongside the live displacement rather than replaced by
+   * it. The siblings sliding out of the way say "this is where it goes"; the
+   * line says it exactly, and it is the only one of the two that survives
+   * `prefers-reduced-motion`, where the shift collapses to zero.
+   *
+   * The earlier note here claimed sibling shifting would make "the geometry feed
+   * back into itself and the target oscillate". That is true of an
+   * implementation that re-measures per move — but the hook snapshots every row
+   * at pick-up and scans that frozen array, so what the rows are doing on screen
+   * cannot influence the arithmetic at all. The snapshot was already there; it
+   * was the thing that made displacement safe to add. */
+  .stratum-row-list__row[data-drop]::before {
+    content: '';
+    position: absolute;
+    inset-inline: calc(-1 * var(--stratum-space-1));
+    height: 2px;
+    background: var(--stratum-accent);
+    border-radius: var(--stratum-radius-full);
+  }
+  .stratum-row-list__row[data-drop='before']::before {
+    top: calc(-1 * var(--stratum-space-2));
+  }
+  .stratum-row-list__row[data-drop='after']::before {
+    bottom: calc(-1 * var(--stratum-space-2));
+  }
+
+  /* -- Rank gutter ---------------------------------------------------------
+   * The evaluation index. Tabular figures so 9 and 10 occupy the same width
+   * and the rows below do not shuffle sideways when a list crosses ten.
+   */
+  .stratum-row-list__index {
+    flex: 0 0 auto;
+    min-width: 2ch;
+    text-align: end;
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Reorder cluster ------------------------------------------------------
+   * Grip plus explicit move buttons, laid out horizontally so each control can
+   * meet the 24px minimum target (WCAG 2.2 SC 2.5.8) without stacking two
+   * undersized buttons inside one row height.
+   */
+  .stratum-row-list__reorder {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-1);
+  }
+  .stratum-row-list__reorder[data-locked] {
+    /* Keeps a locked row aligned with its movable siblings. */
+    width: calc(3 * var(--stratum-target-min));
+  }
+
+  .stratum-row-list__nudge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-1);
+  }
+
+  .stratum-row-list__grip,
+  .stratum-row-list__move {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--stratum-target-min);
+    height: var(--stratum-target-min);
+    padding: 0;
+    color: var(--stratum-text-subtle);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    font-size: var(--stratum-text-md);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-row-list__grip {
+    /* Without this the browser scrolls the page instead of dragging on a
+     * touchscreen, and the pointermove stream stops after the first event. */
+    touch-action: none;
+    cursor: grab;
+  }
+  .stratum-row-list__grip:active,
+  .stratum-row-list__grip[data-grabbed] {
+    cursor: grabbing;
+  }
+  .stratum-row-list__grip[data-grabbed] {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent-border);
+  }
+
+  .stratum-row-list__grip:hover,
+  .stratum-row-list__move:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+    border-color: var(--stratum-border);
+  }
+
+  /* -- Row actions ---------------------------------------------------------- */
+  .stratum-row-list__actions {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-1);
+  }
+
+  .stratum-row-list__action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--stratum-target-min);
+    height: var(--stratum-target-min);
+    padding: 0;
+    color: var(--stratum-text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    font-size: var(--stratum-text-md);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-row-list__action:hover:not(:disabled) {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+    border-color: var(--stratum-border);
+  }
+  .stratum-row-list__action[data-tone='danger']:hover:not(:disabled) {
+    color: var(--stratum-danger-fg);
+    background: var(--stratum-danger-subtle);
+    border-color: var(--stratum-danger-border);
+  }
+  /* Disabled rather than removed at the floor. A control that vanishes when a
+   * limit is reached teaches nothing; one that greys out and keeps its
+   * description explains the limit. */
+  .stratum-row-list__action:disabled {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  /* -- Add plate ------------------------------------------------------------ */
+  .stratum-row-add-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    margin-block-start: var(--stratum-space-3);
+  }
+
+  .stratum-row-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-3);
+    width: 100%;
+    min-height: var(--stratum-target-min);
+    padding: var(--stratum-space-5);
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 2px dashed var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-md);
+    font-size: var(--stratum-text-sm);
+    font-weight: var(--stratum-weight-medium);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-row-add:hover:not(:disabled) {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent);
+  }
+  .stratum-row-add:disabled {
+    color: var(--stratum-text-disabled);
+    border-color: var(--stratum-border);
+    cursor: not-allowed;
+  }
+  .stratum-row-add__icon {
+    display: inline-flex;
+    font-size: var(--stratum-text-md);
+  }
+
+  .stratum-row-list__ceiling {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Shared row content --------------------------------------------------- */
+  .stratum-row-list__main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+  }
+
+  .stratum-row-list__note {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-2);
+    font-size: var(--stratum-text-2xs);
+    line-height: var(--stratum-leading-snug);
+  }
+  .stratum-row-list__note[data-tone='warning'] { color: var(--stratum-warning-fg); }
+  .stratum-row-list__note[data-tone='danger']  { color: var(--stratum-danger-fg); }
+  .stratum-row-list__note[data-tone='muted']   { color: var(--stratum-text-muted); }
+
+  @media (forced-colors: active) {
+    .stratum-row-list__row {
+      border-color: CanvasText;
+    }
+    /* Fill and shadow are discarded, so both lift states have to survive as
+     * geometry. */
+    .stratum-row-list__row[data-dragging] {
+      border-width: 2px;
+      border-color: Highlight;
+    }
+    .stratum-row-list__row[data-grabbed] {
+      border-width: 2px;
+      border-style: dashed;
+      border-color: Highlight;
+    }
+    .stratum-row-list__row[data-drop]::before {
+      background: Highlight;
+      forced-color-adjust: none;
+    }
+    .stratum-row-list__grip,
+    .stratum-row-list__move,
+    .stratum-row-list__action {
+      color: ButtonText;
+      border-color: ButtonBorder;
+    }
+    .stratum-row-list__action:disabled {
+      color: GrayText;
+      border-color: GrayText;
+    }
+    .stratum-row-add {
+      color: ButtonText;
+      border-color: ButtonBorder;
+    }
+    .stratum-row-add:disabled {
+      color: GrayText;
+      border-color: GrayText;
+    }
+  }
+}

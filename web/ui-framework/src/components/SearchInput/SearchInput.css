@@ -1,0 +1,30 @@
+@layer stratum.components {
+  /* The magnifier is scenery, not a status: it stays quiet until the field is
+   * engaged, at which point it picks up the accent alongside the border so the
+   * whole control reads as one focused object. */
+  .stratum-search-input .stratum-input__adornment[data-side='start'] {
+    color: var(--stratum-text-subtle);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-search-input:focus-within .stratum-input__adornment[data-side='start'] {
+    color: var(--stratum-accent-fg);
+  }
+
+  .stratum-search-input[data-invalid]:focus-within .stratum-input__adornment[data-side='start'] {
+    color: var(--stratum-danger-fg);
+  }
+
+  .stratum-search-input[data-disabled] .stratum-input__adornment[data-side='start'] {
+    color: var(--stratum-text-disabled);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-search-input .stratum-input__adornment[data-side='start'] {
+      color: FieldText;
+    }
+    .stratum-search-input[data-disabled] .stratum-input__adornment[data-side='start'] {
+      color: GrayText;
+    }
+  }
+}

@@ -1,0 +1,315 @@
+@layer stratum.components {
+  .stratum-editable-list {
+    /* Row control geometry. Exposed so a consumer can align the gutter with a
+     * neighbouring form grid without re-deriving every offset. */
+    --_control: var(--stratum-target-min);
+    --_row-min: var(--stratum-space-16);
+    --_gap: var(--stratum-space-4);
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-4);
+  }
+
+  .stratum-editable-list[data-size='sm'] {
+    --_row-min: var(--stratum-space-12);
+    --_gap: var(--stratum-space-3);
+  }
+
+  .stratum-editable-list[data-disabled] {
+    cursor: not-allowed;
+  }
+
+  /* -- Rows ---------------------------------------------------------------- */
+  .stratum-editable-list__rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .stratum-editable-list__row {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--_gap);
+    padding: var(--stratum-space-1);
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-md);
+    background: transparent;
+
+    /* Entry only. A removed row disappears at once: animating it out keeps a
+     * dead element under the pointer and delays the focus hand-off, and focus
+     * arriving before the layout settles is the bug this component exists to
+     * prevent. */
+    transition:
+      background-color var(--stratum-duration-xs) var(--stratum-ease-out),
+      border-color var(--stratum-duration-xs) var(--stratum-ease-out),
+      box-shadow var(--stratum-duration-xs) var(--stratum-ease-out),
+      translate var(--stratum-duration-md) var(--stratum-ease-signature),
+      opacity var(--stratum-duration-sm) var(--stratum-ease-out);
+
+    /* Live displacement during a reorder. `--_shift` is written straight to the
+     * element by _shared/reorderGeometry while a drag is in flight, so a row
+     * the dragged one has passed slides out of its way immediately rather than
+     * waiting for the drop. Scaled by --stratum-motion-distance, so reduced
+     * motion collapses the slide while the drop indicator still says where the
+     * row will land. */
+    translate: 0 calc(var(--_shift, 0px) * var(--stratum-motion-distance));
+  }
+
+  @starting-style {
+    .stratum-editable-list__row {
+      opacity: 0;
+      translate: 0 calc(-1 * var(--stratum-lift-sm));
+    }
+  }
+
+  .stratum-editable-list__row[data-invalid] {
+    border-color: var(--stratum-danger-border);
+    background: var(--stratum-danger-subtle);
+  }
+
+  /* A row the list appended for you. Quieter than a real row until it holds
+   * something, so the list does not read as one item longer than it is. */
+  .stratum-editable-list__row[data-ghost] {
+    opacity: 1;
+  }
+  .stratum-editable-list__row[data-ghost] .stratum-editable-list__rank {
+    visibility: hidden;
+  }
+
+  /* Lifted for keyboard/single-pointer reordering. Not opacity: the row is
+   * still being read while it moves. */
+  .stratum-editable-list__row[data-lifted] {
+    border-color: var(--stratum-accent-border);
+    background: var(--stratum-selected-bg);
+    box-shadow: var(--stratum-shadow-sm);
+  }
+
+  /* The lifted row follows the pointer 1:1. `transition: none` is load-bearing:
+   * the base rule transitions `translate` at 200ms, which on the dragged row
+   * would put it a fixed 200ms behind the finger — the single thing that makes
+   * a drag feel broken. Its offset is deliberately NOT scaled by
+   * --stratum-motion-distance either; someone who asked for less motion did not
+   * ask for the thing under their finger to stop moving. */
+  .stratum-editable-list__row[data-dragging] {
+    background: var(--stratum-surface-active);
+    box-shadow: var(--stratum-shadow-md);
+    cursor: grabbing;
+    z-index: 2;
+    translate: 0 var(--_drag-dy, 0px);
+    transition: none;
+    will-change: translate;
+  }
+
+  /* The drop. The row springs the last of the distance between where you let go
+   * and where its slot actually is. An underdamped curve rather than the
+   * signature ease-out: this is the one moment in the gesture that should read
+   * as weight settling, and the slight overshoot is what sells it as physical.
+   * Only the dragged row does this — every other row finished moving during the
+   * drag and has nothing left to travel. */
+  .stratum-editable-list__row[data-settling] {
+    z-index: 2;
+    transition: translate var(--stratum-duration-settle) var(--stratum-ease-settle);
+  }
+
+  /* Drop indicator. A line between rows, not a highlight on one, because the
+   * question the user is answering is "where will it land", not "which row am
+   * I over". */
+  .stratum-editable-list__row[data-drop-edge]::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    block-size: 2px;
+    background: var(--stratum-accent);
+    border-radius: var(--stratum-radius-full);
+    pointer-events: none;
+  }
+  .stratum-editable-list__row[data-drop-edge='before']::after {
+    inset-block-start: calc(-1 * var(--stratum-space-2));
+  }
+  .stratum-editable-list__row[data-drop-edge='after']::after {
+    inset-block-end: calc(-1 * var(--stratum-space-2));
+  }
+
+  /* -- Gutter -------------------------------------------------------------- */
+  .stratum-editable-list__gutter {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--stratum-space-1);
+    min-block-size: var(--_row-min);
+  }
+
+  .stratum-editable-list__rank {
+    min-inline-size: 2ch;
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: tabular-nums;
+    line-height: var(--stratum-leading-none);
+    text-align: end;
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-editable-list__grip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--_control);
+    block-size: var(--_row-min);
+    padding: 0;
+    color: var(--stratum-text-subtle);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    cursor: grab;
+    touch-action: none;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-editable-list__grip:hover:not(:disabled) {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-editable-list__grip:active:not(:disabled) {
+    cursor: grabbing;
+  }
+  .stratum-editable-list__grip[aria-pressed='true'] {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent-border);
+  }
+  .stratum-editable-list__grip:disabled {
+    /* One row: nothing to reorder. The affordance stays in place so the
+     * layout does not jump when a second row arrives. */
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  /* -- Fields -------------------------------------------------------------- */
+  .stratum-editable-list__fields {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    min-inline-size: 0;
+  }
+
+  /* -- Row actions --------------------------------------------------------- */
+  .stratum-editable-list__actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--stratum-space-1);
+    min-block-size: var(--_row-min);
+  }
+
+  .stratum-editable-list__action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--_control);
+    block-size: var(--_control);
+    padding: 0;
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-editable-list__action:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-editable-list__action[data-tone='danger']:hover {
+    color: var(--stratum-danger-fg);
+    background: var(--stratum-danger-subtle);
+  }
+  .stratum-editable-list__action[data-tone='accent'] {
+    color: var(--stratum-accent-fg);
+  }
+  .stratum-editable-list__action[data-tone='accent']:hover {
+    background: var(--stratum-accent-subtle);
+  }
+
+  /* Compound selector so this beats any generic `[aria-disabled]` rule that
+   * happens to be emitted later in the same layer. */
+  .stratum-editable-list .stratum-editable-list__action[aria-disabled='true'],
+  .stratum-editable-list .stratum-editable-list__add[aria-disabled='true'] {
+    color: var(--stratum-text-disabled);
+    background: transparent;
+    cursor: not-allowed;
+  }
+  .stratum-editable-list .stratum-editable-list__action[aria-disabled='true']:hover {
+    color: var(--stratum-text-disabled);
+    background: transparent;
+  }
+
+  /* -- Add plate ----------------------------------------------------------- */
+  .stratum-editable-list__add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-3);
+    inline-size: 100%;
+    min-block-size: var(--_row-min);
+    padding: var(--stratum-space-3) var(--stratum-space-6);
+
+    font-size: var(--stratum-text-sm);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-secondary);
+
+    background: transparent;
+    /* Dashed rather than solid: the plate is a drop target and an empty slot,
+     * not a committed control, and the dash says so without a second colour. */
+    border: 1px dashed var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-md);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-editable-list__add:hover:not(:disabled):not([aria-disabled='true']) {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent);
+  }
+  .stratum-editable-list__add:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .stratum-editable-list__empty {
+    padding: var(--stratum-space-8);
+    text-align: center;
+    color: var(--stratum-text-muted);
+    border: 1px dashed var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* Forced colours repaint fills and drop shadows, so every state that is
+   * carried by one needs a real border as well. */
+  @media (forced-colors: active) {
+    .stratum-editable-list__row[data-lifted],
+    .stratum-editable-list__row[data-dragging],
+    .stratum-editable-list__row[data-invalid] {
+      border-color: Highlight;
+    }
+    .stratum-editable-list__row[data-drop-edge]::after {
+      background: Highlight;
+      forced-color-adjust: none;
+    }
+    .stratum-editable-list__grip[aria-pressed='true'] {
+      border-color: Highlight;
+    }
+    .stratum-editable-list__add {
+      border-color: ButtonBorder;
+      color: ButtonText;
+    }
+    .stratum-editable-list .stratum-editable-list__action[aria-disabled='true'],
+    .stratum-editable-list__grip:disabled {
+      color: GrayText;
+      opacity: 1;
+    }
+  }
+}

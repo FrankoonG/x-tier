@@ -1,0 +1,277 @@
+@layer stratum.components {
+  /* -------------------------------------------------------------------------
+   * MENU SURFACE
+   *
+   * MOTION: entry only.
+   * The menu owns focus while open, so it unmounts in the same task that
+   * closes it — `FloatingFocusManager` restores focus in its cleanup, and
+   * deferring that behind an exit transition races whatever the activated item
+   * just did (opening a dialog, for instance). Entry needs no JS at all:
+   * `@starting-style` supplies the from-values and the browser interpolates.
+   * `transform` is used rather than the individual `translate`/`scale`
+   * properties because the shared transition tokens list `transform`, and the
+   * individual properties are NOT covered by it.
+   * ---------------------------------------------------------------------- */
+  .stratum-menu {
+    /* Fallback ceiling used before the `size` middleware reports real space.
+     * Expressed as a viewport fraction rather than a pixel constant.
+     * `--stratum-popover-max-block-size` / `--stratum-popover-min-inline-size`
+     * are picked up automatically if the token layer defines them. */
+    --_max-block-size: var(--stratum-popover-max-block-size, 60vh);
+    --_min-inline-size: var(--stratum-popover-min-inline-size, 11rem);
+
+    z-index: var(--stratum-z-popover);
+    display: flex;
+    flex-direction: column;
+    min-inline-size: var(--_min-inline-size);
+    max-block-size: min(var(--_max-block-size), var(--_available-height, 100vh));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+
+    padding: var(--stratum-space-2);
+    color: var(--stratum-text);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-lg);
+    box-shadow: var(--stratum-shadow-lg);
+
+    opacity: 1;
+    transform: none;
+    transition: var(--stratum-transition-popover-enter);
+  }
+
+  /* The popup grows out of the edge it is anchored to. */
+  .stratum-menu[data-side='bottom'] { transform-origin: top center; }
+  .stratum-menu[data-side='top']    { transform-origin: bottom center; }
+  .stratum-menu[data-side='right']  { transform-origin: left center; }
+  .stratum-menu[data-side='left']   { transform-origin: right center; }
+  .stratum-menu[data-side='bottom'][data-align='start'] { transform-origin: top left; }
+  .stratum-menu[data-side='bottom'][data-align='end']   { transform-origin: top right; }
+  .stratum-menu[data-side='top'][data-align='start']    { transform-origin: bottom left; }
+  .stratum-menu[data-side='top'][data-align='end']      { transform-origin: bottom right; }
+
+  /* Both the lift and the zoom are multiplied by the motion tokens, so a
+   * reduced-motion user gets a pure half-duration fade with no movement. */
+  @starting-style {
+    .stratum-menu[data-state='entering'][data-side='bottom'] {
+      opacity: 0;
+      transform: translateY(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-menu[data-state='entering'][data-side='top'] {
+      opacity: 0;
+      transform: translateY(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-menu[data-state='entering'][data-side='right'] {
+      opacity: 0;
+      transform: translateX(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-menu[data-state='entering'][data-side='left'] {
+      opacity: 0;
+      transform: translateX(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+    }
+  }
+
+  /* -------------------------------------------------------------------------
+   * ITEMS
+   * ---------------------------------------------------------------------- */
+  .stratum-menu__item {
+    --_fg: var(--stratum-text);
+    --_bg: transparent;
+    --_bg-active: var(--stratum-surface-hover);
+
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    inline-size: 100%;
+    min-block-size: var(--stratum-space-16);
+    padding-block: var(--stratum-space-3);
+    padding-inline: var(--stratum-space-4);
+
+    font-size: var(--stratum-text-sm);
+    font-weight: var(--stratum-weight-normal);
+    line-height: var(--stratum-leading-tight);
+    text-align: start;
+    white-space: nowrap;
+    user-select: none;
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    cursor: default;
+
+    transition: var(--stratum-transition-control);
+  }
+
+  /* One highlight, driven by `data-active` rather than `:hover`.
+   *
+   * Keyboard navigation and pointer hover both write `data-active`, so the
+   * menu can never show two highlighted rows at once — the classic bug where
+   * the arrow-key row and the row under a resting cursor are both lit and the
+   * user cannot tell which Enter will activate. */
+  .stratum-menu__item[data-active],
+  /* Belt and braces: opening with the pointer hands focus to the first row
+   * before list navigation has an active index, so `:focus` covers the one
+   * frame where `data-active` has not been written yet. Items only ever
+   * receive focus as the roving item, so this can never light a second row. */
+  .stratum-menu__item:focus {
+    --_bg: var(--_bg-active);
+  }
+
+  .stratum-menu__item[data-submenu-trigger][data-open] {
+    --_bg: var(--_bg-active);
+  }
+
+  .stratum-menu__item[data-danger] {
+    --_fg: var(--stratum-danger-fg);
+    --_bg-active: var(--stratum-danger-subtle);
+  }
+
+  .stratum-menu__item[aria-disabled='true'] {
+    --_fg: var(--stratum-text-disabled);
+    --_bg-active: transparent;
+    cursor: not-allowed;
+  }
+
+  /* The indicator column only exists when at least one row in THIS surface
+   * needs it, so a menu of plain commands is not permanently indented.
+   * `:has()` scopes per surface, so a submenu decides independently. */
+  .stratum-menu__indicator {
+    display: none;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-8);
+    block-size: var(--stratum-space-8);
+    color: var(--stratum-text-muted);
+  }
+  .stratum-menu:has([data-indicator]) .stratum-menu__indicator {
+    display: inline-flex;
+  }
+  .stratum-menu__indicator > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+  .stratum-menu__item[data-danger] .stratum-menu__indicator,
+  .stratum-menu__item[role='menuitemcheckbox'][aria-checked='true'] .stratum-menu__indicator,
+  .stratum-menu__item[role='menuitemradio'][aria-checked='true'] .stratum-menu__indicator {
+    color: currentColor;
+  }
+
+  .stratum-menu__item-label {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-menu__shortcut {
+    flex: 0 0 auto;
+    padding-inline-start: var(--stratum-space-8);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-menu__chevron {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-7);
+    block-size: var(--stratum-space-7);
+    margin-inline-start: var(--stratum-space-4);
+    color: var(--stratum-text-subtle);
+  }
+  .stratum-menu__chevron > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  /* -------------------------------------------------------------------------
+   * STRUCTURE
+   * ---------------------------------------------------------------------- */
+  .stratum-menu__separator {
+    block-size: 1px;
+    margin-block: var(--stratum-space-2);
+    margin-inline: calc(-1 * var(--stratum-space-1));
+    background: var(--stratum-divider);
+  }
+
+  .stratum-menu__section-label {
+    padding-block: var(--stratum-space-3) var(--stratum-space-2);
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-semibold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-menu__group {
+    display: contents;
+  }
+
+  /* -------------------------------------------------------------------------
+   * FORCED COLOURS
+   *
+   * The surface fill and the active-row fill both disappear here, so the
+   * surface gets a real border and the active row is repainted with the system
+   * highlight pair rather than a tint.
+   * ---------------------------------------------------------------------- */
+  @media (forced-colors: active) {
+    .stratum-menu {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+    .stratum-menu__item {
+      color: CanvasText;
+    }
+    .stratum-menu__item[data-active],
+    .stratum-menu__item:focus,
+    .stratum-menu__item[data-submenu-trigger][data-open] {
+      color: HighlightText;
+      background: Highlight;
+      forced-color-adjust: none;
+    }
+    .stratum-menu__item[data-active] .stratum-menu__indicator,
+    .stratum-menu__item[data-active] .stratum-menu__shortcut,
+    .stratum-menu__item[data-active] .stratum-menu__chevron,
+    .stratum-menu__item:focus .stratum-menu__indicator,
+    .stratum-menu__item:focus .stratum-menu__shortcut,
+    .stratum-menu__item:focus .stratum-menu__chevron {
+      color: HighlightText;
+    }
+    .stratum-menu__item[aria-disabled='true'] {
+      color: GrayText;
+    }
+    .stratum-menu__separator {
+      background: CanvasText;
+    }
+  }
+
+  /* Exit mirrors the entrance, one vector per side.
+   *
+   * These are keyed on usePresence's vocabulary — entering / entered / exiting —
+   * not a bare open/closed flag. Until this landed, the component hardcoded
+   * `data-state="open"` and unmounted the surface on the same frame its open
+   * flag flipped, so no exit rule could ever match and every dropdown in the
+   * framework blinked out of existence instead of animating away. */
+  .stratum-menu[data-state='exiting'] {
+    opacity: 0;
+    transition: var(--stratum-transition-popover-exit);
+    pointer-events: none;
+  }
+  .stratum-menu[data-state='exiting'][data-side='bottom'] {
+    transform: translateY(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-menu[data-state='exiting'][data-side='top'] {
+    transform: translateY(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-menu[data-state='exiting'][data-side='right'] {
+    transform: translateX(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-menu[data-state='exiting'][data-side='left'] {
+    transform: translateX(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+  }
+}

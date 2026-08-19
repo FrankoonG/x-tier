@@ -1,0 +1,157 @@
+@layer stratum.components {
+  .stratum-popover {
+    /* Per-instance retheming contract. The arrow reads the same two values, so
+     * overriding --_bg / --_border on one popover keeps its arrow in step. */
+    --_bg: var(--stratum-surface-elevated);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border);
+    --_arrow-size: var(--stratum-space-5);
+
+    /* Entrance travel, resolved per side below. Both are already multiplied by
+     * --stratum-motion-distance inside --stratum-lift-*, so reduced motion
+     * removes the movement and keeps the fade. */
+    --_from-x: 0px;
+    --_from-y: 0px;
+
+    z-index: var(--stratum-z-popover);
+    box-sizing: border-box;
+    width: max-content;
+    max-width: var(--stratum-popover-max-width, 22rem);
+    padding: var(--stratum-space-6);
+
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-snug);
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-lg);
+    box-shadow: var(--stratum-shadow-lg);
+
+    /* Resting state. `transform-origin` is set inline from the placement the
+     * middleware actually resolved, so the scale grows out of the trigger even
+     * after a flip. */
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+    transition: var(--stratum-transition-popover-enter);
+  }
+
+  /* Enter travelling away from the trigger: a panel below its trigger starts
+   * slightly above it and drops into place. */
+  .stratum-popover[data-side='top']    { --_from-y: var(--stratum-lift-sm); }
+  .stratum-popover[data-side='bottom'] { --_from-y: calc(-1 * var(--stratum-lift-sm)); }
+  .stratum-popover[data-side='left']   { --_from-x: var(--stratum-lift-sm); }
+  .stratum-popover[data-side='right']  { --_from-x: calc(-1 * var(--stratum-lift-sm)); }
+
+  @starting-style {
+    .stratum-popover[data-state='entering'] {
+      opacity: 0;
+      transform: translate(var(--_from-x), var(--_from-y)) scale(var(--stratum-zoom-subtle));
+    }
+  }
+
+  .stratum-popover[data-state='exiting'] {
+    opacity: 0;
+    transform: translate(var(--_from-x), var(--_from-y)) scale(var(--stratum-zoom-subtle));
+    transition: var(--stratum-transition-popover-exit);
+    /* Still mounted while it animates out. Focus has already gone back to the
+     * trigger by this point, so all that is left to neutralise is the pointer.
+     *
+     * `inert` is deliberately NOT used here: Chrome clears the document's
+     * focused element asynchronously when a subtree becomes inert — even when
+     * focus has already moved out of it — which silently undoes the restore and
+     * drops the user on <body>. */
+    pointer-events: none;
+  }
+
+  /* -- Arrow ----------------------------------------------------------------
+   * A rotated square rather than an SVG triangle: it inherits the panel's own
+   * background and border tokens, so a retheme cannot leave the arrow behind,
+   * and the half that overlaps the panel paints over the panel's border to
+   * produce the notch the border appears to flow around.
+   */
+  .stratum-popover__arrow {
+    position: absolute;
+    width: var(--_arrow-size);
+    height: var(--_arrow-size);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    rotate: 45deg;
+  }
+
+  /* Only the two edges forming the outward-pointing V are drawn; the other two
+   * would otherwise cut a line across the panel. */
+  .stratum-popover[data-side='bottom'] .stratum-popover__arrow {
+    top: calc(var(--_arrow-size) / -2);
+    border-right-color: transparent;
+    border-bottom-color: transparent;
+  }
+  .stratum-popover[data-side='top'] .stratum-popover__arrow {
+    bottom: calc(var(--_arrow-size) / -2);
+    border-top-color: transparent;
+    border-left-color: transparent;
+  }
+  .stratum-popover[data-side='right'] .stratum-popover__arrow {
+    left: calc(var(--_arrow-size) / -2);
+    border-top-color: transparent;
+    border-right-color: transparent;
+  }
+  .stratum-popover[data-side='left'] .stratum-popover__arrow {
+    right: calc(var(--_arrow-size) / -2);
+    border-bottom-color: transparent;
+    border-left-color: transparent;
+  }
+
+  /* -- Modal container ------------------------------------------------------
+   * Invisible on purpose. `modal` is a focus and scroll contract, not a visual
+   * one — a scrim here would read as a dialog and set the wrong expectation.
+   */
+  .stratum-popover__overlay {
+    z-index: var(--stratum-z-popover);
+    background: transparent;
+  }
+
+  /* The overlay is a full-viewport element that stays mounted for the whole
+   * exit transition, so without this it keeps swallowing presses aimed at the
+   * page for the duration of the fade. Neutralising the panel alone (above) is
+   * not enough — this is the layer that is actually in front. Matches
+   * Dialog.css and Drawer.css. */
+  .stratum-popover__overlay[data-state='exiting'] {
+    pointer-events: none;
+  }
+
+  /* Forced colours discard the fill and the shadow, so the border becomes the
+   * only thing separating the panel from the page behind it. */
+  @media (forced-colors: active) {
+    .stratum-popover {
+      background: Canvas;
+      color: CanvasText;
+      border-color: CanvasText;
+    }
+    .stratum-popover__arrow {
+      background: Canvas;
+      border-color: CanvasText;
+    }
+
+    /* `border-color: transparent` is discarded here — the OS repaints every
+     * border — so the two inner edges would come back and the arrow would read
+     * as a floating diamond. `border-style` is not overridden, so removing the
+     * edge outright is the only way to keep the shape a chevron. Sizing is
+     * unaffected: the global reset makes this a border-box. */
+    .stratum-popover[data-side='bottom'] .stratum-popover__arrow {
+      border-right-style: none;
+      border-bottom-style: none;
+    }
+    .stratum-popover[data-side='top'] .stratum-popover__arrow {
+      border-top-style: none;
+      border-left-style: none;
+    }
+    .stratum-popover[data-side='right'] .stratum-popover__arrow {
+      border-top-style: none;
+      border-right-style: none;
+    }
+    .stratum-popover[data-side='left'] .stratum-popover__arrow {
+      border-bottom-style: none;
+      border-left-style: none;
+    }
+  }
+}

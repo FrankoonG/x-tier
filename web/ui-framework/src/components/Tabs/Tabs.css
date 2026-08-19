@@ -1,0 +1,356 @@
+@layer stratum.components {
+  /* ------------------------------------------------------------------------ *
+   * Root
+   * ---------------------------------------------------------------------- */
+  .stratum-tabs {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  /* Vertical puts the list beside the panels rather than above them. */
+  .stratum-tabs[data-orientation='vertical'] {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: var(--stratum-space-8);
+  }
+
+  /* ------------------------------------------------------------------------ *
+   * List
+   * ---------------------------------------------------------------------- */
+  .stratum-tab-list {
+    /* Written by the layout effect from the active tab's offset geometry. */
+    --_indicator-pos: 0px;
+    --_indicator-size: 0px;
+
+    --_bar: 2px;
+    --_indicator-bg: var(--stratum-accent);
+    --_indicator-radius: var(--stratum-radius-full);
+
+    position: relative; /* makes this element the tabs' offsetParent */
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: var(--_gap);
+    min-width: 0;
+    /* An overflowing horizontal list scrolls instead of wrapping — wrapping
+     * would break the single-axis arrow-key model the role contract promises. */
+    overflow-x: auto;
+    overflow-y: hidden;
+    /* The scrollbar is suppressed rather than thinned: it would otherwise sit
+     * on top of the underline rule and read as a second, broken divider. The
+     * affordance is not lost — the tabs are focusable, arrow keys traverse the
+     * whole set, and the handler calls scrollIntoView, so an off-screen tab is
+     * always reachable without a pointer. */
+    scrollbar-width: none;
+  }
+  .stratum-tab-list::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  .stratum-tab-list[data-orientation='vertical'] {
+    flex-direction: column;
+    align-items: stretch;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-x: hidden;
+    overflow-y: auto;
+    flex: 0 0 auto;
+  }
+
+  .stratum-tab-list[data-size='sm'] { --_gap: var(--stratum-space-1); }
+  .stratum-tab-list[data-size='md'] { --_gap: var(--stratum-space-2); }
+  .stratum-tab-list[data-size='lg'] { --_gap: var(--stratum-space-3); }
+
+  /* A segmented control hugs its labels; an underline or enclosed rule is a
+   * divider and is expected to span the full width. */
+  .stratum-tab-list[data-variant='pill'] {
+    align-self: flex-start;
+  }
+  .stratum-tab-list[data-fitted] {
+    align-self: stretch;
+  }
+  .stratum-tab-list[data-fitted] .stratum-tab {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  /* -- The sliding indicator ------------------------------------------------
+   * One pseudo-element, moved with `translate` and resized with `width`.
+   * `left: 0` + translate rather than `inset-inline-start`: offsetLeft is a
+   * physical measurement and stays physical in RTL, so the pairing has to be
+   * physical too or the marker lands on the wrong side of a mirrored list.
+   * The cross axis uses logical properties, which is correct there. */
+  .stratum-tab-list::after {
+    content: '';
+    position: absolute;
+    display: none;
+    background: var(--_indicator-bg);
+    border-radius: var(--_indicator-radius);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .stratum-tab-list[data-indicator]::after {
+    display: block;
+  }
+  /* Only once a first position has been measured and a frame has passed —
+   * otherwise the marker animates in from x=0 on first paint. */
+  .stratum-tab-list[data-indicator='ready']::after {
+    transition:
+      /* Multiplying by --stratum-motion-distance collapses the travel time to
+       * zero under reduced motion. The position itself cannot be scaled the way
+       * a translate offset can, so the duration carries the preference. */
+      translate calc(var(--stratum-duration-lg) * var(--stratum-motion-distance))
+        var(--stratum-ease-signature),
+      width calc(var(--stratum-duration-lg) * var(--stratum-motion-distance))
+        var(--stratum-ease-signature),
+      height calc(var(--stratum-duration-lg) * var(--stratum-motion-distance))
+        var(--stratum-ease-signature),
+      background-color var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+
+  .stratum-tab-list[data-orientation='horizontal']::after {
+    left: 0;
+    width: var(--_indicator-size);
+    translate: var(--_indicator-pos) 0;
+  }
+  .stratum-tab-list[data-orientation='vertical']::after {
+    top: 0;
+    height: var(--_indicator-size);
+    translate: 0 var(--_indicator-pos);
+  }
+
+  /* -- Variant: underline ---------------------------------------------------
+   * The bar sits at `bottom: 0`, not `-1px`. The list is a scroll container,
+   * and `overflow: hidden` clips absolutely positioned descendants at the
+   * padding box — a marker hung outside it loses half its height. */
+  .stratum-tab-list[data-variant='underline'][data-orientation='horizontal'] {
+    border-bottom: 1px solid var(--stratum-border);
+  }
+  .stratum-tab-list[data-variant='underline'][data-orientation='horizontal']::after {
+    bottom: 0;
+    height: var(--_bar);
+  }
+  .stratum-tab-list[data-variant='underline'][data-orientation='vertical'] {
+    border-inline-end: 1px solid var(--stratum-border);
+  }
+  .stratum-tab-list[data-variant='underline'][data-orientation='vertical']::after {
+    inset-inline-end: 0;
+    width: var(--_bar);
+  }
+
+  /* THE BAR OUTRANKS THE HOVER FILL.
+   *
+   * A tab is `z-index: 1` so its label sits above the indicator, and on hover it
+   * takes an OPAQUE `--stratum-surface-hover` background across its whole box —
+   * which, since the tab spans the full height of the list, includes the strip
+   * at `bottom: 0` where this bar lives. Pointing at the selected tab therefore
+   * painted over most of its own selection marker: the one element on screen
+   * that says which tab you are on disappeared exactly when you reached for it.
+   *
+   * Raising it is safe here and only here. In `underline` the indicator is a
+   * 2-3px rule along one edge, far from the vertically-centred label, so nothing
+   * can be occluded by promoting it — and it is `pointer-events: none`, so it
+   * cannot intercept the click either. In `pill` and `enclosed` the indicator is
+   * the filled surface BEHIND the label, so it must stay below the tab; those
+   * variants are deliberately not included in this selector. */
+  .stratum-tab-list[data-variant='underline']::after {
+    z-index: 2;
+  }
+
+  /* -- Variant: pill (segmented control) ------------------------------------ */
+  .stratum-tab-list[data-variant='pill'] {
+    --_indicator-bg: var(--stratum-surface);
+    --_indicator-radius: var(--stratum-radius-sm);
+    padding: var(--stratum-space-1);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border-subtle);
+    border-radius: var(--stratum-radius-md);
+  }
+  .stratum-tab-list[data-variant='pill']::after {
+    inset-block: var(--stratum-space-1);
+    box-shadow: var(--stratum-shadow-sm);
+  }
+  .stratum-tab-list[data-variant='pill'][data-orientation='vertical']::after {
+    inset-block: auto;
+    inset-inline: var(--stratum-space-1);
+  }
+  /* offsetLeft is measured from the list's padding edge, and `left: 0` on the
+   * indicator resolves to the same edge, so no padding compensation is needed. */
+
+  /* -- Variant: enclosed (folder tabs) --------------------------------------
+   * The indicator IS the enclosure: it carries the border and the surface fill
+   * and its own edge overpaints the rule, which is what removes the seam under
+   * the active tab.
+   *
+   * The rule is a ::before rather than a real border precisely so it lands
+   * INSIDE the scroll container's clip region, where the indicator can reach
+   * it. A border sits on the border box, outside anything an absolutely
+   * positioned child can cover once `overflow` is not `visible`. */
+  .stratum-tab-list[data-variant='enclosed'] {
+    --_indicator-bg: var(--stratum-surface);
+  }
+  .stratum-tab-list[data-variant='enclosed']::before {
+    content: '';
+    position: absolute;
+    background: var(--stratum-border);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .stratum-tab-list[data-variant='enclosed'][data-orientation='horizontal'] {
+    padding-block-end: 1px;
+  }
+  .stratum-tab-list[data-variant='enclosed'][data-orientation='horizontal']::before {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+  }
+  .stratum-tab-list[data-variant='enclosed'][data-orientation='horizontal']::after {
+    inset-block: 0;
+    border: 1px solid var(--stratum-border);
+    border-bottom-color: var(--stratum-surface);
+    border-radius: var(--stratum-radius-md) var(--stratum-radius-md) 0 0;
+  }
+  .stratum-tab-list[data-variant='enclosed'][data-orientation='vertical'] {
+    padding-inline-end: 1px;
+  }
+  .stratum-tab-list[data-variant='enclosed'][data-orientation='vertical']::before {
+    top: 0;
+    bottom: 0;
+    inset-inline-end: 0;
+    width: 1px;
+  }
+  .stratum-tab-list[data-variant='enclosed'][data-orientation='vertical']::after {
+    inset-inline: 0;
+    border: 1px solid var(--stratum-border);
+    border-inline-end-color: var(--stratum-surface);
+    border-radius: var(--stratum-radius-md) 0 0 var(--stratum-radius-md);
+  }
+
+  /* ------------------------------------------------------------------------ *
+   * Tab
+   * ---------------------------------------------------------------------- */
+  .stratum-tab {
+    --_fg: var(--stratum-text-secondary);
+    --_fg-active: var(--stratum-text);
+    --_bg-hover: transparent;
+
+    position: relative;
+    z-index: 1; /* above the indicator pseudo-element */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-3);
+    flex: 0 0 auto;
+
+    height: var(--_h);
+    padding-inline: var(--_px);
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-none);
+    white-space: nowrap;
+    user-select: none;
+
+    color: var(--_fg);
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-tab[data-size='sm'] { --_h: 28px; --_px: var(--stratum-space-5); --_fs: var(--stratum-text-xs); }
+  .stratum-tab[data-size='md'] { --_h: 34px; --_px: var(--stratum-space-6); --_fs: var(--stratum-text-sm); }
+  .stratum-tab[data-size='lg'] { --_h: 40px; --_px: var(--stratum-space-8); --_fs: var(--stratum-text-md); }
+
+  .stratum-tab[data-orientation='vertical'] {
+    justify-content: flex-start;
+    text-align: start;
+  }
+
+  .stratum-tab:hover:not([data-disabled]) {
+    color: var(--_fg-active);
+    background: var(--_bg-hover);
+  }
+  .stratum-tab[data-variant='underline']:hover:not([data-disabled]),
+  .stratum-tab[data-variant='enclosed']:hover:not([data-disabled]) {
+    --_bg-hover: var(--stratum-surface-hover);
+  }
+
+  .stratum-tab[data-active] {
+    color: var(--_fg-active);
+    font-weight: var(--stratum-weight-semibold);
+  }
+  .stratum-tab[data-variant='underline'][data-active] {
+    color: var(--stratum-accent-fg);
+  }
+
+  /* Focusable but inert, so the cursor is the only signal that it will not
+   * respond — never `disabled`, which would hide the tab from arrow-key
+   * traversal entirely. */
+  .stratum-tab[data-disabled] {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-tab__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15em;
+    flex-shrink: 0;
+  }
+  .stratum-tab__icon > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-tab__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-tab__badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5em;
+    padding-inline: var(--stratum-space-2);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    font-variant-numeric: var(--stratum-numeric);
+    line-height: 1.5;
+    color: var(--stratum-text-muted);
+    background: var(--stratum-surface-active);
+    border-radius: var(--stratum-radius-full);
+    flex-shrink: 0;
+  }
+  .stratum-tab[data-active] .stratum-tab__badge {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+  }
+
+  /* Forced colours: the indicator's fill vanishes, so the selected tab has to
+   * be identifiable from text treatment and a real border instead. */
+  @media (forced-colors: active) {
+    .stratum-tab-list::after {
+      background: Highlight;
+      border-color: Highlight;
+      forced-color-adjust: none;
+    }
+    .stratum-tab {
+      color: LinkText;
+    }
+    .stratum-tab[data-active] {
+      color: HighlightText;
+      background: Highlight;
+    }
+    .stratum-tab[data-disabled] {
+      color: GrayText;
+    }
+    .stratum-tab__badge {
+      border: 1px solid CanvasText;
+    }
+  }
+}

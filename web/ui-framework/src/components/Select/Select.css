@@ -1,0 +1,335 @@
+@layer stratum.components {
+  /* -------------------------------------------------------------------------
+   * TRIGGER
+   * ---------------------------------------------------------------------- */
+  .stratum-select {
+    --_bg: var(--stratum-surface);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border-strong);
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    inline-size: auto;
+    max-inline-size: 100%;
+    block-size: var(--_h);
+    padding-inline: var(--_px);
+
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-normal);
+    line-height: var(--stratum-leading-none);
+    text-align: start;
+    white-space: nowrap;
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+
+    transition: var(--stratum-transition-control);
+  }
+
+  /* Heights match Button so a Select and a Button sit on the same baseline in
+   * a toolbar. Kept in step with Button.css deliberately. */
+  .stratum-select[data-size='sm'] { --_h: 26px; --_px: var(--stratum-space-5); --_fs: var(--stratum-text-xs); }
+  .stratum-select[data-size='md'] { --_h: 32px; --_px: var(--stratum-space-6); --_fs: var(--stratum-text-sm); }
+  .stratum-select[data-size='lg'] { --_h: 38px; --_px: var(--stratum-space-8); --_fs: var(--stratum-text-md); }
+
+  .stratum-select[data-full-width] {
+    display: flex;
+    inline-size: 100%;
+  }
+
+  .stratum-select:hover:not(:disabled) {
+    --_bg: var(--stratum-surface-hover);
+  }
+
+  .stratum-select[data-open] {
+    --_border: var(--stratum-accent);
+  }
+
+  .stratum-select[aria-invalid='true'] {
+    --_border: var(--stratum-danger);
+  }
+
+  .stratum-select:disabled {
+    --_bg: var(--stratum-surface-disabled);
+    --_fg: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  /* The placeholder is muted, but it is still a real string in the accessible
+   * name — never an `::placeholder`-style ghost that assistive tech skips.
+   * `text-muted`, not `text-subtle`: this is 13px body text and has to clear
+   * 4.5:1, which `text-subtle` does not on the light surface. */
+  .stratum-select[data-placeholder] .stratum-select__value {
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-select__value {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-select__icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15em;
+    color: var(--stratum-text-muted);
+  }
+  .stratum-select__icon > svg {
+    inline-size: 1em;
+    block-size: 1em;
+  }
+
+  .stratum-select__chevron {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-7);
+    block-size: var(--stratum-space-7);
+    color: var(--stratum-text-subtle);
+    transition: rotate var(--stratum-duration-xs) var(--stratum-ease-out);
+  }
+  .stratum-select__chevron > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+  /* Rotation is a state indicator, not decoration, so it survives reduced
+   * motion — the multiplier only removes the transition, not the end state. */
+  .stratum-select[data-open] .stratum-select__chevron {
+    rotate: 180deg;
+  }
+
+  /* -------------------------------------------------------------------------
+   * POPUP
+   *
+   * Entry only, for the same reason as Menu: the listbox takes DOM focus, so
+   * it must unmount in the same task it closes in or focus restoration races
+   * whatever comes next. See Menu.css.
+   * ---------------------------------------------------------------------- */
+  .stratum-select__popup {
+    --_max-block-size: var(--stratum-popover-max-block-size, 60vh);
+
+    z-index: var(--stratum-z-popover);
+    display: flex;
+    flex-direction: column;
+    /* Never narrower than the control it belongs to: a popup that is visibly
+     * detached from its trigger reads as a different widget. */
+    min-inline-size: var(--_trigger-width, auto);
+    max-block-size: min(var(--_max-block-size), var(--_available-height, 100vh));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+
+    padding: var(--stratum-space-2);
+    color: var(--stratum-text);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-lg);
+    box-shadow: var(--stratum-shadow-lg);
+
+    opacity: 1;
+    transform: none;
+    transition: var(--stratum-transition-popover-enter);
+  }
+
+  /* All four sides: `placement` is Floating UI's full union and flip() can
+   * resolve to left/right, which would otherwise scale from the centre and
+   * enter with no @starting-style at all. */
+  .stratum-select__popup[data-side='bottom'] { transform-origin: top center; }
+  .stratum-select__popup[data-side='top']    { transform-origin: bottom center; }
+  .stratum-select__popup[data-side='right']  { transform-origin: left center; }
+  .stratum-select__popup[data-side='left']   { transform-origin: right center; }
+  .stratum-select__popup[data-side='bottom'][data-align='start'] { transform-origin: top left; }
+  .stratum-select__popup[data-side='bottom'][data-align='end']   { transform-origin: top right; }
+  .stratum-select__popup[data-side='top'][data-align='start']    { transform-origin: bottom left; }
+  .stratum-select__popup[data-side='top'][data-align='end']      { transform-origin: bottom right; }
+
+  /* Entrance and exit share their from/to values, one pair per side, so the
+   * popup leaves along the same vector it arrived on.
+   *
+   * The state vocabulary here is usePresence's — entering / entered / exiting —
+   * not a bare open/closed flag. An earlier revision keyed these on
+   * `[data-state='open']` while the component hardcoded that string and
+   * unmounted the popup the instant its open flag flipped. The entrance worked,
+   * so it looked fine; the exit had nothing to animate because the element was
+   * already gone on that frame. Every dropdown in the framework simply blinked
+   * out of existence. */
+  @starting-style {
+    .stratum-select__popup[data-state='entering'][data-side='bottom'] {
+      opacity: 0;
+      transform: translateY(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-select__popup[data-state='entering'][data-side='top'] {
+      opacity: 0;
+      transform: translateY(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-select__popup[data-state='entering'][data-side='right'] {
+      opacity: 0;
+      transform: translateX(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-select__popup[data-state='entering'][data-side='left'] {
+      opacity: 0;
+      transform: translateX(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+    }
+  }
+
+  .stratum-select__popup[data-state='exiting'] {
+    opacity: 0;
+    transition: var(--stratum-transition-popover-exit);
+    /* The popup is on its way out and must not eat a click aimed at whatever
+     * is behind it. */
+    pointer-events: none;
+  }
+  .stratum-select__popup[data-state='exiting'][data-side='bottom'] {
+    transform: translateY(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-select__popup[data-state='exiting'][data-side='top'] {
+    transform: translateY(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-select__popup[data-state='exiting'][data-side='right'] {
+    transform: translateX(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-select__popup[data-state='exiting'][data-side='left'] {
+    transform: translateX(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+  }
+
+  /* -------------------------------------------------------------------------
+   * OPTIONS
+   * ---------------------------------------------------------------------- */
+  .stratum-select__option {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-4);
+    padding-block: var(--stratum-space-3);
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+    border-radius: var(--stratum-radius-sm);
+    cursor: default;
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-select__option[data-active],
+  .stratum-select__option:focus {
+    background: var(--stratum-surface-hover);
+  }
+
+  /* Selection is carried by the tick, not by the background: the background is
+   * already spoken for by the active row, and two tints competing in one list
+   * is the fastest way to make an operator pick the wrong entry. */
+  .stratum-select__option[data-selected] {
+    font-weight: var(--stratum-weight-medium);
+  }
+
+  .stratum-select__option[aria-disabled='true'] {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-select__option-check {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-8);
+    block-size: var(--stratum-space-8);
+    color: var(--stratum-accent-fg);
+  }
+  .stratum-select__option-check > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  .stratum-select__option-icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-8);
+    block-size: var(--stratum-space-8);
+    color: var(--stratum-text-muted);
+  }
+  .stratum-select__option-icon > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  .stratum-select__option-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-inline-size: 0;
+  }
+
+  .stratum-select__option-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-select__option-description {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-select__group {
+    display: contents;
+  }
+
+  .stratum-select__group-label {
+    padding-block: var(--stratum-space-3) var(--stratum-space-2);
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-semibold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-select__empty {
+    padding-block: var(--stratum-space-6);
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-sm);
+    text-align: center;
+    color: var(--stratum-text-muted);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-select {
+      border-color: ButtonBorder;
+      color: ButtonText;
+      background: ButtonFace;
+    }
+    .stratum-select:disabled {
+      color: GrayText;
+      border-color: GrayText;
+    }
+    .stratum-select__popup {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+    .stratum-select__option[data-active],
+    .stratum-select__option:focus {
+      color: HighlightText;
+      background: Highlight;
+      forced-color-adjust: none;
+    }
+    .stratum-select__option[data-active] .stratum-select__option-check,
+    .stratum-select__option[data-active] .stratum-select__option-icon,
+    .stratum-select__option[data-active] .stratum-select__option-description,
+    .stratum-select__option:focus .stratum-select__option-check,
+    .stratum-select__option:focus .stratum-select__option-icon,
+    .stratum-select__option:focus .stratum-select__option-description {
+      color: HighlightText;
+    }
+    .stratum-select__option[aria-disabled='true'] {
+      color: GrayText;
+    }
+  }
+}

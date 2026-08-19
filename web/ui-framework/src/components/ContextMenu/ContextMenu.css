@@ -1,0 +1,26 @@
+@layer stratum.components {
+  /* -------------------------------------------------------------------------
+   * The popup itself is `.stratum-menu` from Menu.css — a context menu differs
+   * only in how it is anchored, not in what it looks like. Everything here
+   * belongs to the region the gesture applies to.
+   * ---------------------------------------------------------------------- */
+  .stratum-context-menu-target {
+    /* No `display` is set: the region must not change the layout of whatever
+     * it wraps. It stays a plain block-level box so it has a rect to anchor a
+     * keyboard-invoked menu to. */
+    min-inline-size: 0;
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* The region is a tab stop by default so `Shift`+`F10` has somewhere to fire
+   * from. That only helps if the stop is visible, hence an explicit ring
+   * rather than relying on the region having a border of its own. */
+  .stratum-context-menu-target:focus-visible {
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+
+  .stratum-context-menu-target[data-disabled] {
+    cursor: default;
+  }
+}

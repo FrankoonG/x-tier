@@ -1,0 +1,269 @@
+@layer stratum.components {
+  .stratum-dialog__overlay {
+    /* FloatingOverlay sets position/inset/overflow inline; everything else is
+     * ours. The panel is capped at 100% height so this never has to scroll —
+     * long content scrolls inside the body instead, which keeps the header and
+     * the action row visible. */
+    z-index: var(--stratum-z-dialog);
+    display: grid;
+    place-items: center;
+    padding: var(--stratum-space-8);
+  }
+
+  .stratum-dialog__overlay[data-size='full'] {
+    padding: 0;
+  }
+
+  .stratum-dialog__overlay[data-state='exiting'] {
+    pointer-events: none;
+  }
+
+  /* Condemned, but not yet its turn.
+   *
+   * `closeDialogStack()` unwinds the stack one layer at a time, so a lower
+   * dialog can sit fully painted for several hundred milliseconds after the
+   * decision to close it has already been taken. Left interactive it invites
+   * exactly the interactions that make no sense any more — pressing a button in
+   * a dialog that is about to vanish, or opening a fourth layer into the middle
+   * of a sequence that already decided what it was closing. Marked the instant
+   * the cascade starts, not when the layer's own turn arrives. */
+  .stratum-dialog__overlay[data-stack-closing] {
+    pointer-events: none;
+  }
+
+  /* -- Scrim ----------------------------------------------------------------
+   * A separate element rather than a background on the overlay, so its fade is
+   * independent of the panel's zoom. Uses the overlay transition pair, whose
+   * opacity leg is deliberately faster than its transform leg.
+   */
+  .stratum-dialog__scrim {
+    position: absolute;
+    inset: 0;
+    background: var(--stratum-scrim);
+    opacity: 1;
+    transition: var(--stratum-transition-overlay-enter);
+  }
+
+  @starting-style {
+    .stratum-dialog__scrim[data-state='entering'] {
+      opacity: 0;
+    }
+  }
+
+  .stratum-dialog__scrim[data-state='exiting'] {
+    opacity: 0;
+    transition: var(--stratum-transition-overlay-exit);
+  }
+
+  /* -- Panel ---------------------------------------------------------------- */
+  .stratum-dialog {
+    /* Written from JS at open time, in px, as the offset from the centre of the
+     * viewport to the control that opened the dialog. Multiplied through
+     * --stratum-motion-distance so reduced motion drops the travel to zero
+     * while the fade survives. */
+    --_origin-x: 0px;
+    --_origin-y: 0px;
+    --_tx: calc(var(--_origin-x) * var(--stratum-motion-distance));
+    --_ty: calc(var(--_origin-y) * var(--stratum-motion-distance));
+
+    --_bg: var(--stratum-surface-elevated);
+    --_border: var(--stratum-border);
+    --_pad: var(--stratum-space-10);
+
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: var(--_w);
+    max-height: 100%;
+    min-height: 0;
+
+    color: var(--stratum-text);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-xl);
+    box-shadow: var(--stratum-shadow-xl);
+
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+    transition: var(--stratum-transition-overlay-enter);
+  }
+
+  /* -- Auto-resize ----------------------------------------------------------
+   * `--_h` is the content's natural height, measured in JS. `100%` is the
+   * overlay's content box — definite, because FloatingOverlay is
+   * `position: fixed; inset: 0` — so `min()` clamps the panel to the space
+   * actually available without JS ever learning the viewport size.
+   *
+   * That clamp is not just tidiness, it is what makes the animation watchable.
+   * Transitioning to the raw measured height when the content is far taller
+   * than the screen means the eased curve crosses the cap almost immediately:
+   * measured on a 3-row to 60-row change, the panel went 349px to its 736px
+   * limit inside ONE frame, so the whole transition was spent off-screen and
+   * what you saw was a snap. Clamping the target first spends the entire curve
+   * on travel that is visible — the same change then reads 257 · 377 · 471 ·
+   * 631 · 720 · 736 across ~400ms.
+   *
+   * With `--_h` unset the whole `min()` is invalid at computed-value time, so
+   * `height` falls back to `auto` and an unmeasured dialog behaves exactly as
+   * it always has. No flash, no special case. */
+  .stratum-dialog[data-auto-size] {
+    /* `--_h` measures the CONTENT WRAPPER, which sits inside the body's padding
+     * — so that padding has to be added back. It is added here, in CSS, from
+     * the very token that produces it, rather than measured or hardcoded in JS.
+     * Change `--_pad` and this follows automatically; that is the same reason
+     * the cap lives in CSS. */
+    --_chrome: var(--_pad);
+    height: min(calc(var(--_h) + var(--_chrome)), 100%);
+  }
+  /* A bare header hands its padding to the body's block-start as well. */
+  .stratum-dialog[data-auto-size]:has(.stratum-dialog__header[data-bare]) {
+    --_chrome: calc(var(--_pad) * 2);
+  }
+  .stratum-dialog[data-auto-size][data-animate] {
+    transition: var(--stratum-transition-overlay-enter), var(--stratum-transition-size);
+  }
+  .stratum-dialog[data-size='sm'] { --_w: var(--stratum-dialog-width-sm, 24rem); }
+  .stratum-dialog[data-size='md'] { --_w: var(--stratum-dialog-width-md, 32rem); }
+  .stratum-dialog[data-size='lg'] { --_w: var(--stratum-dialog-width-lg, 42rem); }
+  .stratum-dialog[data-size='xl'] { --_w: var(--stratum-dialog-width-xl, 56rem); }
+  .stratum-dialog[data-size='full'] {
+    --_w: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  /* The signature entrance: the panel starts at the origin point, scaled right
+   * down, and grows into place. Scaling about its own centre after translating
+   * to the origin puts the miniature panel exactly on the control that opened
+   * it, which is what sells the connection. */
+  @starting-style {
+    .stratum-dialog[data-state='entering'] {
+      opacity: 0;
+      transform: translate(var(--_tx), var(--_ty)) scale(var(--stratum-zoom-modal));
+    }
+  }
+
+  /* Focus has already been returned to the opener by the time this state is
+   * reached, so the only thing left to neutralise while the panel animates out
+   * is the pointer. `inert` is deliberately NOT used: Chrome clears the
+   * document's focused element asynchronously when a subtree becomes inert,
+   * even after focus has moved out of it, which undoes the restore. */
+  .stratum-dialog[data-state='exiting'] {
+    opacity: 0;
+    transform: translate(var(--_tx), var(--_ty)) scale(var(--stratum-zoom-modal));
+    transition: var(--stratum-transition-overlay-exit);
+    pointer-events: none;
+  }
+
+  /* The panel takes focus on open so its accessible name is announced, but it
+   * is a landing zone rather than an operable control — a ring around the whole
+   * dialog would be noise, and the scrim already says which surface is live.
+   * Every control inside keeps the global :focus-visible ring. */
+  .stratum-dialog:focus-visible {
+    outline: none;
+  }
+
+  /* -- Header --------------------------------------------------------------- */
+  .stratum-dialog__header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-6);
+    padding: var(--_pad) var(--_pad) var(--stratum-space-6);
+  }
+
+  /* Nothing visible left in it — the title is present but visually hidden and
+   * there is no description or close button. `display: contents` removes the
+   * box without removing the element that carries the accessible name.
+   *
+   * The heading has to collapse too. Left as a box it becomes a direct flex
+   * item of the panel carrying `flex: 1 1 auto`, the same grow factor as the
+   * body, while its only child is the absolutely-positioned hidden <h2> — so
+   * at `size="full"`, where the panel has a definite height, free space is
+   * split 50/50 with an empty box and the content is pushed halfway down. */
+  .stratum-dialog__header[data-bare],
+  .stratum-dialog__header[data-bare] .stratum-dialog__heading {
+    display: contents;
+  }
+  .stratum-dialog__header[data-bare] ~ .stratum-dialog__body {
+    padding-block-start: var(--_pad);
+  }
+
+  .stratum-dialog__heading {
+    display: grid;
+    gap: var(--stratum-space-2);
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .stratum-dialog__title {
+    margin: 0;
+    font-size: var(--stratum-text-lg);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+  }
+
+  .stratum-dialog__description {
+    margin: 0;
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-secondary);
+  }
+
+  .stratum-dialog__close {
+    flex-shrink: 0;
+    margin-inline-start: auto;
+  }
+
+  /* -- Body ----------------------------------------------------------------- */
+  .stratum-dialog__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    /* Reserved so a scrollbar appearing mid-grow cannot rewrap the text, which
+     * would change the content height and refire the measurement that produced
+     * the grow in the first place. */
+    scrollbar-gutter: stable;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+    padding-inline: var(--_pad);
+    padding-block-end: var(--_pad);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-normal);
+    color: var(--stratum-text);
+  }
+
+  /* -- Footer --------------------------------------------------------------- */
+  .stratum-dialog__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--stratum-space-4);
+    padding: var(--stratum-space-6) var(--_pad);
+    background: var(--stratum-surface-sunken);
+    border-top: 1px solid var(--stratum-divider);
+    border-end-start-radius: inherit;
+    border-end-end-radius: inherit;
+  }
+
+  /* Fills and shadows are discarded by the OS here, so the panel's edge and the
+   * footer divider have to exist as real borders, and the scrim has to be a
+   * real opaque surface rather than a translucent colour. */
+  @media (forced-colors: active) {
+    .stratum-dialog {
+      background: Canvas;
+      color: CanvasText;
+      border-color: CanvasText;
+    }
+    .stratum-dialog__scrim {
+      background: Canvas;
+    }
+    .stratum-dialog__footer {
+      background: Canvas;
+      border-top-color: CanvasText;
+    }
+  }
+}

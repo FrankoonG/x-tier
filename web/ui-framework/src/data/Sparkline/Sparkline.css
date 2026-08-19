@@ -1,0 +1,85 @@
+@layer stratum.components {
+  .stratum-sparkline {
+    /* Per-instance overrides. A consumer retheming one sparkline sets these
+     * rather than fighting selectors. */
+    --_baseline: var(--stratum-border-strong);
+    --_area-opacity: 0.14;
+    --_empty: var(--stratum-unknown);
+
+    display: inline-flex;
+    align-items: center;
+    /* Never contributes to line height. A sparkline in a table cell must not
+     * change the row's height, which `inline` SVG otherwise does via the
+     * baseline gap. */
+    vertical-align: middle;
+    min-width: 0;
+  }
+
+  .stratum-sparkline__svg {
+    display: block;
+    overflow: visible;
+  }
+
+  .stratum-sparkline__series {
+    color: var(--stratum-series-1);
+  }
+  .stratum-sparkline__series[data-series='1'] { color: var(--stratum-series-1); }
+  .stratum-sparkline__series[data-series='2'] { color: var(--stratum-series-2); }
+  .stratum-sparkline__series[data-series='3'] { color: var(--stratum-series-3); }
+  .stratum-sparkline__series[data-series='4'] { color: var(--stratum-series-4); }
+  .stratum-sparkline__series[data-series='5'] { color: var(--stratum-series-5); }
+  .stratum-sparkline__series[data-series='6'] { color: var(--stratum-series-6); }
+  .stratum-sparkline__series[data-series='7'] { color: var(--stratum-series-7); }
+  .stratum-sparkline__series[data-series='8'] { color: var(--stratum-series-8); }
+
+  /* A wash, never a saturated block: the line is the data, the fill is only
+   * there to give the line a body so it reads at 24px tall. */
+  .stratum-sparkline__area {
+    opacity: var(--_area-opacity);
+  }
+
+  .stratum-sparkline__baseline {
+    color: var(--_baseline);
+    stroke-width: 1;
+    /* Solid, not dashed. A dashed rule reads as a threshold or a projection;
+     * this is just the zero line. */
+  }
+
+  /* An isolated observation between two holes. Drawn at full strength: the
+   * series colours are tuned to clear 3:1 as marks (SC 1.4.11) and nothing
+   * else, so a multiplier on top of them lands a real data point at ~2.3:1.
+   * The island is already separable from the end-of-series marker by position
+   * — it has no line running into it — which costs no contrast. */
+  .stratum-sparkline__island {
+    opacity: 1;
+  }
+
+  /* The empty frame. Rendered rather than collapsed so a column of sparklines
+   * in a live table keeps its geometry while series are still arriving. The
+   * dotted rule is unmistakably "nothing measured here", and unmistakably not
+   * "measured flat at zero" — which a solid centred line would imply.
+   *
+   * No opacity. The DASH PATTERN is what says "not measured"; fading the
+   * stroke on top of it dropped a meaningful graphic from 5:1 to ~2.3:1 and
+   * bought nothing the dashes were not already saying. */
+  .stratum-sparkline__empty {
+    color: var(--_empty);
+    stroke-width: 1;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-sparkline__series {
+      color: CanvasText;
+      /* The OS discards our palette, so the dash pattern and marker shape are
+       * the only channels left. Both are already set on the elements. */
+    }
+    .stratum-sparkline__area {
+      opacity: 0.25;
+    }
+    .stratum-sparkline__baseline,
+    .stratum-sparkline__empty {
+      color: GrayText;
+      opacity: 1;
+    }
+  }
+}

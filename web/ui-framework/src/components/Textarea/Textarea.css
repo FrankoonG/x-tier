@@ -1,0 +1,127 @@
+@layer stratum.components {
+  .stratum-textarea {
+    --_bg: var(--stratum-surface);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border-strong);
+    --_bg-hover: var(--stratum-surface-hover);
+    --_border-focus: var(--stratum-accent);
+    --_ring: var(--stratum-focus-ring);
+    --_placeholder: var(--stratum-text-subtle);
+
+    display: block;
+    padding: var(--_py) var(--_px);
+    font-size: var(--_fs);
+    font-family: var(--stratum-font-sans);
+    /* Resolved, not `normal`: the auto-resize maths reads this back through
+     * getComputedStyle and `normal` yields a keyword it cannot use. */
+    line-height: var(--stratum-leading-normal);
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+    resize: vertical;
+
+    transition: var(--stratum-transition-control), var(--stratum-transition-focus);
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-textarea[data-size='sm'] {
+    --_px: var(--stratum-space-4);
+    --_py: var(--stratum-space-3);
+    --_fs: var(--stratum-text-xs);
+  }
+  .stratum-textarea[data-size='md'] {
+    --_px: var(--stratum-space-5);
+    --_py: var(--stratum-space-4);
+    --_fs: var(--stratum-text-sm);
+  }
+  .stratum-textarea[data-size='lg'] {
+    --_px: var(--stratum-space-6);
+    --_py: var(--stratum-space-5);
+    --_fs: var(--stratum-text-md);
+  }
+
+  .stratum-textarea[data-full-width] {
+    width: 100%;
+  }
+
+  .stratum-textarea[data-monospace] {
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* The JS owns the height, so a drag handle would fight it on the next
+   * keystroke. */
+  .stratum-textarea[data-auto-resize] {
+    resize: none;
+  }
+
+  /* -- Variants ------------------------------------------------------------
+   * Border kept, not dropped: in dark mode `surface-sunken` equals the page
+   * background, so a borderless subtle field would be invisible. */
+  .stratum-textarea[data-variant='subtle'] {
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border);
+    --_bg-hover: var(--stratum-surface-hover);
+  }
+
+  /* -- States -------------------------------------------------------------- */
+  .stratum-textarea:hover:not(:disabled):not(:focus) {
+    background: var(--_bg-hover);
+  }
+
+  .stratum-textarea:focus {
+    border-color: var(--_border-focus);
+  }
+
+  .stratum-textarea:focus-visible {
+    outline: var(--stratum-focus-ring-width) solid var(--_ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+
+  .stratum-textarea::placeholder {
+    color: var(--_placeholder);
+    opacity: 1;
+  }
+
+  .stratum-textarea[data-invalid] {
+    --_border: var(--stratum-danger);
+    --_border-focus: var(--stratum-danger);
+    --_ring: var(--stratum-danger);
+  }
+
+  .stratum-textarea[data-readonly] {
+    --_bg: var(--stratum-surface-sunken);
+  }
+
+  .stratum-textarea:disabled {
+    --_bg: var(--stratum-surface-disabled);
+    --_fg: var(--stratum-text-disabled);
+    --_border: var(--stratum-border);
+    --_placeholder: var(--stratum-text-disabled);
+    cursor: not-allowed;
+    resize: none;
+    -webkit-text-fill-color: var(--stratum-text-disabled);
+    opacity: 1;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-textarea {
+      background: Field;
+      color: FieldText;
+      border-color: ButtonBorder;
+    }
+    .stratum-textarea:focus {
+      border-color: Highlight;
+    }
+    .stratum-textarea[data-invalid] {
+      border-width: 2px;
+    }
+    .stratum-textarea:disabled {
+      color: GrayText;
+      border-color: GrayText;
+      -webkit-text-fill-color: GrayText;
+    }
+  }
+}

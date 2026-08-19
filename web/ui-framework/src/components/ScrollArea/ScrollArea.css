@@ -1,0 +1,121 @@
+@layer stratum.components {
+  .stratum-scroll-area {
+    /* The colour the edge affordance fades into. Set this when the area sits
+     * on something other than the default surface — a sunken snippet, a
+     * selected row — otherwise the fade reads as a smudge. */
+    --_fade-color: var(--stratum-surface);
+    --_fade-size: var(--stratum-space-10);
+    /* Re-declared on every root so the cap stops at one level. `--_max-h` is
+     * set as an inline style on the viewport, and custom properties inherit —
+     * without this reset a nested ScrollArea silently adopted the outer one's
+     * `maxHeight` even though its own prop was never set. (`--_fade-color` is
+     * deliberately the opposite: Card and Snippet set it to be inherited.) */
+    --_max-h: none;
+
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    min-inline-size: 0;
+  }
+
+  .stratum-scroll-area__viewport {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    min-inline-size: 0;
+    max-block-size: var(--_max-h, none);
+    /* Stops a scroll that reaches the end of this box from continuing into the
+     * page behind it — the behaviour that makes a log pane inside a dialog
+     * feel broken. */
+    overscroll-behavior: contain;
+  }
+
+  .stratum-scroll-area[data-orientation='vertical'] > .stratum-scroll-area__viewport {
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .stratum-scroll-area[data-orientation='horizontal'] > .stratum-scroll-area__viewport {
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .stratum-scroll-area[data-orientation='both'] > .stratum-scroll-area__viewport {
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+  }
+
+  .stratum-scroll-area__content {
+    min-inline-size: 0;
+  }
+
+  /* Horizontal scrolling needs the content box to be as wide as its widest
+   * child; otherwise it is capped at the viewport width and the ResizeObserver
+   * never sees the content grow. `min-inline-size: 100%` keeps a short line
+   * from collapsing the box. */
+  .stratum-scroll-area[data-orientation='horizontal'] > .stratum-scroll-area__viewport > .stratum-scroll-area__content,
+  .stratum-scroll-area[data-orientation='both'] > .stratum-scroll-area__viewport > .stratum-scroll-area__content {
+    inline-size: max-content;
+    min-inline-size: 100%;
+  }
+
+  /* -- Edge affordances ------------------------------------------------------
+   * Gradients rather than inset shadows: a shadow tints the content underneath
+   * it, and these sit over text. */
+  .stratum-scroll-area__fade {
+    position: absolute;
+    z-index: var(--stratum-z-raised);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--stratum-duration-xs) var(--stratum-ease-out);
+  }
+
+  .stratum-scroll-area__fade[data-edge='top'] {
+    inset-block-start: 0;
+    inset-inline: 0;
+    block-size: var(--_fade-size);
+    background: linear-gradient(to bottom, var(--_fade-color), transparent);
+  }
+  .stratum-scroll-area__fade[data-edge='bottom'] {
+    inset-block-end: 0;
+    inset-inline: 0;
+    block-size: var(--_fade-size);
+    background: linear-gradient(to top, var(--_fade-color), transparent);
+  }
+  .stratum-scroll-area__fade[data-edge='start'] {
+    inset-block: 0;
+    inset-inline-start: 0;
+    inline-size: var(--_fade-size);
+    background: linear-gradient(to right, var(--_fade-color), transparent);
+  }
+  .stratum-scroll-area__fade[data-edge='end'] {
+    inset-block: 0;
+    inset-inline-end: 0;
+    inline-size: var(--_fade-size);
+    background: linear-gradient(to left, var(--_fade-color), transparent);
+  }
+
+  /* The inline gradients are direction-dependent, so they flip with the
+   * document direction rather than staying pinned to physical left/right. */
+  [dir='rtl'] .stratum-scroll-area__fade[data-edge='start'] {
+    background: linear-gradient(to left, var(--_fade-color), transparent);
+  }
+  [dir='rtl'] .stratum-scroll-area__fade[data-edge='end'] {
+    background: linear-gradient(to right, var(--_fade-color), transparent);
+  }
+
+  .stratum-scroll-area[data-overflow-top] > .stratum-scroll-area__fade[data-edge='top'],
+  .stratum-scroll-area[data-overflow-bottom] > .stratum-scroll-area__fade[data-edge='bottom'],
+  .stratum-scroll-area[data-overflow-start] > .stratum-scroll-area__fade[data-edge='start'],
+  .stratum-scroll-area[data-overflow-end] > .stratum-scroll-area__fade[data-edge='end'] {
+    opacity: 1;
+  }
+
+  @media (forced-colors: active) {
+    /* A gradient carries no information once the OS repaints it, and a
+     * flat-coloured band over text is worse than nothing. */
+    .stratum-scroll-area__fade {
+      display: none;
+    }
+  }
+}

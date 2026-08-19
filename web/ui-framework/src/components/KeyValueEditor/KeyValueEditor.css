@@ -1,0 +1,99 @@
+@layer stratum.components {
+  .stratum-key-value-editor {
+    /* Key column width. A single custom property so a consumer can align the
+     * split with a neighbouring editor rather than eyeballing two of them. */
+    --_key-width: 14rem;
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-4);
+    min-inline-size: 0;
+
+    /* Own query container, so the key/value split responds to the width the
+     * editor actually has — inside a drawer, a dialog, a half-width panel —
+     * rather than to the window. A container cannot query itself, hence the
+     * rules below target descendants. */
+    container-type: inline-size;
+    container-name: stratum-key-value;
+  }
+
+  .stratum-key-value-editor__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--stratum-space-4);
+  }
+
+  /* -- Form view ----------------------------------------------------------- */
+  .stratum-key-value-editor__row {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    min-inline-size: 0;
+  }
+
+  .stratum-key-value-editor__key {
+    flex: 0 1 var(--_key-width);
+    min-inline-size: 0;
+  }
+
+  .stratum-key-value-editor__value {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  .stratum-key-value-editor__toggle {
+    flex: 0 0 auto;
+  }
+
+  /* A disabled entry is still readable — it is content, not an inactive
+   * control — so it is marked with a line rather than dimmed below AA. */
+  .stratum-key-value-editor__row[data-off] .stratum-key-value-editor__key,
+  .stratum-key-value-editor__row[data-off] .stratum-key-value-editor__value {
+    text-decoration: line-through;
+    text-decoration-color: var(--stratum-text-muted);
+    color: var(--stratum-text-secondary);
+  }
+
+  /* Narrow containers stack the two halves rather than shrinking the key to
+   * an unreadable stub. */
+  @container stratum-key-value (max-width: 30rem) {
+    .stratum-key-value-editor__row {
+      flex-wrap: wrap;
+    }
+    .stratum-key-value-editor__key {
+      flex-basis: 100%;
+    }
+  }
+
+  /* -- Text view ----------------------------------------------------------- */
+  .stratum-key-value-editor__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+  }
+
+  .stratum-key-value-editor__issues {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+  }
+
+  .stratum-key-value-editor__issue-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    margin: 0;
+    padding-inline-start: var(--stratum-space-8);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-danger-fg);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-key-value-editor__row[data-off] .stratum-key-value-editor__key,
+    .stratum-key-value-editor__row[data-off] .stratum-key-value-editor__value {
+      color: GrayText;
+    }
+  }
+}

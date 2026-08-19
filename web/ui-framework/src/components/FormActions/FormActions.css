@@ -1,0 +1,100 @@
+@layer stratum.components {
+  .stratum-form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+
+    /* The row is its own query container, so it stacks according to the space
+     * it actually has — inside a drawer, a dialog or a half-width panel —
+     * rather than according to the window. A container cannot query itself,
+     * so the stacked rules below target its children and let wrapping do the
+     * work that changing `flex-direction` would otherwise do. */
+    container-type: inline-size;
+    container-name: stratum-form-actions;
+  }
+
+  .stratum-form-actions[data-align='start']   { justify-content: flex-start; }
+  .stratum-form-actions[data-align='center']  { justify-content: center; }
+  .stratum-form-actions[data-align='end']     { justify-content: flex-end; }
+  .stratum-form-actions[data-align='between'] { justify-content: space-between; }
+
+  .stratum-form-actions[data-divider] {
+    padding-block-start: var(--stratum-space-8);
+    border-block-start: 1px solid var(--stratum-divider);
+  }
+
+  .stratum-form-actions[data-sticky] {
+    position: sticky;
+    inset-block-end: 0;
+    z-index: var(--stratum-z-sticky);
+    padding-block-end: var(--stratum-space-6);
+    /* Opaque: scrolled content must not read through the footer. */
+    background: var(--stratum-surface);
+  }
+
+  /* Longhand rather than the `padding-block` shorthand, and only when there is
+   * no divider: the shorthand sets both edges, and `[data-sticky]` is declared
+   * after `[data-divider]` at equal specificity, so it would silently erase the
+   * divider's larger separation above the rule. `<FormActions divider sticky>`
+   * is the single most likely combination for a scrolling form footer. */
+  .stratum-form-actions[data-sticky]:not([data-divider]) {
+    padding-block-start: var(--stratum-space-6);
+  }
+
+  .stratum-form-actions__group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+  }
+
+  /* An auto margin rather than `space-between` on the parent: with only one
+   * group present, `space-between` would leave it at the start. */
+  .stratum-form-actions__group[data-align='end'] {
+    margin-inline-start: auto;
+  }
+
+  /* -- Stacked --------------------------------------------------------------
+   * Each child takes a full line and its buttons share that line, which on a
+   * narrow panel gives targets that are comfortable to hit and unambiguous to
+   * read. Authored order is preserved — see the note in FormActions.tsx.
+   */
+  .stratum-form-actions[data-stack='always'] > * {
+    flex: 1 1 100%;
+  }
+  .stratum-form-actions[data-stack='always'] .stratum-form-actions__group > * {
+    flex: 1 1 auto;
+  }
+  .stratum-form-actions[data-stack='always'] .stratum-form-actions__group[data-align='end'] {
+    margin-inline-start: 0;
+  }
+
+  /* Roughly the width below which two buttons plus their gap stop reading as
+   * a row. It is a literal because container query conditions cannot resolve
+   * custom properties, so there is no token to point at here. */
+  @container stratum-form-actions (max-width: 22rem) {
+    .stratum-form-actions[data-stack='auto'] > * {
+      flex: 1 1 100%;
+    }
+    .stratum-form-actions[data-stack='auto'] .stratum-form-actions__group > * {
+      flex: 1 1 auto;
+    }
+    .stratum-form-actions[data-stack='auto'] .stratum-form-actions__group[data-align='end'] {
+      margin-inline-start: 0;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-form-actions[data-divider] {
+      border-block-start-color: CanvasText;
+    }
+    /* The sticky footer's background is repainted by the OS, so the boundary
+     * has to exist as a border to survive. */
+    .stratum-form-actions[data-sticky] {
+      border-block-start: 1px solid CanvasText;
+    }
+  }
+}

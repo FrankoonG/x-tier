@@ -1,0 +1,110 @@
+@layer stratum.components {
+  .stratum-address-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+  }
+
+  .stratum-address-list__row {
+    align-items: flex-start;
+  }
+  /* The row's controls line up with the FIELD, not with the message the field
+   * may grow underneath it — otherwise the grip and the delete button drift
+   * downwards the moment a validation message appears. */
+  .stratum-address-list__row .stratum-row-list__reorder,
+  .stratum-address-list__row .stratum-row-list__actions,
+  .stratum-address-list__row .stratum-address-list__status,
+  .stratum-address-list__row .stratum-row-list__index {
+    margin-block-start: var(--stratum-space-1);
+  }
+
+  .stratum-address-list__row[data-primary] {
+    border-inline-start: 3px solid var(--stratum-accent);
+  }
+  .stratum-address-list__row[data-duplicate] {
+    border-color: var(--stratum-warning-border);
+  }
+  /* A disabled address stays legible: it is still configuration the operator
+   * has to read in order to decide whether to re-enable it. Only the chrome
+   * dims, never the value. */
+  .stratum-address-list__row[data-disabled] {
+    background: var(--stratum-surface-sunken);
+  }
+
+  .stratum-address-list__status {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    white-space: nowrap;
+  }
+
+  .stratum-address-list__detail {
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-secondary);
+  }
+
+  /* The primary toggle is a button wrapping a Tag rather than a bare tag: the
+   * marker has to be operable, and `aria-pressed` is what tells a screen reader
+   * which address is preferred without relying on the accent stripe. */
+  .stratum-address-list__primary {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--stratum-target-min);
+    padding: 0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+  }
+  /* The un-set marker is de-emphasised by DROPPING THE FILL, not by opacity.
+   *
+   * It used to carry `opacity: 0.65`, which composited the tag's label against
+   * the row behind it and took a 9.02:1 pair down to about 3.5:1 — under the
+   * 4.5:1 floor, and caught by the axe gate. This is the failure mode
+   * PATTERNS warns about: opacity on text silently rewrites a contrast
+   * decision that was made once, correctly, in the token layer.
+   *
+   * Nothing is lost by removing it. "Not primary" is already carried by the
+   * Tag's outline variant and by `aria-pressed`, so the state was never
+   * relying on the dimming to be legible. Hover raises the border instead,
+   * which is an affordance rather than a contrast change. */
+  .stratum-address-list__primary[aria-pressed='false'] .stratum-badge {
+    --_fg: var(--stratum-text-secondary);
+    --_border: var(--stratum-border);
+  }
+  .stratum-address-list__primary:hover[aria-pressed='false'] .stratum-badge {
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border-strong);
+  }
+  .stratum-address-list__primary[aria-pressed='true'] {
+    cursor: default;
+  }
+
+  @media (max-width: 640px) {
+    .stratum-address-list__row {
+      flex-wrap: wrap;
+    }
+    .stratum-address-list__row .stratum-row-list__main {
+      /* Force the field onto its own line before the controls wrap, so the
+       * address never shrinks to a few characters. */
+      flex-basis: 100%;
+      order: -1;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-address-list__row[data-primary] {
+      border-inline-start-color: Highlight;
+      border-inline-start-width: 3px;
+    }
+    .stratum-address-list__row[data-duplicate] {
+      border-style: dashed;
+    }
+    /* The opacity override this used to carry is gone with the opacity itself.
+     * The OS supplies both colours here, so the un-set marker is distinguished
+     * by its outline alone — which is what `aria-pressed` already says. */
+  }
+}

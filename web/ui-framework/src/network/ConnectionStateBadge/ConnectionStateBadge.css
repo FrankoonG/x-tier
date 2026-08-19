@@ -1,0 +1,190 @@
+@layer stratum.components {
+  .stratum-connection-state-badge {
+    /* Per-instance retheming contract. */
+    --_fg: var(--stratum-unknown-fg);
+    --_bg: var(--stratum-unknown-subtle);
+    --_border: var(--stratum-unknown-border);
+    --_border-style: solid;
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    max-width: 100%;
+    padding: var(--_py) var(--_px);
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-none);
+    white-space: nowrap;
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-style: var(--_border-style);
+    border-radius: var(--stratum-radius-sm);
+    /* Colour changes on a state transition are feedback, not decoration. */
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-connection-state-badge[data-size='sm'] {
+    --_py: 1px;
+    --_px: var(--stratum-space-3);
+    --_fs: var(--stratum-text-2xs);
+  }
+  .stratum-connection-state-badge[data-size='md'] {
+    --_py: var(--stratum-space-1);
+    --_px: var(--stratum-space-4);
+    --_fs: var(--stratum-text-xs);
+  }
+
+  .stratum-connection-state-badge__glyph {
+    flex-shrink: 0;
+    font-size: 1.15em;
+  }
+
+  .stratum-connection-state-badge__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: var(--stratum-weight-medium);
+  }
+
+  .stratum-connection-state-badge__detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: var(--stratum-weight-normal);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Kinds ----------------------------------------------------------------
+   * `terminal` is deliberately neutral. A connection that closed cleanly has
+   * finished, not failed, and giving it the danger role would put a red badge
+   * on every normal shutdown until operators stopped reading red at all. */
+  .stratum-connection-state-badge[data-kind='idle'] {
+    --_fg: var(--stratum-text-muted);
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border);
+  }
+  .stratum-connection-state-badge[data-kind='progress'] {
+    --_fg: var(--stratum-info-fg);
+    --_bg: var(--stratum-info-subtle);
+    --_border: var(--stratum-info-border);
+  }
+  .stratum-connection-state-badge[data-kind='ready'] {
+    --_fg: var(--stratum-success-fg);
+    --_bg: var(--stratum-success-subtle);
+    --_border: var(--stratum-success-border);
+  }
+  .stratum-connection-state-badge[data-kind='terminal'] {
+    --_fg: var(--stratum-text-secondary);
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border-strong);
+  }
+  .stratum-connection-state-badge[data-kind='error'] {
+    --_fg: var(--stratum-danger-fg);
+    --_bg: var(--stratum-danger-subtle);
+    --_border: var(--stratum-danger-border);
+  }
+
+  /* Unresolved position. The dashed edge is the same unobserved vocabulary the
+   * rest of the library uses, so "we were not told" is legible at a glance and
+   * cannot be mistaken for a settled state. */
+  .stratum-connection-state-badge[data-kind='unknown'] {
+    --_fg: var(--stratum-unknown-fg);
+    --_bg: transparent;
+    --_border: var(--stratum-unknown-border);
+    --_border-style: dashed;
+  }
+  .stratum-connection-state-badge[data-kind='unknown'] .stratum-connection-state-badge__label {
+    font-weight: var(--stratum-weight-normal);
+    font-style: italic;
+  }
+
+  /* -- Lifecycle pips --------------------------------------------------------
+   * Rendered only when the position is actually known; see the component
+   * notes. Fixed size, so a six-state lifecycle is exactly as tall as a
+   * two-state one. */
+  .stratum-connection-state-badge__pips {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    margin-inline-start: var(--stratum-space-1);
+  }
+
+  .stratum-connection-state-badge__pip {
+    box-sizing: border-box;
+    width: 4px;
+    height: 4px;
+    border-radius: var(--stratum-radius-full);
+    border: 1px solid transparent;
+  }
+
+  /* Passed — solid, dimmed. Done and behind us. */
+  .stratum-connection-state-badge__pip[data-position='passed'] {
+    background: currentColor;
+    opacity: 0.5;
+  }
+
+  /* Current — solid, full strength, slightly larger so the position is
+   * readable without colour. */
+  .stratum-connection-state-badge__pip[data-position='current'] {
+    width: 6px;
+    height: 6px;
+    background: currentColor;
+  }
+
+  /* Unreached — hollow and dashed. NOT failed, even when the lifecycle ended
+   * in error: these steps were never attempted. */
+  .stratum-connection-state-badge__pip[data-position='unreached'] {
+    background: transparent;
+    border-color: currentColor;
+    border-style: dashed;
+    opacity: 0.55;
+  }
+
+  /* -- Pulse ----------------------------------------------------------------
+   * Only a state that is genuinely still moving loops, and only the glyph
+   * animates — a pulsing background on a badge inside a dense table is
+   * unbearable at ten rows. */
+  .stratum-connection-state-badge[data-pulse] .stratum-connection-state-badge__glyph {
+    animation: stratum-pulse 1600ms var(--stratum-ease-in-out) infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-connection-state-badge[data-pulse] .stratum-connection-state-badge__glyph {
+      animation: none;
+    }
+  }
+
+  /* Fills vanish here, so the border style and the pip shapes carry the state.
+   * The unknown badge keeps its dashed edge, which is the one distinction that
+   * must never be lost. */
+  @media (forced-colors: active) {
+    .stratum-connection-state-badge {
+      color: CanvasText;
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-connection-state-badge[data-kind='unknown'],
+    .stratum-connection-state-badge[data-kind='idle'] {
+      color: GrayText;
+      border-color: GrayText;
+    }
+    .stratum-connection-state-badge[data-kind='unknown'] {
+      border-style: dashed;
+    }
+    .stratum-connection-state-badge__pip[data-position='passed'],
+    .stratum-connection-state-badge__pip[data-position='current'] {
+      background: CanvasText;
+      opacity: 1;
+    }
+    .stratum-connection-state-badge__pip[data-position='current'] {
+      border-color: Highlight;
+    }
+    .stratum-connection-state-badge__pip[data-position='unreached'] {
+      background: Canvas;
+      border-color: GrayText;
+      opacity: 1;
+    }
+    .stratum-connection-state-badge__detail {
+      color: GrayText;
+    }
+  }
+}

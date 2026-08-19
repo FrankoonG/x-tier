@@ -1,0 +1,111 @@
+@layer stratum.components {
+  .stratum-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--_gap);
+    width: 100%;
+    padding: var(--_py) var(--stratum-space-8);
+    text-align: center;
+  }
+
+  .stratum-empty-state[data-align='start'] {
+    align-items: flex-start;
+    text-align: start;
+  }
+
+  .stratum-empty-state[data-size='sm'] {
+    --_py: var(--stratum-space-12);
+    --_gap: var(--stratum-space-3);
+    --_icon: var(--stratum-space-20);
+    --_title: var(--stratum-text-md);
+    --_max: 34ch;
+  }
+  .stratum-empty-state[data-size='md'] {
+    --_py: var(--stratum-space-20);
+    --_gap: var(--stratum-space-4);
+    --_icon: var(--stratum-space-24);
+    --_title: var(--stratum-text-lg);
+    --_max: 44ch;
+  }
+  .stratum-empty-state[data-size='lg'] {
+    --_py: var(--stratum-space-32);
+    --_gap: var(--stratum-space-5);
+    --_icon: var(--stratum-space-32);
+    --_title: var(--stratum-text-xl);
+    --_max: 52ch;
+  }
+
+  /* A dashed edge reads as "a slot that could hold something" rather than as
+   * a card, which is what a solid border would imply. */
+  .stratum-empty-state[data-bordered] {
+    border: 1px dashed var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-lg);
+    background: var(--stratum-surface-sunken);
+  }
+
+  .stratum-empty-state__icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--_icon);
+    height: var(--_icon);
+    margin-block-end: var(--stratum-space-1);
+    /* Subdued on purpose: the illustration frames the message, it is not the
+     * message. A full-strength graphic here out-shouts the title. */
+    color: var(--stratum-text-subtle);
+    opacity: 0.75;
+  }
+  .stratum-empty-state__icon > svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .stratum-empty-state__title {
+    font-size: var(--_title);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+  }
+
+  .stratum-empty-state__description {
+    max-width: var(--_max);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-normal);
+    color: var(--stratum-text-muted);
+    text-wrap: pretty;
+  }
+
+  .stratum-empty-state__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-4);
+    margin-block-start: var(--stratum-space-2);
+  }
+  .stratum-empty-state[data-align='start'] .stratum-empty-state__actions {
+    justify-content: flex-start;
+  }
+
+  .stratum-empty-state__footer {
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-subtle);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-empty-state[data-bordered] {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+    .stratum-empty-state__icon {
+      color: CanvasText;
+      opacity: 1;
+    }
+    .stratum-empty-state__title,
+    .stratum-empty-state__description,
+    .stratum-empty-state__footer {
+      color: CanvasText;
+    }
+  }
+}

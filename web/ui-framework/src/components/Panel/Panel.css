@@ -1,0 +1,196 @@
+@layer stratum.components {
+  .stratum-panel {
+    --_bg: transparent;
+    --_border: var(--stratum-border-subtle);
+    --_radius: var(--stratum-radius-md);
+
+    display: block;
+    min-inline-size: 0;
+    color: var(--stratum-text);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--_radius);
+  }
+
+  .stratum-panel[data-variant='sunken'] {
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border-subtle);
+  }
+
+  .stratum-panel[data-variant='plain'] {
+    --_bg: transparent;
+    --_border: transparent;
+    --_radius: var(--stratum-radius-none);
+  }
+
+  .stratum-panel[data-padding='none'] { --_pad: var(--stratum-space-0); }
+  .stratum-panel[data-padding='xs']   { --_pad: var(--stratum-space-3); }
+  .stratum-panel[data-padding='sm']   { --_pad: var(--stratum-space-6); }
+  .stratum-panel[data-padding='md']   { --_pad: var(--stratum-space-8); }
+
+  /* -- Header ----------------------------------------------------------------
+   * Grid rather than flex so the description can sit under the title while
+   * the actions stay vertically centred against the title row alone. */
+  .stratum-panel__header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--stratum-space-6);
+    padding: var(--_pad);
+  }
+
+  .stratum-panel__header[data-divider] {
+    border-block-end: 1px solid var(--stratum-divider);
+  }
+
+  /* Collapsed: the rule is pointless above a closed body, but it is hidden by
+   * colour rather than by removing the border. Changing the border WIDTH here
+   * would resize the measured body mid-animation and make the collapse jump. */
+  .stratum-panel[data-state='closed'] > .stratum-panel__header[data-divider] {
+    border-block-end-color: transparent;
+  }
+
+  .stratum-panel__heading {
+    grid-column: 1;
+    min-inline-size: 0;
+    font-size: var(--stratum-text-sm);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+  }
+
+  .stratum-panel__description {
+    grid-column: 1;
+    margin-block-start: var(--stratum-space-1);
+    font-size: var(--stratum-text-xs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-panel__actions {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+  }
+
+  /* -- Trigger ---------------------------------------------------------------
+   * The whole title row is the hit target, so the disclosure is easy to hit on
+   * touch. Negative inline margin pulls the focus ring back to the panel edge
+   * without the label appearing indented. */
+  .stratum-panel__trigger {
+    /* A titleless collapsible panel renders the trigger without the heading
+     * wrapper, so it becomes a grid item here. Without an explicit column the
+     * column-locked description would be placed above it. Inert when the
+     * trigger sits inside the heading, which is not a grid container. */
+    grid-column: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    inline-size: 100%;
+    min-inline-size: 0;
+    padding-block: var(--stratum-space-1);
+    padding-inline: var(--stratum-space-1);
+    margin-inline-start: calc(-1 * var(--stratum-space-1));
+    font: inherit;
+    color: inherit;
+    text-align: start;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-panel__trigger:hover {
+    color: var(--stratum-accent-fg);
+  }
+
+  .stratum-panel__title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-inline-size: 0;
+  }
+
+  .stratum-panel__chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-7);
+    block-size: var(--stratum-space-7);
+    flex: 0 0 auto;
+    color: var(--stratum-text-muted);
+    /* Rotation only — no translation — so it stays legible under
+     * reduced motion, where the duration halves but the arc is tiny. */
+    rotate: -90deg;
+    transition: rotate var(--stratum-duration-sm) var(--stratum-ease-signature);
+  }
+
+  .stratum-panel[data-state='open'] > .stratum-panel__header .stratum-panel__chevron {
+    rotate: 0deg;
+  }
+
+  .stratum-panel__chevron > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  /* -- Collapse --------------------------------------------------------------
+   * `height` interpolates from the measured content height; `visibility`
+   * flips immediately on open and only after the height has finished on
+   * close, which keeps the content out of the tab order while hidden. */
+  .stratum-panel__collapse {
+    block-size: var(--_content-h, auto);
+    overflow: hidden;
+    visibility: visible;
+  }
+
+  .stratum-panel__collapse[data-state='closed'] {
+    block-size: 0;
+    visibility: hidden;
+  }
+
+  .stratum-panel__collapse[data-animate] {
+    transition:
+      var(--stratum-transition-size),
+      visibility 0s;
+  }
+
+  .stratum-panel__collapse[data-animate][data-state='closed'] {
+    transition:
+      var(--stratum-transition-size),
+      visibility 0s var(--stratum-duration-spring);
+  }
+
+  .stratum-panel__body {
+    padding: var(--_pad);
+    min-inline-size: 0;
+  }
+
+  /* A panel with a header pays its padding once at the top, so the body's
+   * block-start padding would double the gap.
+   *
+   * The final step is a CHILD combinator: with a descendant combinator a panel
+   * nested inside a collapsible panel's body had its own body matched by the
+   * OUTER panel's rule, so the inner panel's top padding was driven by whether
+   * the outer header happened to carry a divider. Panel.tsx renders the body as
+   * the only child of `.stratum-panel__collapse`. */
+  .stratum-panel__header + .stratum-panel__body,
+  .stratum-panel__header + .stratum-panel__collapse > .stratum-panel__body {
+    padding-block-start: 0;
+  }
+
+  .stratum-panel__header[data-divider] + .stratum-panel__body,
+  .stratum-panel__header[data-divider] + .stratum-panel__collapse > .stratum-panel__body {
+    padding-block-start: var(--_pad);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-panel[data-variant='outlined'],
+    .stratum-panel[data-variant='sunken'] {
+      border-color: CanvasText;
+    }
+    .stratum-panel__header[data-divider] {
+      border-color: CanvasText;
+    }
+  }
+}

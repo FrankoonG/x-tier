@@ -1,0 +1,84 @@
+@layer stratum.components {
+  .stratum-metric {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--stratum-space-2);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    /* Tabular figures are the whole reason a live column stays still. */
+    font-variant-numeric: var(--stratum-numeric);
+    font-feature-settings: 'tnum' 1;
+    color: var(--_fg, inherit);
+    white-space: nowrap;
+  }
+
+  .stratum-metric[data-size='sm'] { --_fs: var(--stratum-text-2xs); }
+  .stratum-metric[data-size='md'] { --_fs: var(--stratum-text-xs); }
+
+  .stratum-metric[data-muted] { opacity: 0.62; }
+
+  /* Not observed. Rendered in the sans face and dimmed so it is obviously a
+   * placeholder rather than a measured value — an em dash in the mono face at
+   * the same weight reads as data. */
+  .stratum-metric[data-unobserved] {
+    font-family: var(--stratum-font-sans);
+    color: var(--stratum-text-disabled);
+  }
+
+  /* -- Direction ----------------------------------------------------------- */
+  .stratum-metric__dir {
+    font-size: 0.9em;
+    line-height: 1;
+    opacity: 0.75;
+  }
+  .stratum-metric[data-direction='in']  { --_fg: var(--stratum-traffic-in-fg); }
+  .stratum-metric[data-direction='out'] { --_fg: var(--stratum-traffic-out-fg); }
+
+  /* -- Latency bands --------------------------------------------------------
+   * The `-fg` variants, not the base status colours. The base tokens are tuned
+   * for fills, dots and strokes, where SC 1.4.11 asks for 3:1; a latency
+   * reading is body text and needs 4.5:1. Using `--stratum-success` here
+   * measures 3.82:1 on a hovered row and fails. */
+  .stratum-metric[data-kind='latency'][data-status='ok']       { --_fg: var(--stratum-success-fg); }
+  .stratum-metric[data-kind='latency'][data-status='degraded'] { --_fg: var(--stratum-warning-fg); }
+  .stratum-metric[data-kind='latency'][data-status='failed']   { --_fg: var(--stratum-danger-fg); }
+  .stratum-metric[data-kind='latency'][data-status='unknown']  { --_fg: var(--stratum-unknown-fg); }
+
+  .stratum-metric[data-kind='latency'][data-variant='badge'] {
+    padding: 1px var(--stratum-space-3);
+    border: 1px solid var(--_bd);
+    border-radius: var(--stratum-radius-sm);
+    background: var(--_bg);
+  }
+  .stratum-metric[data-kind='latency'][data-variant='badge'][data-status='ok'] {
+    --_bg: var(--stratum-success-subtle); --_bd: var(--stratum-success-border); --_fg: var(--stratum-success-fg);
+  }
+  .stratum-metric[data-kind='latency'][data-variant='badge'][data-status='degraded'] {
+    --_bg: var(--stratum-warning-subtle); --_bd: var(--stratum-warning-border); --_fg: var(--stratum-warning-fg);
+  }
+  .stratum-metric[data-kind='latency'][data-variant='badge'][data-status='failed'] {
+    --_bg: var(--stratum-danger-subtle); --_bd: var(--stratum-danger-border); --_fg: var(--stratum-danger-fg);
+  }
+  .stratum-metric[data-kind='latency'][data-variant='badge'][data-status='unknown'] {
+    --_bg: var(--stratum-unknown-subtle); --_bd: var(--stratum-unknown-border); --_fg: var(--stratum-unknown-fg);
+  }
+
+  .stratum-metric[data-kind='identifier'] {
+    letter-spacing: 0.01em;
+    cursor: default;
+  }
+
+  .stratum-metric time {
+    font: inherit;
+    color: inherit;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-metric { color: CanvasText; }
+    .stratum-metric[data-unobserved] { color: GrayText; }
+    .stratum-metric[data-kind='latency'][data-variant='badge'] {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+  }
+}

@@ -1,0 +1,74 @@
+@layer stratum.components {
+  .stratum-snippet {
+    --_fs: var(--stratum-text-xs);
+    --_pad: var(--stratum-space-6);
+
+    position: relative;
+    min-inline-size: 0;
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  .stratum-snippet[data-size='sm'] { --_fs: var(--stratum-text-xs); --_pad: var(--stratum-space-6); }
+  .stratum-snippet[data-size='md'] { --_fs: var(--stratum-text-sm); --_pad: var(--stratum-space-8); }
+
+  .stratum-snippet__scroll {
+    /* The block sits on a sunken surface, so the edge affordance has to fade
+     * into that, not into the default surface. */
+    --_fade-color: var(--stratum-surface-sunken);
+    border-radius: inherit;
+  }
+
+  .stratum-snippet__viewport {
+    border-radius: inherit;
+    /* `scrollbar-gutter` keeps the text from shifting sideways the moment the
+     * content becomes tall enough to need a scrollbar. */
+    scrollbar-gutter: stable;
+  }
+
+  .stratum-snippet__pre {
+    padding: var(--_pad);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    font-variant-numeric: var(--stratum-numeric);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+    /* Preserved exactly: leading whitespace in a config fragment is load
+     * bearing, and so is the difference between one and two blank lines. */
+    white-space: pre;
+    tab-size: 2;
+  }
+
+  .stratum-snippet[data-wrap] .stratum-snippet__pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* Room for the copy control, so a long first line never runs under it. */
+  .stratum-snippet[data-copyable] .stratum-snippet__pre {
+    padding-inline-end: var(--stratum-space-16);
+  }
+
+  .stratum-snippet__code {
+    font: inherit;
+    color: inherit;
+    background: none;
+  }
+
+  /* A positioning slot, not the button. See the note in Snippet.tsx. */
+  .stratum-snippet__copy {
+    position: absolute;
+    inset-block-start: var(--stratum-space-3);
+    inset-inline-end: var(--stratum-space-3);
+    display: inline-flex;
+    /* Above the scroll area's edge affordances, which sit at z-raised. */
+    z-index: var(--stratum-z-sticky);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-snippet {
+      border-color: CanvasText;
+    }
+  }
+}

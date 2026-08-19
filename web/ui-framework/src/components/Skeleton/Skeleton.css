@@ -1,0 +1,104 @@
+@layer stratum.components {
+  .stratum-skeleton {
+    position: relative;
+    /* Clips the sheen overlay to the placeholder's own silhouette, including
+     * its border radius. */
+    overflow: hidden;
+    display: block;
+    flex-shrink: 0;
+    background-color: var(--stratum-skeleton-base);
+  }
+
+  .stratum-skeleton[data-radius='none'] { border-radius: var(--stratum-radius-none); }
+  .stratum-skeleton[data-radius='xs']   { border-radius: var(--stratum-radius-xs); }
+  .stratum-skeleton[data-radius='sm']   { border-radius: var(--stratum-radius-sm); }
+  .stratum-skeleton[data-radius='md']   { border-radius: var(--stratum-radius-md); }
+  .stratum-skeleton[data-radius='lg']   { border-radius: var(--stratum-radius-lg); }
+  .stratum-skeleton[data-radius='xl']   { border-radius: var(--stratum-radius-xl); }
+  .stratum-skeleton[data-radius='full'] { border-radius: var(--stratum-radius-full); }
+
+  /* Text placeholders default to the height of one body line box, so a
+   * skeleton paragraph occupies exactly the space the real text will. */
+  .stratum-skeleton[data-variant='text'] {
+    width: 100%;
+    height: calc(var(--stratum-text-sm) * var(--stratum-leading-normal));
+  }
+
+  .stratum-skeleton[data-variant='circle'] {
+    width: 32px;
+    height: 32px;
+  }
+
+  .stratum-skeleton[data-variant='rect'] {
+    width: 100%;
+    height: 64px;
+  }
+
+  /* The sheen is an overlay moved with `translate` rather than a background
+   * layer moved with `background-position`. `background-position` is not
+   * compositable and repaints the element on every frame of an infinite loop —
+   * unaffordable on a component that exists to be rendered dozens at a time
+   * (a skeleton table is seven lines across twenty rows). */
+  .stratum-skeleton[data-animation='shimmer']::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--stratum-skeleton-sheen),
+      transparent
+    );
+    translate: -100% 0;
+    animation: stratum-skeleton-sheen calc(var(--stratum-duration-2xl) * 3.4)
+      var(--stratum-ease-linear) infinite;
+  }
+
+  @keyframes stratum-skeleton-sheen {
+    to { translate: 200% 0; }
+  }
+
+  .stratum-skeleton[data-animation='pulse'] {
+    animation: stratum-pulse calc(var(--stratum-duration-2xl) * 3)
+      var(--stratum-ease-in-out) infinite;
+  }
+
+  /* -- Text block ----------------------------------------------------------- */
+  .stratum-skeleton-text {
+    --_gap: var(--stratum-space-3);
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--_gap);
+    width: 100%;
+  }
+
+  .stratum-skeleton-text__line {
+    height: var(--_line, calc(var(--stratum-text-sm) * var(--stratum-leading-normal)));
+  }
+
+  /* Reduced motion: the sweep is a perpetual loop, which is precisely what
+   * the preference is asking us to stop. The base tone alone still reads as
+   * a placeholder, so no information is lost with the movement. */
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-skeleton[data-animation='pulse'] {
+      animation: none;
+    }
+    .stratum-skeleton[data-animation='shimmer']::after {
+      display: none;
+    }
+  }
+
+  /* Forced colours discard the fill entirely, which would leave an invisible
+   * placeholder occupying real space. A border restores the silhouette. */
+  @media (forced-colors: active) {
+    .stratum-skeleton {
+      background: Canvas;
+      border: 1px solid GrayText;
+      animation: none;
+    }
+    .stratum-skeleton::after {
+      display: none;
+    }
+  }
+}

@@ -1,0 +1,441 @@
+@layer stratum.components {
+  /* -------------------------------------------------------------------------
+   * CONTROL SHELL
+   *
+   * Unlike Combobox the shell has no fixed height: chips set the height, and
+   * the minimum keeps an empty control the same size as a Select or a Button
+   * beside it.
+   * ---------------------------------------------------------------------- */
+  .stratum-multiselect {
+    --_bg: var(--stratum-surface);
+    --_border: var(--stratum-border-strong);
+
+    position: relative;
+    display: inline-flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-2);
+    inline-size: auto;
+    max-inline-size: 100%;
+    min-block-size: var(--_h);
+    padding-block: var(--stratum-space-1);
+    padding-inline: var(--_px);
+
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-multiselect[data-size='sm'] { --_h: 26px; --_px: var(--stratum-space-3); --_fs: var(--stratum-text-xs); }
+  .stratum-multiselect[data-size='md'] { --_h: 32px; --_px: var(--stratum-space-4); --_fs: var(--stratum-text-sm); }
+  .stratum-multiselect[data-size='lg'] { --_h: 38px; --_px: var(--stratum-space-5); --_fs: var(--stratum-text-md); }
+
+  .stratum-multiselect[data-full-width] {
+    display: flex;
+    inline-size: 100%;
+  }
+
+  .stratum-multiselect:hover:not([data-disabled]) {
+    --_bg: var(--stratum-surface-hover);
+  }
+
+  .stratum-multiselect[data-open],
+  .stratum-multiselect:focus-within {
+    --_bg: var(--stratum-surface);
+    --_border: var(--stratum-accent);
+  }
+
+  .stratum-multiselect[data-invalid] {
+    --_border: var(--stratum-danger);
+  }
+
+  .stratum-multiselect[data-disabled] {
+    --_bg: var(--stratum-surface-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-multiselect:has(.stratum-multiselect__input:focus-visible) {
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+  .stratum-multiselect__input:focus-visible {
+    outline: none;
+  }
+
+  .stratum-multiselect__chips {
+    flex: 1 1 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    min-inline-size: 0;
+    padding-block: var(--stratum-space-1);
+  }
+
+  .stratum-multiselect__input {
+    flex: 1 1 var(--stratum-space-20);
+    min-inline-size: var(--stratum-space-20);
+    padding: 0;
+    font: inherit;
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+    background: transparent;
+    border: 0;
+  }
+  /* `text-muted`, not `text-subtle` — placeholder text still has to clear
+   * 4.5:1 against the field. */
+  .stratum-multiselect__input::placeholder {
+    /* Firefox's UA default of 0.54 on `::placeholder` multiplies into the
+     * token, and `text-muted` is tuned to clear 4.5:1 with nothing to spare.
+     * Pinned to 1 so the contrast is the same in every engine. */
+    color: var(--stratum-text-muted);
+    opacity: 1;
+  }
+  .stratum-multiselect__input:disabled {
+    color: var(--stratum-text-disabled);
+    /* iOS Safari repaints disabled control text with its own grey and honours
+     * only `-webkit-text-fill-color`. Without it the disabled state is the UA's
+     * colour, not the token's. Same fix as Input.css. */
+    -webkit-text-fill-color: var(--stratum-text-disabled);
+    opacity: 1;
+    cursor: not-allowed;
+  }
+
+  /* -------------------------------------------------------------------------
+   * CHIPS
+   * ---------------------------------------------------------------------- */
+  .stratum-multiselect__chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    max-inline-size: 100%;
+    padding-block: var(--stratum-space-1);
+    padding-inline: var(--stratum-space-3) var(--stratum-space-1);
+
+    font-size: var(--stratum-text-2xs);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border: 1px solid var(--stratum-accent-border);
+    border-radius: var(--stratum-radius-sm);
+  }
+
+  /* The roving group's current member is outlined even before it takes focus,
+   * so walking the chips with ArrowLeft has a visible position at all times. */
+  .stratum-multiselect__chip[data-focused] {
+    border-color: var(--stratum-accent);
+  }
+
+  .stratum-multiselect__chip--overflow {
+    padding-inline: var(--stratum-space-3);
+    color: var(--stratum-text-secondary);
+    background: var(--stratum-unknown-subtle);
+    border-color: var(--stratum-unknown-border);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  .stratum-multiselect__chip-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The resting state is quieter than the chip's label, but it is expressed as
+   * a COLOUR STEP, not as `opacity: 0.7` on the inherited label colour. The
+   * faded version measured 3.39:1 against the chip fill — over the 3:1 that
+   * SC 1.4.11 asks of a control's graphic, but only just, and this glyph is the
+   * only thing that says the chip is removable. `--stratum-accent` is the
+   * graphic-grade member of the accent family (4.77:1 light, 4.84:1 dark on the
+   * chip fill) and still reads a step back from the label's `accent-fg`. */
+  .stratum-multiselect__chip-remove {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-7);
+    block-size: var(--stratum-space-7);
+    color: var(--stratum-accent);
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-xs);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-multiselect__chip-remove:hover:not(:disabled),
+  .stratum-multiselect__chip-remove:focus-visible {
+    color: inherit;
+    background: var(--stratum-accent-subtle-hover);
+  }
+  .stratum-multiselect__chip-remove > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+  /* Genuinely disabled control, so `text-disabled` is the legal token here. */
+  .stratum-multiselect__chip-remove:disabled {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-multiselect__adornment {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-7);
+    block-size: var(--stratum-space-7);
+    margin-block-start: var(--stratum-space-2);
+    color: var(--stratum-text-subtle);
+  }
+  .stratum-multiselect__adornment > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  /* -------------------------------------------------------------------------
+   * POPUP
+   * ---------------------------------------------------------------------- */
+  .stratum-multiselect__popup {
+    --_max-block-size: var(--stratum-popover-max-block-size, 60vh);
+
+    z-index: var(--stratum-z-popover);
+    display: flex;
+    flex-direction: column;
+    min-inline-size: var(--_trigger-width, auto);
+    max-block-size: min(var(--_max-block-size), var(--_available-height, 100vh));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+
+    padding: var(--stratum-space-2);
+    color: var(--stratum-text);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-lg);
+    box-shadow: var(--stratum-shadow-lg);
+
+    opacity: 1;
+    transform: none;
+    transition: var(--stratum-transition-popover-enter);
+  }
+
+  /* All four sides: `placement` is Floating UI's full union and flip() can
+   * resolve to left/right, which would otherwise scale from the centre and
+   * enter with no @starting-style at all. */
+  .stratum-multiselect__popup[data-side='bottom'] { transform-origin: top left; }
+  .stratum-multiselect__popup[data-side='top']    { transform-origin: bottom left; }
+  .stratum-multiselect__popup[data-side='right']  { transform-origin: left center; }
+  .stratum-multiselect__popup[data-side='left']   { transform-origin: right center; }
+  .stratum-multiselect__popup[data-side='bottom'][data-align='end'] { transform-origin: top right; }
+  .stratum-multiselect__popup[data-side='top'][data-align='end']    { transform-origin: bottom right; }
+
+  @starting-style {
+    .stratum-multiselect__popup[data-state='entering'][data-side='bottom'] {
+      opacity: 0;
+      transform: translateY(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-multiselect__popup[data-state='entering'][data-side='top'] {
+      opacity: 0;
+      transform: translateY(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-multiselect__popup[data-state='entering'][data-side='right'] {
+      opacity: 0;
+      transform: translateX(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+    }
+    .stratum-multiselect__popup[data-state='entering'][data-side='left'] {
+      opacity: 0;
+      transform: translateX(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+    }
+  }
+
+  /* -------------------------------------------------------------------------
+   * OPTIONS
+   * ---------------------------------------------------------------------- */
+  .stratum-multiselect__option {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-4);
+    padding-block: var(--stratum-space-3);
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+    border-radius: var(--stratum-radius-sm);
+    cursor: default;
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-multiselect__option[data-active] {
+    background: var(--stratum-surface-hover);
+  }
+
+  .stratum-multiselect__option[data-selected] {
+    font-weight: var(--stratum-weight-medium);
+  }
+
+  .stratum-multiselect__option[aria-disabled='true'] {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-multiselect__option-check {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-8);
+    block-size: var(--stratum-space-8);
+    color: var(--stratum-accent-fg);
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-xs);
+  }
+  .stratum-multiselect__option[data-selected] .stratum-multiselect__option-check {
+    border-color: var(--stratum-accent);
+  }
+  .stratum-multiselect__option-check > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  .stratum-multiselect__option-icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--stratum-space-8);
+    block-size: var(--stratum-space-8);
+    color: var(--stratum-text-muted);
+  }
+  .stratum-multiselect__option-icon > svg {
+    inline-size: 100%;
+    block-size: 100%;
+  }
+
+  .stratum-multiselect__option-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-inline-size: 0;
+  }
+
+  .stratum-multiselect__option-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-multiselect__option-description {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-multiselect__match {
+    font-weight: var(--stratum-weight-semibold);
+    color: var(--stratum-accent-fg);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+  }
+
+  .stratum-multiselect__group {
+    display: contents;
+  }
+
+  .stratum-multiselect__group-label {
+    padding-block: var(--stratum-space-3) var(--stratum-space-2);
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-semibold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-multiselect__message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-4);
+    padding-block: var(--stratum-space-6);
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-sm);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -------------------------------------------------------------------------
+   * FORCED COLOURS
+   *
+   * The chip's tinted fill is what separates it from surrounding text, so it
+   * needs a real border here — and the checkbox marker is a box rather than a
+   * bare tick for the same reason.
+   * ---------------------------------------------------------------------- */
+  @media (forced-colors: active) {
+    .stratum-multiselect {
+      border-color: ButtonBorder;
+      background: Field;
+    }
+    .stratum-multiselect[data-disabled] {
+      border-color: GrayText;
+    }
+    .stratum-multiselect__input {
+      color: FieldText;
+    }
+    .stratum-multiselect__chip {
+      color: CanvasText;
+      border-color: CanvasText;
+    }
+    /* The remove glyph now carries its own colour, so it needs its own system
+     * colour here rather than inheriting the chip's. */
+    .stratum-multiselect__chip-remove {
+      color: CanvasText;
+    }
+    .stratum-multiselect__chip-remove:disabled {
+      color: GrayText;
+    }
+    .stratum-multiselect__chip[data-focused] {
+      border-color: Highlight;
+    }
+    .stratum-multiselect__popup {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+    .stratum-multiselect__option[data-active] {
+      color: HighlightText;
+      background: Highlight;
+      forced-color-adjust: none;
+    }
+    .stratum-multiselect__option[data-active] .stratum-multiselect__option-check,
+    .stratum-multiselect__option[data-active] .stratum-multiselect__option-icon,
+    .stratum-multiselect__option[data-active] .stratum-multiselect__option-description,
+    .stratum-multiselect__option[data-active] .stratum-multiselect__match {
+      color: HighlightText;
+      border-color: HighlightText;
+    }
+    .stratum-multiselect__option[aria-disabled='true'] {
+      color: GrayText;
+    }
+  }
+
+  /* Exit mirrors the entrance, one vector per side.
+   *
+   * These are keyed on usePresence's vocabulary — entering / entered / exiting —
+   * not a bare open/closed flag. Until this landed, the component hardcoded
+   * `data-state="open"` and unmounted the surface on the same frame its open
+   * flag flipped, so no exit rule could ever match and every dropdown in the
+   * framework blinked out of existence instead of animating away. */
+  .stratum-multiselect__popup[data-state='exiting'] {
+    opacity: 0;
+    transition: var(--stratum-transition-popover-exit);
+    pointer-events: none;
+  }
+  .stratum-multiselect__popup[data-state='exiting'][data-side='bottom'] {
+    transform: translateY(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-multiselect__popup[data-state='exiting'][data-side='top'] {
+    transform: translateY(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-multiselect__popup[data-state='exiting'][data-side='right'] {
+    transform: translateX(calc(-1 * var(--stratum-lift-sm))) scale(var(--stratum-zoom-subtle));
+  }
+  .stratum-multiselect__popup[data-state='exiting'][data-side='left'] {
+    transform: translateX(var(--stratum-lift-sm)) scale(var(--stratum-zoom-subtle));
+  }
+}

@@ -1,0 +1,296 @@
+@layer stratum.components {
+  /* -------------------------------------------------------------------------
+   * The shared control shell for every network input.
+   *
+   * One shell, six components. A form row containing an address, a port range
+   * and a duration must align on a single baseline and share one border
+   * treatment, otherwise the panel reads as three different products.
+   * ---------------------------------------------------------------------- */
+  .stratum-net-field {
+    --_gap: var(--stratum-space-2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--_gap);
+    min-width: 0;
+  }
+
+  .stratum-net-field[data-full-width] {
+    width: 100%;
+  }
+
+  .stratum-net-control {
+    --_bg: var(--stratum-surface);
+    --_border: var(--stratum-border-strong);
+    --_fg: var(--stratum-text);
+
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+
+    min-height: var(--_h);
+    padding-inline: var(--_px);
+    min-width: 0;
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-net-control[data-size='sm'] { --_h: 26px; --_px: var(--stratum-space-4); --_fs: var(--stratum-text-xs); }
+  .stratum-net-control[data-size='md'] { --_h: 32px; --_px: var(--stratum-space-5); --_fs: var(--stratum-text-sm); }
+  .stratum-net-control[data-size='lg'] { --_h: 38px; --_px: var(--stratum-space-6); --_fs: var(--stratum-text-md); }
+
+  .stratum-net-control:hover:not([data-disabled]) {
+    --_border: var(--stratum-text-subtle);
+  }
+
+  /* The ring is drawn on the SHELL, not on the inner <input>. An outline on the
+   * input would be clipped by the shell's border radius and would look like a
+   * second, misaligned box. `:has()` keeps it keyboard-only. */
+  .stratum-net-control:has(.stratum-net-input:focus-visible),
+  .stratum-net-control:has(.stratum-net-unit:focus-visible) {
+    --_border: var(--stratum-accent);
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+
+  /* Validity colours the boundary only. The text itself stays at full contrast
+   * because tinting the value the operator typed makes it harder to read at
+   * exactly the moment they need to re-read it. */
+  .stratum-net-control[data-validity='invalid'] { --_border: var(--stratum-danger); }
+  .stratum-net-control[data-validity='warning'] { --_border: var(--stratum-warning); }
+
+  .stratum-net-control[data-disabled] {
+    --_bg: var(--stratum-surface-disabled);
+    --_fg: var(--stratum-text-disabled);
+    --_border: var(--stratum-border);
+    cursor: not-allowed;
+  }
+
+  .stratum-net-control[data-readonly] {
+    --_bg: var(--stratum-surface-sunken);
+  }
+
+  /* -- The editable field --------------------------------------------------- */
+  .stratum-net-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    padding: 0;
+    color: inherit;
+    background: none;
+    border: none;
+    font-size: var(--_fs);
+    /* Addresses, ports and secrets are all compared glyph-by-glyph. A
+     * proportional face makes `rn` and `m`, or `0` and `O`, ambiguous. */
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    line-height: var(--stratum-leading-tight);
+  }
+  .stratum-net-input:focus-visible {
+    /* Suppressed here; the shell above carries the ring. */
+    outline: none;
+  }
+  .stratum-net-input::placeholder {
+    /* Firefox applies a UA default of 0.54 here, which multiplies into the
+     * token — and `text-subtle` is already the quieter of the two body roles,
+     * so a placeholder that measures ~5:1 everywhere else drops under 3:1 in
+     * Firefox alone. Every network field inherits this rule, so the leak was
+     * six components wide. */
+    color: var(--stratum-text-subtle);
+    font-family: var(--stratum-font-sans);
+    opacity: 1;
+  }
+  .stratum-net-input:disabled {
+    cursor: not-allowed;
+    /* The shell already sets `--_fg` to the disabled token and the input
+     * inherits it — but iOS Safari repaints disabled control text with its own
+     * grey and honours only `-webkit-text-fill-color`, so on that engine the
+     * value was the UA's colour rather than ours. Same fix as Input.css. */
+    -webkit-text-fill-color: var(--stratum-text-disabled);
+    opacity: 1;
+  }
+
+  /* Autofill. Chrome paints its own fill and its own near-black text straight
+   * over the control, and it does so here more than anywhere else in the
+   * library: CredentialField is a real `type="password"`, and Chrome ignores
+   * `autocomplete="off"` on credential fields by design, so the "off" every
+   * network field passes does not prevent it. On the dark theme the result is
+   * black text on a pale fill — the UA's colours, not ours.
+   *
+   * The fill itself cannot be removed portably without the 1000px inset-shadow
+   * hack, so only the text and caret are corrected, which is the part that
+   * actually becomes illegible. Split into two rules because one unknown
+   * selector would invalidate the whole block — same reasoning as Input.css. */
+  .stratum-net-input:-webkit-autofill {
+    -webkit-text-fill-color: var(--stratum-text);
+    caret-color: var(--stratum-text);
+  }
+  .stratum-net-input:autofill {
+    caret-color: var(--stratum-text);
+  }
+
+  /* Numeric fields keep the sans face — a bare integer needs no glyph
+   * disambiguation, and the spinner arrows sit better on it. */
+  .stratum-net-input[data-numeric] {
+    font-family: var(--stratum-font-sans);
+    text-align: end;
+  }
+
+  /* -- Trailing unit selector ---------------------------------------------- */
+  .stratum-net-unit {
+    flex: 0 0 auto;
+    padding: 0 var(--stratum-space-2) 0 var(--stratum-space-3);
+    color: var(--stratum-text-secondary);
+    background: none;
+    border: none;
+    border-inline-start: 1px solid var(--stratum-divider);
+    border-radius: 0;
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-tight);
+    cursor: pointer;
+  }
+  .stratum-net-unit:focus-visible {
+    outline: none;
+  }
+  .stratum-net-unit:disabled {
+    cursor: not-allowed;
+  }
+
+  /* -- Adornments ----------------------------------------------------------- */
+  .stratum-net-adornment {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-net-validity {
+    flex: 0 0 auto;
+    display: inline-flex;
+    font-size: var(--stratum-text-md);
+    line-height: 1;
+  }
+  /* Glyphs, not text: these are meaningful graphics and answer to SC 1.4.11's
+   * 3:1, which is what the graphic-grade status roles are tuned for. `empty`
+   * takes the `unknown` role rather than `text-disabled` — a field nobody has
+   * filled in yet is not a disabled control, and neutral-400 measures 2.52:1,
+   * under the graphic threshold as well as the text one. */
+  .stratum-net-validity[data-state='valid']   { color: var(--stratum-success); }
+  .stratum-net-validity[data-state='invalid'] { color: var(--stratum-danger); }
+  .stratum-net-validity[data-state='warning'] { color: var(--stratum-warning); }
+  .stratum-net-validity[data-state='empty']   { color: var(--stratum-unknown); }
+
+  /* Small caption sitting inside the control — the detected address family,
+   * the total port count, the resolved millisecond value. Chrome, not data. */
+  .stratum-net-tag {
+    flex: 0 0 auto;
+    padding: 0 var(--stratum-space-2);
+    color: var(--stratum-text-muted);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-sm);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+  /* Italic is the unobserved channel; the colour only has to stay quiet, not
+   * illegible. `text-disabled` is neutral-400 (2.52:1) and is reserved for
+   * genuinely inactive controls, which WCAG 1.4.3 exempts — an unmeasured
+   * caption is real content and has to clear 4.5:1. */
+  .stratum-net-tag[data-unobserved] {
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Messages below the control ------------------------------------------ */
+  .stratum-net-message {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-2);
+    font-size: var(--stratum-text-xs);
+    line-height: var(--stratum-leading-snug);
+    /* No enter animation. A message that slides in under a field the operator
+     * is still typing into shifts the layout beneath their cursor. */
+  }
+  .stratum-net-message[data-tone='error']   { color: var(--stratum-danger-fg); }
+  .stratum-net-message[data-tone='warning'] { color: var(--stratum-warning-fg); }
+  .stratum-net-message[data-tone='hint']    { color: var(--stratum-text-muted); }
+  .stratum-net-message[data-tone='success'] { color: var(--stratum-success-fg); }
+
+  .stratum-net-message__icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    margin-block-start: 1px;
+    font-size: var(--stratum-text-sm);
+  }
+
+  .stratum-net-message__text {
+    min-width: 0;
+    overflow-wrap: break-word;
+  }
+
+  /* Row of secondary facts under a control: port totals, byte equivalents. */
+  .stratum-net-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--stratum-space-2) var(--stratum-space-5);
+    color: var(--stratum-text-muted);
+    font-size: var(--stratum-text-2xs);
+  }
+  .stratum-net-meta__value {
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text-secondary);
+  }
+  /* Not measured is not zero. Same discipline as the display components.
+   *
+   * The sans face and the italic carry "unresolved"; the colour does not have
+   * to. This row also sits on `surface-sunken` inside ProtocolPicker, where
+   * neutral-400 fell to 2.4:1 — `text-muted` clears 4.5:1 on both surfaces. */
+  .stratum-net-meta__value[data-unobserved] {
+    font-family: var(--stratum-font-sans);
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-net-control {
+      border-color: ButtonBorder;
+      background: Field;
+      color: FieldText;
+    }
+    .stratum-net-control:has(.stratum-net-input:focus-visible),
+    .stratum-net-control:has(.stratum-net-unit:focus-visible) {
+      border-color: Highlight;
+    }
+    /* Fill and hue are discarded here, so validity must survive as geometry:
+     * a thicker, doubled boundary for invalid and a dashed one for warning. */
+    .stratum-net-control[data-validity='invalid'] {
+      border-width: 2px;
+      border-style: double;
+    }
+    .stratum-net-control[data-validity='warning'] {
+      border-style: dashed;
+    }
+    .stratum-net-control[data-disabled] {
+      border-color: GrayText;
+      color: GrayText;
+    }
+    .stratum-net-validity { forced-color-adjust: none; }
+    .stratum-net-validity[data-state='empty'] { color: GrayText; }
+    .stratum-net-message[data-tone='hint'] { color: GrayText; }
+    .stratum-net-tag {
+      border-color: ButtonBorder;
+      background: Canvas;
+      color: CanvasText;
+    }
+  }
+}

@@ -1,0 +1,47 @@
+@layer stratum.components {
+  .stratum-topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-6);
+    width: 100%;
+    min-width: 0;
+    min-height: var(--stratum-topbar-height);
+  }
+
+  /* `1fr auto 1fr` rather than space-between: the centre slot stays optically
+   * centred no matter how wide the two sides get. */
+  .stratum-topbar[data-slotted] {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+  }
+
+  .stratum-topbar__start,
+  .stratum-topbar__center,
+  .stratum-topbar__end {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-5);
+    min-width: 0;
+  }
+
+  .stratum-topbar__center {
+    justify-content: center;
+  }
+
+  .stratum-topbar__end {
+    justify-content: flex-end;
+  }
+
+  /* Narrow: the centre slot has nowhere to go, so it collapses out and the two
+   * side slots take the row. Hiding it is better than letting it crush the
+   * sides into unusable widths. */
+  @container (max-width: 520px) {
+    .stratum-topbar[data-slotted] {
+      grid-template-columns: 1fr auto;
+    }
+    .stratum-topbar__center:empty,
+    .stratum-topbar__center {
+      display: none;
+    }
+  }
+}

@@ -1,0 +1,148 @@
+@layer stratum.components {
+  .stratum-sidebar {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-width: 0;
+    background: var(--stratum-surface);
+  }
+
+  .stratum-sidebar__header {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    min-height: var(--stratum-topbar-height);
+    padding-inline: var(--stratum-space-6);
+    border-bottom: 1px solid var(--stratum-border-subtle);
+  }
+
+  .stratum-sidebar__scroll {
+    flex: 1;
+    min-height: 0;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-y: auto;
+    padding: var(--stratum-space-5) var(--stratum-space-4);
+  }
+
+  .stratum-sidebar__section + .stratum-sidebar__section {
+    margin-top: var(--stratum-space-6);
+  }
+
+  .stratum-sidebar__section-title {
+    padding: 0 var(--stratum-space-4) var(--stratum-space-3);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-semibold);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--stratum-text-subtle);
+  }
+
+  /* Collapsed mode has no room for a heading, so the group boundary becomes a
+   * rule. It keeps its accessible name so the grouping is not lost to AT. */
+  .stratum-sidebar__section-rule {
+    display: block;
+    height: 1px;
+    margin: var(--stratum-space-4) var(--stratum-space-4) var(--stratum-space-5);
+    background: var(--stratum-divider);
+  }
+
+  .stratum-sidebar__list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .stratum-sidebar__item {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-5);
+    width: 100%;
+    /* 30px tall: dense enough for a dozen destinations without scrolling,
+     * still clear of the 24px minimum target. */
+    min-height: 30px;
+    padding: 0 var(--stratum-space-4);
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-secondary);
+    text-align: start;
+    border-radius: var(--stratum-radius-md);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-sidebar__item:hover:not(:disabled):not([aria-disabled='true']) {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+
+  .stratum-sidebar__item[aria-current='page'] {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-selected-bg);
+    font-weight: var(--stratum-weight-medium);
+  }
+
+  .stratum-sidebar__item:disabled,
+  .stratum-sidebar__item[aria-disabled='true'] {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-sidebar__icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    opacity: 0.85;
+  }
+  .stratum-sidebar__item[aria-current='page'] .stratum-sidebar__icon {
+    opacity: 1;
+  }
+  .stratum-sidebar__icon > svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .stratum-sidebar__label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stratum-sidebar__badge {
+    flex-shrink: 0;
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-sidebar__footer {
+    flex-shrink: 0;
+    padding: var(--stratum-space-4);
+    border-top: 1px solid var(--stratum-border-subtle);
+  }
+
+  /* -- Collapsed ------------------------------------------------------------ */
+  .stratum-sidebar[data-collapsed] .stratum-sidebar__item {
+    justify-content: center;
+    padding-inline: 0;
+    gap: 0;
+  }
+  .stratum-sidebar[data-collapsed] .stratum-sidebar__header {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-sidebar__item[aria-current='page'] {
+      background: Highlight;
+      color: HighlightText;
+      forced-color-adjust: none;
+    }
+    .stratum-sidebar__item:disabled,
+    .stratum-sidebar__item[aria-disabled='true'] {
+      color: GrayText;
+    }
+  }
+}

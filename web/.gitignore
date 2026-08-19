@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.shots/
+test-results/
+playwright-report/
+
+# ---------------------------------------------------------------------------
+# Test and development surfaces stay local, per AGENTS.md — the same rule that
+# already keeps `docs/` and `test/` out of the tree.
+#
+# Every pattern here is ANCHORED with a leading slash. An unanchored `lab/`
+# would match a directory of that name at ANY depth, which is how the root
+# ignore file's `docs/` silently swallows nested documentation folders. These
+# mean "the lab at the root of web/", and nothing else.
+# ---------------------------------------------------------------------------
+
+# The component lab: the dev harness and Playwright's target surface.
+/lab/
+
+# The a11y gate and its configuration.
+/tests/
+/playwright.config.ts
+
+# Screenshot, scanning and codegen scripts used while building, not shipped.
+/tools/
+/.treeshake/

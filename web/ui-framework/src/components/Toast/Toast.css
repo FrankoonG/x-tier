@@ -1,0 +1,331 @@
+@layer stratum.components {
+  /* =======================================================================
+   * Viewport
+   * ==================================================================== */
+  .stratum-toast-viewport {
+    position: fixed;
+    z-index: var(--stratum-z-toast);
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-4);
+    width: min(400px, 100vw);
+    max-height: 100dvh;
+    margin: 0;
+    padding: var(--stratum-space-8);
+    list-style: none;
+    /* The container must not eat clicks on the page behind it; only the
+     * toasts themselves are interactive. */
+    pointer-events: none;
+    /* An outset ring on an element pinned to the viewport edge is clipped by
+     * the window, so the region focus ring is drawn inside. */
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+
+  .stratum-toast-viewport[data-placement^='top']    { top: 0; }
+  .stratum-toast-viewport[data-placement^='bottom'] { bottom: 0; }
+  .stratum-toast-viewport[data-placement$='-left']  { left: 0; }
+  .stratum-toast-viewport[data-placement$='-right'] { right: 0; }
+  .stratum-toast-viewport[data-placement$='-center'] {
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .stratum-toast-viewport[data-empty] {
+    /* Nothing to show: keep the node (and therefore the region) mounted, but
+     * do not let an empty padded box sit over the page. */
+    padding: 0;
+  }
+
+  .stratum-toast-viewport__item {
+    width: 100%;
+  }
+
+  .stratum-toast-viewport__overflow {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .stratum-toast-overflow {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    padding: var(--stratum-space-1) var(--stratum-space-5);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-muted);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-full);
+    box-shadow: var(--stratum-shadow-sm);
+  }
+
+  /* =======================================================================
+   * Toast
+   * ==================================================================== */
+  .stratum-toast {
+    --_bg: var(--stratum-surface-elevated);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border);
+    --_accent: var(--stratum-unknown);
+    --_icon: var(--stratum-unknown-fg);
+    --_enter-x: 0px;
+    --_enter-y: 0px;
+
+    pointer-events: auto;
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: var(--stratum-space-2) var(--stratum-space-5);
+    width: 100%;
+    padding: var(--stratum-space-6);
+    padding-inline-start: var(--stratum-space-5);
+    /* Clips the lifetime bar to the rounded corner. Inner controls therefore
+     * use `.stratum-focus-inset`, since an outset ring would be cut off. */
+    overflow: hidden;
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    /* The tone bar is a real border, so it survives forced-colors where a
+     * background fill would not. */
+    border-inline-start: 3px solid var(--_accent);
+    border-radius: var(--stratum-radius-lg);
+    box-shadow: var(--stratum-shadow-lg);
+
+    transform: translate(var(--_swipe-x, 0px), var(--_swipe-y, 0px));
+    transition: var(--stratum-transition-popover-enter), display allow-discrete;
+  }
+
+  /* `@starting-style` is written against the bare selector, not
+   * `[data-state='entering']`: a toast is rendered into the list already
+   * present, so its first computed style is `entered` and a state-gated
+   * starting style would never apply. */
+  @starting-style {
+    .stratum-toast {
+      opacity: 0;
+      transform: translate(var(--_enter-x), var(--_enter-y));
+    }
+  }
+
+  .stratum-toast[data-state='exiting'] {
+    opacity: 0;
+    transform: translate(var(--_enter-x), var(--_enter-y));
+    transition: var(--stratum-transition-popover-exit);
+  }
+
+  /* Dismissed by swipe: continue in the direction of the gesture rather than
+   * snapping back to the entry vector, which reads as the toast fighting the
+   * user. Multiplied by the motion-distance factor so reduced motion turns
+   * this into a plain fade. */
+  .stratum-toast[data-state='exiting'][data-flung][data-axis='x'] {
+    transform: translate(calc(var(--_fling) * var(--stratum-motion-distance)), 0);
+  }
+  .stratum-toast[data-state='exiting'][data-flung][data-axis='y'] {
+    transform: translate(0, calc(var(--_fling) * var(--stratum-motion-distance)));
+  }
+
+  /* While a finger is down the toast must track it exactly. */
+  .stratum-toast[data-swiping] {
+    transition: none;
+    cursor: grabbing;
+    user-select: none;
+  }
+
+  .stratum-toast[data-axis='x'] { touch-action: pan-y; }
+  .stratum-toast[data-axis='y'] { touch-action: pan-x; }
+
+  /* -- Entry vector per placement ---------------------------------------- */
+  .stratum-toast-viewport[data-placement$='-right'] .stratum-toast {
+    --_enter-x: var(--stratum-slide);
+  }
+  .stratum-toast-viewport[data-placement$='-left'] .stratum-toast {
+    --_enter-x: calc(-1 * var(--stratum-slide));
+  }
+  .stratum-toast-viewport[data-placement='top-center'] .stratum-toast {
+    --_enter-y: calc(-1 * var(--stratum-slide));
+  }
+  .stratum-toast-viewport[data-placement='bottom-center'] .stratum-toast {
+    --_enter-y: var(--stratum-slide);
+  }
+
+  /* -- Tones -------------------------------------------------------------- */
+  .stratum-toast[data-variant='success'] {
+    --_accent: var(--stratum-success);
+    --_icon: var(--stratum-success-fg);
+  }
+  .stratum-toast[data-variant='error'] {
+    --_accent: var(--stratum-danger);
+    --_icon: var(--stratum-danger-fg);
+  }
+  .stratum-toast[data-variant='warning'] {
+    --_accent: var(--stratum-warning);
+    --_icon: var(--stratum-warning-fg);
+  }
+  .stratum-toast[data-variant='info'] {
+    --_accent: var(--stratum-info);
+    --_icon: var(--stratum-info-fg);
+  }
+  .stratum-toast[data-variant='neutral'] {
+    --_accent: var(--stratum-unknown);
+    --_icon: var(--stratum-unknown-fg);
+  }
+  /* `live` acknowledges a change that already took effect. It borrows the
+   * accent hue rather than success green, because nothing was verified — the
+   * config was simply applied. */
+  .stratum-toast[data-variant='live'] {
+    --_accent: var(--stratum-accent);
+    --_icon: var(--stratum-accent-fg);
+  }
+
+  /* -- Parts -------------------------------------------------------------- */
+  .stratum-toast__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    grid-row: 1 / span 1;
+    margin-block-start: 1px;
+    font-size: var(--stratum-text-lg);
+    color: var(--_icon);
+  }
+
+  .stratum-toast__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+  }
+
+  .stratum-toast__title {
+    font-size: var(--stratum-text-sm);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+  }
+
+  .stratum-toast__message {
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .stratum-toast__controls {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+  }
+
+  .stratum-toast__action {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-medium);
+    white-space: nowrap;
+    color: var(--_icon);
+    background: transparent;
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-toast__action:hover {
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-toast__action:active {
+    background: var(--stratum-surface-active);
+  }
+
+  .stratum-toast__dismiss {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    font-size: var(--stratum-text-md);
+    color: var(--stratum-text-muted);
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-toast__dismiss:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  /* The reset paints every `svg` with `fill: currentColor`, which would turn
+   * this stroke-drawn cross into a filled shape. Scoped to the component's own
+   * glyph so a consumer-supplied filled `icon` is left alone. */
+  .stratum-toast__dismiss > svg {
+    fill: none;
+  }
+
+  /* -- Lifetime bar --------------------------------------------------------
+   * Not decoration: it is the only visible answer to "how long do I have?",
+   * and it is what makes pause-on-hover legible. Deliberately kept under
+   * reduced motion — it neither loops nor translates the layout, and removing
+   * it would remove information rather than movement.
+   */
+  .stratum-toast__countdown {
+    position: absolute;
+    inset-inline: 0;
+    inset-block-end: 0;
+    height: 2px;
+    background: var(--_accent);
+    opacity: 0.55;
+    transform-origin: 0 50%;
+    animation-name: stratum-toast-countdown;
+    animation-duration: var(--_life);
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+  }
+  .stratum-toast[data-paused] .stratum-toast__countdown {
+    animation-play-state: paused;
+  }
+  /* Cancelled, not paused, on the way out. `usePresence` waits on every
+   * animation in the subtree, and a countdown that still has 4s left to run —
+   * or a finished one that pausing re-opens — would hold the toast in the DOM
+   * for its full remaining lifetime after the user dismissed it. */
+  .stratum-toast[data-state='exiting'] .stratum-toast__countdown {
+    animation: none;
+    opacity: 0;
+  }
+
+  @keyframes stratum-toast-countdown {
+    from { transform: scaleX(1); }
+    to   { transform: scaleX(0); }
+  }
+
+  /* -- Forced colours ------------------------------------------------------
+   * Fills and shadows are discarded, so the panel edge and the tone bar have
+   * to exist as borders the OS can repaint, and the icon must stay visible.
+   */
+  @media (forced-colors: active) {
+    .stratum-toast {
+      background: Canvas;
+      color: CanvasText;
+      border-color: CanvasText;
+      border-inline-start-color: Highlight;
+    }
+    .stratum-toast__icon,
+    .stratum-toast__title,
+    .stratum-toast__message {
+      color: CanvasText;
+    }
+    .stratum-toast__action,
+    .stratum-toast__dismiss {
+      color: ButtonText;
+      background: ButtonFace;
+      border: 1px solid ButtonBorder;
+    }
+    .stratum-toast__countdown {
+      background: Highlight;
+      opacity: 1;
+    }
+    .stratum-toast-overflow {
+      color: CanvasText;
+      background: Canvas;
+      border-color: CanvasText;
+    }
+  }
+}

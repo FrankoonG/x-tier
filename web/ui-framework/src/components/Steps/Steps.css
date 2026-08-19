@@ -1,0 +1,251 @@
+@layer stratum.components {
+  .stratum-steps {
+    /* Intrinsic dimensions are exposed as private custom properties rather
+     * than being buried in rules, so one instance can be resized without a
+     * specificity fight. */
+    --_marker: 24px;
+    --_line: 2px;
+    --_pad: var(--stratum-space-2);
+    --_fs: var(--stratum-text-sm);
+    --_gap: var(--stratum-space-4);
+
+    display: block;
+    min-width: 0;
+  }
+
+  .stratum-steps[data-size='sm'] {
+    --_marker: 20px;
+    --_pad: var(--stratum-space-1);
+    --_fs: var(--stratum-text-xs);
+    --_gap: var(--stratum-space-3);
+  }
+  .stratum-steps[data-size='lg'] {
+    --_marker: 32px;
+    --_pad: var(--stratum-space-3);
+    --_fs: var(--stratum-text-md);
+    --_gap: var(--stratum-space-5);
+  }
+
+  .stratum-steps__list {
+    display: flex;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    min-width: 0;
+  }
+
+  .stratum-steps__item {
+    display: flex;
+    min-width: 0;
+  }
+
+  .stratum-steps__control {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--_gap);
+    min-width: 0;
+    padding: var(--_pad);
+    font: inherit;
+    font-size: var(--_fs);
+    text-align: start;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+
+  /* Only the button form is interactive; the span form must not offer a
+   * pointer or a hover fill that implies it is. Keyed off a data attribute
+   * rather than `button`, so the styling contract survives an element swap. */
+  .stratum-steps__control[data-interactive] {
+    cursor: pointer;
+  }
+  .stratum-steps__control[data-disabled] {
+    cursor: not-allowed;
+  }
+
+  /* -- Marker ---------------------------------------------------------------- */
+  .stratum-steps__marker {
+    --_marker-bg: var(--stratum-surface);
+    --_marker-fg: var(--stratum-text-muted);
+    --_marker-border: var(--stratum-border-strong);
+
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: var(--_marker);
+    height: var(--_marker);
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-none);
+    color: var(--_marker-fg);
+    background: var(--_marker-bg);
+    border: var(--_line) solid var(--_marker-border);
+    border-radius: var(--stratum-radius-full);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-steps__marker > svg {
+    width: calc(var(--_marker) * 0.58);
+    height: calc(var(--_marker) * 0.58);
+  }
+
+  .stratum-steps__dot {
+    width: calc(var(--_marker) * 0.3);
+    height: calc(var(--_marker) * 0.3);
+    background: currentColor;
+    border-radius: var(--stratum-radius-full);
+  }
+
+  .stratum-steps__item[data-status='complete'] .stratum-steps__marker {
+    --_marker-bg: var(--stratum-accent);
+    --_marker-fg: var(--stratum-accent-on-solid);
+    --_marker-border: var(--stratum-accent);
+  }
+  .stratum-steps__item[data-status='current'] .stratum-steps__marker {
+    --_marker-bg: var(--stratum-surface);
+    --_marker-fg: var(--stratum-accent-fg);
+    --_marker-border: var(--stratum-accent);
+  }
+  .stratum-steps__item[data-status='error'] .stratum-steps__marker {
+    --_marker-bg: var(--stratum-danger);
+    --_marker-fg: var(--stratum-danger-on-solid);
+    --_marker-border: var(--stratum-danger);
+  }
+
+  /* A single, non-looping ring on the current step. The design brief allows
+   * looping animation only for anomalies, and "you are here" is not one. */
+  .stratum-steps__item[data-status='current'] .stratum-steps__marker::after {
+    content: '';
+    position: absolute;
+    inset: calc(-1 * var(--_line) - 2px);
+    border: var(--_line) solid var(--stratum-accent-subtle);
+    border-radius: var(--stratum-radius-full);
+  }
+
+  /* -- Text ------------------------------------------------------------------ */
+  .stratum-steps__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+    /* Optically centres a single-line label against the marker. */
+    padding-block-start: calc((var(--_marker) - 1.25em) / 2);
+  }
+
+  .stratum-steps__label {
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .stratum-steps__item[data-status='complete'] .stratum-steps__label {
+    color: var(--stratum-text);
+  }
+  .stratum-steps__item[data-status='current'] .stratum-steps__label {
+    color: var(--stratum-text);
+    font-weight: var(--stratum-weight-semibold);
+  }
+  .stratum-steps__item[data-status='error'] .stratum-steps__label {
+    color: var(--stratum-danger-fg);
+    font-weight: var(--stratum-weight-semibold);
+  }
+
+  .stratum-steps__description {
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-normal);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-subtle);
+  }
+
+  /* -- Connector ------------------------------------------------------------- */
+  .stratum-steps__connector {
+    background: var(--stratum-border);
+    border-radius: var(--stratum-radius-full);
+    transition: background-color var(--stratum-duration-md) var(--stratum-ease-out);
+  }
+  /* Painted as travelled once the step it leaves is behind the user. */
+  .stratum-steps__item[data-status='complete'] .stratum-steps__connector {
+    background: var(--stratum-accent);
+  }
+
+  /* -- Horizontal ------------------------------------------------------------ */
+  .stratum-steps[data-orientation='horizontal'] .stratum-steps__item {
+    flex: 1 1 auto;
+    align-items: flex-start;
+  }
+  .stratum-steps[data-orientation='horizontal'] .stratum-steps__item[data-last] {
+    flex: 0 1 auto;
+  }
+  .stratum-steps[data-orientation='horizontal'] .stratum-steps__connector {
+    flex: 1 1 auto;
+    min-width: var(--stratum-space-12);
+    height: var(--_line);
+    margin-inline: var(--stratum-space-4);
+    /* Aligns the rule with the marker's centre line regardless of how many
+     * lines the label wraps to. */
+    margin-block-start: calc(var(--_pad) + (var(--_marker) - var(--_line)) / 2);
+  }
+
+  /* -- Vertical -------------------------------------------------------------- */
+  .stratum-steps[data-orientation='vertical'] .stratum-steps__list {
+    flex-direction: column;
+  }
+  .stratum-steps[data-orientation='vertical'] .stratum-steps__item {
+    position: relative;
+    flex-direction: column;
+    padding-block-end: var(--stratum-space-8);
+  }
+  .stratum-steps[data-orientation='vertical'] .stratum-steps__item[data-last] {
+    padding-block-end: 0;
+  }
+  .stratum-steps[data-orientation='vertical'] .stratum-steps__connector {
+    position: absolute;
+    inset-inline-start: calc(var(--_pad) + (var(--_marker) - var(--_line)) / 2);
+    top: calc(var(--_pad) + var(--_marker) + var(--stratum-space-1));
+    bottom: var(--stratum-space-1);
+    width: var(--_line);
+  }
+
+  /* -- Interactive states ----------------------------------------------------- */
+  .stratum-steps__control[data-interactive]:hover:not([data-disabled]) .stratum-steps__label {
+    color: var(--stratum-text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .stratum-steps__control[data-disabled] .stratum-steps__label,
+  .stratum-steps__control[data-disabled] .stratum-steps__description {
+    color: var(--stratum-text-disabled);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-steps__marker {
+      border-color: CanvasText;
+      background: Canvas;
+      color: CanvasText;
+      forced-color-adjust: none;
+    }
+    .stratum-steps__item[data-status='complete'] .stratum-steps__marker,
+    .stratum-steps__item[data-status='current'] .stratum-steps__marker {
+      border-color: Highlight;
+      color: Highlight;
+    }
+    .stratum-steps__item[data-status='current'] .stratum-steps__marker::after {
+      border-color: Highlight;
+    }
+    .stratum-steps__connector {
+      background: CanvasText;
+      forced-color-adjust: none;
+    }
+    .stratum-steps__item[data-status='complete'] .stratum-steps__connector {
+      background: Highlight;
+    }
+    .stratum-steps__control[data-disabled] .stratum-steps__label,
+    .stratum-steps__control[data-disabled] .stratum-steps__description {
+      color: GrayText;
+    }
+  }
+}

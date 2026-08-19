@@ -1,0 +1,170 @@
+@layer stratum.components {
+  .stratum-app-shell {
+    --_sidebar: var(--stratum-sidebar-width);
+
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      'sidebar topbar'
+      'sidebar content';
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--stratum-bg);
+  }
+
+  .stratum-app-shell[data-collapsed] {
+    --_sidebar: var(--stratum-sidebar-width-collapsed);
+  }
+
+  /* -- Skip link -----------------------------------------------------------
+   * Off-screen until focused. Placed first in DOM order so it is the very
+   * first tab stop (WCAG 2.4.1).
+   *
+   * The inverse surface, NOT the accent fill. `--stratum-accent` is a
+   * graphic-grade role (3:1): `accent-on-solid` on it measures 5.23:1 in light
+   * but only 3.84:1 in dark, where the token resolves to indigo-500 — short of
+   * the 4.5:1 this normal-weight 12px label needs (SC 1.4.3). `accent-hover`
+   * and `accent-active` are worse in dark (2.70:1, 1.86:1) because the accent
+   * ramp lightens there. The inverse pair is 16.87:1 light / 16.02:1 dark and
+   * is the role the framework already uses for transient system chrome that
+   * has to be unmissable the instant it appears — see Tooltip. The accent is
+   * still present, as the focus ring this element always shows. */
+  .stratum-app-shell__skip {
+    position: absolute;
+    top: var(--stratum-space-4);
+    left: var(--stratum-space-4);
+    z-index: var(--stratum-z-max);
+    padding: var(--stratum-space-4) var(--stratum-space-8);
+    font-size: var(--stratum-text-sm);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-inverse);
+    background: var(--stratum-surface-inverse);
+    border-radius: var(--stratum-radius-md);
+    box-shadow: var(--stratum-shadow-lg);
+    translate: 0 calc(-200% - var(--stratum-space-4));
+    transition: translate var(--stratum-duration-sm) var(--stratum-ease-signature);
+  }
+  .stratum-app-shell__skip:focus-visible {
+    translate: 0 0;
+  }
+
+  /* -- Sidebar -------------------------------------------------------------- */
+  .stratum-app-shell__sidebar {
+    grid-area: sidebar;
+    width: var(--_sidebar);
+    min-width: 0;
+    overflow: hidden auto;
+    border-right: 1px solid var(--stratum-border);
+    background: var(--stratum-surface);
+    transition: width var(--stratum-duration-lg) var(--stratum-ease-signature);
+  }
+
+  /* -- Topbar --------------------------------------------------------------- */
+  .stratum-app-shell__topbar {
+    grid-area: topbar;
+    display: flex;
+    align-items: center;
+    min-height: var(--stratum-topbar-height);
+    padding-inline: var(--stratum-space-8);
+    border-bottom: 1px solid var(--stratum-border);
+    background: var(--stratum-surface);
+  }
+
+  /* -- Content -------------------------------------------------------------
+   * `min-height: 0` and `min-width: 0` are load-bearing. A grid item's default
+   * `min-*: auto` refuses to shrink below its content, which turns an internal
+   * scroll into a document scroll and breaks every sticky header inside. */
+  .stratum-app-shell__content {
+    grid-area: content;
+    min-height: 0;
+    min-width: 0;
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+  }
+  /* The ring is NOT suppressed here. The region is a tab stop (see AppShell.tsx)
+   * and after a skip-link jump the user has to be able to see where focus
+   * landed. It is drawn inset via `.stratum-focus-inset` because an offset
+   * outline on this element is clipped by the shell, which is `overflow:
+   * hidden`. `:focus-visible` still keeps it off a pointer click. */
+
+  /* -- Mobile ---------------------------------------------------------------
+   * The sidebar leaves the grid and becomes an overlay drawer. */
+  .stratum-app-shell[data-mobile] {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      'topbar'
+      'content';
+  }
+
+  .stratum-app-shell[data-mobile] .stratum-app-shell__sidebar {
+    position: fixed;
+    inset-block: 0;
+    inset-inline-start: 0;
+    z-index: var(--stratum-z-drawer);
+    width: var(--stratum-sidebar-width);
+    box-shadow: var(--stratum-shadow-xl);
+
+    translate: -100% 0;
+    visibility: hidden;
+    transition:
+      translate var(--stratum-duration-xl) var(--stratum-ease-signature),
+      visibility var(--stratum-duration-xl) step-end;
+  }
+
+  .stratum-app-shell[data-mobile][data-overlay-open] .stratum-app-shell__sidebar {
+    translate: 0 0;
+    visibility: visible;
+    transition:
+      translate var(--stratum-duration-xl) var(--stratum-ease-signature),
+      visibility 0s;
+  }
+
+  /* Under reduced motion the drawer must still appear, just without the slide.
+   * --stratum-motion-distance cannot zero a percentage translate, so the
+   * off-canvas position is overridden directly. */
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-app-shell[data-mobile] .stratum-app-shell__sidebar {
+      transition:
+        opacity var(--stratum-duration-sm) var(--stratum-ease-out),
+        visibility var(--stratum-duration-sm) step-end;
+      translate: 0 0;
+      opacity: 0;
+    }
+    .stratum-app-shell[data-mobile][data-overlay-open] .stratum-app-shell__sidebar {
+      opacity: 1;
+      transition: opacity var(--stratum-duration-sm) var(--stratum-ease-out), visibility 0s;
+    }
+  }
+
+  .stratum-app-shell__scrim {
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--stratum-z-drawer) - 1);
+    background: var(--stratum-scrim);
+    border: none;
+    cursor: pointer;
+    animation: stratum-scrim-in var(--stratum-duration-md) var(--stratum-ease-out);
+  }
+
+  @keyframes stratum-scrim-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-app-shell__sidebar,
+    .stratum-app-shell__topbar {
+      border-color: CanvasText;
+    }
+    /* The inverse fill and the shadow are the only things separating the skip
+     * link from the content it floats over, and the OS discards both. */
+    .stratum-app-shell__skip {
+      border: 1px solid CanvasText;
+    }
+    .stratum-app-shell__scrim {
+      background: Canvas;
+      opacity: 0.8;
+    }
+  }
+}

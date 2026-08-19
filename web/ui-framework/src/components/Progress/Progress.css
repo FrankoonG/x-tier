@@ -1,0 +1,126 @@
+@layer stratum.components {
+  .stratum-progress {
+    --_fill: var(--stratum-accent);
+    --_h: 6px;
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .stratum-progress[data-size='xs'] { --_h: 3px; }
+  .stratum-progress[data-size='sm'] { --_h: 6px; }
+  .stratum-progress[data-size='md'] { --_h: 10px; }
+
+  .stratum-progress[data-variant='accent']  { --_fill: var(--stratum-accent); }
+  .stratum-progress[data-variant='success'] { --_fill: var(--stratum-success); }
+  .stratum-progress[data-variant='warning'] { --_fill: var(--stratum-warning); }
+  .stratum-progress[data-variant='danger']  { --_fill: var(--stratum-danger); }
+  .stratum-progress[data-variant='info']    { --_fill: var(--stratum-info); }
+  .stratum-progress[data-variant='neutral'] { --_fill: var(--stratum-unknown); }
+
+  .stratum-progress__header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--stratum-space-4);
+    font-size: var(--stratum-text-xs);
+    line-height: var(--stratum-leading-tight);
+  }
+
+  .stratum-progress__label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-secondary);
+  }
+
+  .stratum-progress__value {
+    flex-shrink: 0;
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-progress__track {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: var(--_h);
+    background: var(--stratum-track);
+    border-radius: var(--stratum-radius-full);
+  }
+
+  /* Alpha-composited rather than `opacity`, which applies to the element AND
+   * its subtree as a group — the fill is a child of the track, so a group
+   * opacity would wash the fill out too and erase the fill/track distinction
+   * the inverted style exists to create. Mixed from `--_fill` so a consumer
+   * retheming one instance still gets a matching wash. */
+  .stratum-progress[data-inverted] .stratum-progress__track {
+    background: color-mix(in oklch, var(--_fill) 22%, transparent);
+  }
+
+  .stratum-progress__fill {
+    height: 100%;
+    background: var(--_fill);
+    border-radius: inherit;
+    transform-origin: 0 50%;
+    /* Scaling rather than animating `width` keeps the bar off the layout path,
+     * which matters when several of these update on every telemetry poll. */
+    transform: scaleX(var(--_fraction, 0));
+    transition: transform var(--stratum-duration-lg) var(--stratum-ease-out);
+  }
+
+  /* -- Indeterminate --------------------------------------------------------
+   * A fixed-width lozenge sweeping the track. It is a genuine anomaly signal
+   * (something is running and cannot be quantified), which is the only case
+   * the framework permits a loop.
+   */
+  .stratum-progress[data-indeterminate] .stratum-progress__fill {
+    width: 40%;
+    transform: none;
+    transition: none;
+    animation-name: stratum-progress-sweep;
+    /* Composed from motion tokens rather than a literal, so the sweep still
+     * halves when `--stratum-motion-scale` does. */
+    animation-duration: calc(var(--stratum-duration-2xl) * 3);
+    animation-timing-function: var(--stratum-ease-in-out);
+    animation-iteration-count: infinite;
+  }
+
+  @keyframes stratum-progress-sweep {
+    from { transform: translateX(-100%); }
+    to   { transform: translateX(250%); }
+  }
+
+  /* Reduced motion: the loop stops dead. The bar stays clearly "busy" by
+   * filling the whole track at reduced opacity — the state is still legible,
+   * and `aria-busy` carries it for assistive tech either way. */
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-progress[data-indeterminate] .stratum-progress__fill {
+      width: 100%;
+      animation: none;
+      opacity: 0.5;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-progress__track {
+      border: 1px solid CanvasText;
+      background: Canvas;
+    }
+    .stratum-progress__fill {
+      background: Highlight;
+      /* System colours ignore author opacity in some engines; reset it so the
+       * inverted and reduced-motion states do not read as disabled. */
+      opacity: 1;
+      forced-color-adjust: none;
+      background-color: Highlight;
+    }
+    .stratum-progress[data-inverted] .stratum-progress__track {
+      background: Canvas;
+    }
+  }
+}

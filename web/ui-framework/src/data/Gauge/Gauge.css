@@ -1,0 +1,152 @@
+@layer stratum.components {
+  .stratum-gauge {
+    --_track: var(--stratum-track);
+    --_tick: var(--stratum-border-strong);
+    --_value: var(--stratum-accent);
+    --_cap: var(--stratum-surface);
+
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    min-width: 0;
+    color: var(--stratum-text);
+  }
+
+  .stratum-gauge__dial {
+    position: relative;
+    display: block;
+  }
+
+  .stratum-gauge__svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+
+  .stratum-gauge__track {
+    color: var(--_track);
+  }
+
+  /* -- Value ---------------------------------------------------------------
+   * The fill carries severity: it takes the colour of the band the reading
+   * falls into, so the meter says "this is bad" without a separate badge. */
+  /* No transition on the arc. Interpolating `d` across an arc whose large-arc
+   * flag changes is not defined, and a resting component in this framework
+   * does not animate anyway — only anomalies do. */
+  .stratum-gauge__value {
+    color: var(--_value);
+  }
+  .stratum-gauge__value[data-status='ok']       { color: var(--stratum-success); }
+  .stratum-gauge__value[data-status='warning']  { color: var(--stratum-warning); }
+  .stratum-gauge__value[data-status='danger']   { color: var(--stratum-danger); }
+  .stratum-gauge__value[data-status='info']     { color: var(--stratum-info); }
+  .stratum-gauge__value[data-status='neutral']  { color: var(--stratum-unknown); }
+
+  .stratum-gauge__band[data-status='ok']       { color: var(--stratum-success); }
+  .stratum-gauge__band[data-status='warning']  { color: var(--stratum-warning); }
+  .stratum-gauge__band[data-status='danger']   { color: var(--stratum-danger); }
+  .stratum-gauge__band[data-status='info']     { color: var(--stratum-info); }
+  .stratum-gauge__band[data-status='neutral']  { color: var(--stratum-unknown); }
+
+  .stratum-gauge__tick {
+    color: var(--_tick);
+    stroke-width: 1;
+  }
+
+  /* The cap is drawn in the surface colour so it reads as a notch cut out of
+   * the arc rather than as another mark added on top of it. */
+  .stratum-gauge__cap {
+    color: var(--_cap);
+  }
+
+  /* -- Readout -------------------------------------------------------------- */
+
+  .stratum-gauge__readout {
+    position: absolute;
+    inset-inline: 0;
+    /* Sits in the opening of the arc rather than at the box centre, which for
+     * a 240-degree sweep would push it low. */
+    inset-block-start: 46%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--stratum-space-1);
+    pointer-events: none;
+  }
+
+  .stratum-gauge__value-text {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--stratum-space-1);
+    font-size: var(--stratum-text-2xl);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-none);
+    /* Tabular figures, deliberately. A live gauge repolls every second or two,
+     * and proportional digits make the centred value twitch horizontally on
+     * every update — the framework holds this rule for every live metric. */
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text);
+  }
+
+  /* NOT OBSERVED: the em dash, in the unknown role, italicised — matching the
+   * treatment used everywhere else in the framework so it is recognisable as
+   * "we did not look" rather than a rendering failure.
+   *
+   * `unknown-fg`, not `unknown`. The arcs above legitimately use the base
+   * tokens — they are strokes, and 3:1 (SC 1.4.11) is the bar for a graphic.
+   * This is the readout, which a human reads, so it takes the text grade
+   * (4.5:1, SC 1.4.3). Same status, two grades. */
+  .stratum-gauge__value-text[data-unobserved] {
+    font-size: var(--stratum-text-xl);
+    font-weight: var(--stratum-weight-normal);
+    font-style: italic;
+    color: var(--stratum-unknown-fg);
+  }
+
+  .stratum-gauge__unit {
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-normal);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-gauge__caption {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+    text-align: center;
+  }
+
+  .stratum-gauge__bounds {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text-subtle);
+  }
+
+  /* Forced colours discard the band fills, so the boundary ticks and the cap
+   * become the only channels — both are strokes, and both survive. */
+  @media (forced-colors: active) {
+    .stratum-gauge__track {
+      color: GrayText;
+    }
+    .stratum-gauge__value,
+    .stratum-gauge__value[data-status] {
+      color: Highlight;
+    }
+    .stratum-gauge__band,
+    .stratum-gauge__band[data-status] {
+      color: CanvasText;
+    }
+    .stratum-gauge__tick {
+      color: CanvasText;
+    }
+    .stratum-gauge__cap {
+      color: Canvas;
+    }
+    .stratum-gauge__value-text[data-unobserved] {
+      color: GrayText;
+    }
+  }
+}

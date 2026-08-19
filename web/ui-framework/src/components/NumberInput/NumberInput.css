@@ -1,0 +1,95 @@
+@layer stratum.components {
+  /* Numbers in an operator panel are read in columns and compared against each
+   * other, so proportional figures — where 1 is narrower than 8 — make a live
+   * value jitter as it updates. */
+  .stratum-number-input__control {
+    font-variant-numeric: var(--stratum-numeric);
+    font-feature-settings: 'tnum' 1;
+  }
+
+  /* The suffix slot centres its contents by default, so a stepper asking to
+   * stretch inside it would be resolving its height against a box whose height
+   * is that same stepper — and collapse to nothing. Stretching the slot itself
+   * gives the column a real reference: the field's content box. */
+  .stratum-number-input .stratum-input__adornment[data-side='end'] {
+    align-self: stretch;
+  }
+
+  .stratum-number-input__stepper {
+    display: flex;
+    flex-direction: column;
+    align-self: stretch;
+    flex-shrink: 0;
+    /* Pulled toward the field edge so the steppers read as part of the frame
+     * rather than as floating buttons. --_px is inherited from the wrapper. */
+    margin-inline-end: calc(var(--stratum-space-2) - var(--_px));
+    margin-block: var(--stratum-space-1);
+    padding-inline-start: var(--stratum-space-1);
+    border-inline-start: 1px solid var(--stratum-border);
+  }
+
+  /* 24px wide, which is the WCAG 2.2 SC 2.5.8 minimum on that axis. The
+   * vertical axis cannot also reach 24px: two stacked buttons inside a 32px
+   * field have 13px each, and expanding the hit areas to 24px would overlap
+   * them, so a click near the seam would decrement when it looked like an
+   * increment. The escape hatch the criterion actually leaves open is used
+   * instead — every stepper action is reachable from the keyboard on the field
+   * itself (Arrow, Page, Home, End) and by typing the value directly. */
+  .stratum-number-input__step {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1 1 0;
+
+    width: var(--stratum-space-12);
+    min-height: 0;
+    font-size: var(--stratum-text-sm);
+
+    color: var(--stratum-text-muted);
+    background: transparent;
+    border-radius: var(--stratum-radius-xs);
+
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-number-input__step > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-number-input__step:hover:not(:disabled) {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-active);
+  }
+
+  .stratum-number-input__step:active:not(:disabled) {
+    color: var(--stratum-accent-fg);
+  }
+
+  .stratum-number-input__step:disabled {
+    cursor: not-allowed;
+    /* At a bound, not broken: dimmed rather than hidden so the control does
+     * not reflow and the user can see why nothing happens. */
+    opacity: 0.35;
+  }
+
+  /* Steppers are pointer affordances; the keyboard path is the Arrow keys on
+   * the field itself, which the spinbutton role already advertises. They are
+   * out of the tab order, so they never take the focus ring. */
+  .stratum-number-input__step:focus {
+    outline: none;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-number-input__stepper {
+      border-inline-start-color: ButtonBorder;
+    }
+    .stratum-number-input__step {
+      color: ButtonText;
+    }
+    .stratum-number-input__step:disabled {
+      color: GrayText;
+      opacity: 1;
+    }
+  }
+}

@@ -1,0 +1,62 @@
+@layer stratum.components {
+  .stratum-duration-input {
+    min-width: 0;
+  }
+
+  /* The number is narrow and the unit is fixed-width, so the pair reads as one
+   * control rather than a field with a menu glued to it. A minimum inline size
+   * on the number keeps a two-digit timeout from collapsing to nothing in a
+   * cramped form column. */
+  .stratum-duration-input__control .stratum-net-input {
+    min-width: 4ch;
+  }
+
+  /* The unit picker is the framework's <Select>. Inside the shared control
+   * shell it has to read as a SEGMENT of that shell, not as a second bordered
+   * box within it: the shell already owns the border, the validity colour, the
+   * disabled fill and the focus ring, so the trigger goes transparent, square
+   * and divider-separated — which is exactly the `.stratum-net-unit` treatment
+   * the native control had.
+   *
+   * `block-size: auto` matters. Select's own step (26/32/38px) equals the
+   * shell's `min-height`, so an explicit height would push the border-box past
+   * the shell and grow the row by 2px — the picker would no longer be the same
+   * height as the number input beside it. Left to `auto` it is its own line
+   * box, exactly like that input.
+   *
+   * Specificity is deliberate: Select sets `--_h`/`--_px` at
+   * `.stratum-select[data-size]` (0,2,0) and its base rule collides with
+   * `.stratum-net-unit` at (0,1,0), so these have to win on specificity rather
+   * than on stylesheet order, which depends on import order and would flip. */
+  .stratum-duration-input .stratum-net-control .stratum-duration-input__unit {
+    block-size: auto;
+    padding-block: 0;
+    padding-inline: var(--stratum-space-3) var(--stratum-space-2);
+    gap: var(--stratum-space-2);
+    color: var(--stratum-text-secondary);
+    background: none;
+    border: none;
+    border-inline-start: 1px solid var(--stratum-divider);
+    border-radius: 0;
+    line-height: var(--stratum-leading-tight);
+    cursor: pointer;
+  }
+  .stratum-duration-input .stratum-net-control .stratum-duration-input__unit:disabled {
+    cursor: not-allowed;
+  }
+
+  /* Widest label is `days`; a floor here stops the control resizing when the
+   * unit changes, which would otherwise shift every field to its right. It sits
+   * on the value rather than on the whole trigger so the chevron and the
+   * padding are not counted into the character measure. */
+  .stratum-duration-input__unit .stratum-select__value {
+    min-inline-size: 5.5ch;
+  }
+
+  /* The resolved millisecond value. This is the number that actually leaves the
+   * form, so it is shown rather than assumed — `5 min` and `300000` being the
+   * same thing is obvious to the field and not to the reader. */
+  .stratum-duration-input .stratum-net-meta {
+    padding-inline-start: var(--stratum-space-1);
+  }
+}

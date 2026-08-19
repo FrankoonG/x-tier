@@ -1,0 +1,155 @@
+@layer stratum.components {
+  .stratum-state-matrix {
+    display: flex;
+    gap: var(--_gap);
+    min-width: 0;
+  }
+
+  .stratum-state-matrix[data-size='sm'] { --_gap: var(--stratum-space-4); --_fs: var(--stratum-text-2xs); }
+  .stratum-state-matrix[data-size='md'] { --_gap: var(--stratum-space-6); --_fs: var(--stratum-text-xs); }
+
+  .stratum-state-matrix[data-layout='inline'] {
+    flex-flow: row wrap;
+    align-items: center;
+  }
+  .stratum-state-matrix[data-layout='stack'] {
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+  }
+  .stratum-state-matrix[data-layout='grid'] {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
+  .stratum-state-matrix__item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    font-size: var(--_fs);
+  }
+  .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__item,
+  .stratum-state-matrix[data-layout='grid'] .stratum-state-matrix__item {
+    justify-content: space-between;
+  }
+
+  .stratum-state-matrix__label {
+    flex-shrink: 0;
+    color: var(--stratum-text-subtle);
+    /* Axis names are chrome; the value is the content. Uppercase micro-label
+     * keeps them scannable without competing for attention. */
+    font-size: var(--stratum-text-2xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .stratum-state-matrix__value {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    min-width: 0;
+    margin: 0;
+    /* Two grades, deliberately separate. `--_fg` paints the value TEXT and must
+     * clear 4.5:1; `--_mark` paints the 7px dot, a meaningful graphic, which
+     * only needs 3:1 and would look washed out at text contrast. Using one
+     * token for both is what put every status value below AA. */
+    color: var(--_fg);
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  .stratum-state-matrix__text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The marker is the non-colour channel. Each status has a distinct SHAPE as
+   * well as a distinct colour, so the axes stay separable without relying on
+   * hue (WCAG 1.4.1). */
+  .stratum-state-matrix__marker {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: var(--stratum-radius-full);
+    background: var(--_mark);
+  }
+
+  .stratum-state-matrix__item[data-status='ok'] {
+    --_fg: var(--stratum-success-fg);   --_mark: var(--stratum-success);
+  }
+  .stratum-state-matrix__item[data-status='degraded'] {
+    --_fg: var(--stratum-warning-fg);   --_mark: var(--stratum-warning);
+  }
+  .stratum-state-matrix__item[data-status='failed'] {
+    --_fg: var(--stratum-danger-fg);    --_mark: var(--stratum-danger);
+  }
+  .stratum-state-matrix__item[data-status='info'] {
+    --_fg: var(--stratum-text-secondary); --_mark: var(--stratum-text-secondary);
+  }
+  /* `inactive` is an observed negative, so it is real content and gets a
+   * readable colour — `text-disabled` is reserved for actually-disabled
+   * controls, which WCAG exempts. */
+  .stratum-state-matrix__item[data-status='inactive'] {
+    --_fg: var(--stratum-text-muted);   --_mark: var(--stratum-text-subtle);
+  }
+  .stratum-state-matrix__item[data-status='unknown'] {
+    --_fg: var(--stratum-unknown-fg);   --_mark: var(--stratum-unknown);
+  }
+
+  /* degraded — hollow ring */
+  .stratum-state-matrix__item[data-status='degraded'] .stratum-state-matrix__marker {
+    background: transparent;
+    box-shadow: inset 0 0 0 2px var(--_mark);
+  }
+  /* failed — square */
+  .stratum-state-matrix__item[data-status='failed'] .stratum-state-matrix__marker {
+    border-radius: 1px;
+  }
+  /* inactive — hollow, thin */
+  .stratum-state-matrix__item[data-status='inactive'] .stratum-state-matrix__marker {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--_mark);
+  }
+
+  /* NOT OBSERVED. Dashed outline and italic text, deliberately distinct from
+   * every observed state — including from `failed`. The single most damaging
+   * mistake this component exists to prevent is rendering "we did not look"
+   * the same as "we looked and it is off". */
+  .stratum-state-matrix__item[data-status='unknown'] .stratum-state-matrix__marker {
+    background: transparent;
+    border: 1px dashed var(--_mark);
+    box-shadow: none;
+  }
+  .stratum-state-matrix__item[data-status='unknown'] .stratum-state-matrix__text {
+    font-family: var(--stratum-font-sans);
+    font-style: italic;
+  }
+
+  /* Explicit configuration marker — this value was chosen, not fallen back to. */
+  .stratum-state-matrix__explicit {
+    display: inline-flex;
+    color: var(--stratum-accent);
+    opacity: 0.75;
+  }
+
+  .stratum-state-matrix__item[title] {
+    cursor: help;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-state-matrix__value { color: CanvasText; }
+    .stratum-state-matrix__marker {
+      background: CanvasText;
+      forced-color-adjust: none;
+    }
+    .stratum-state-matrix__item[data-status='unknown'] .stratum-state-matrix__marker,
+    .stratum-state-matrix__item[data-status='inactive'] .stratum-state-matrix__marker {
+      background: Canvas;
+      border: 1px dashed GrayText;
+    }
+    .stratum-state-matrix__item[data-status='unknown'] .stratum-state-matrix__value {
+      color: GrayText;
+    }
+  }
+}

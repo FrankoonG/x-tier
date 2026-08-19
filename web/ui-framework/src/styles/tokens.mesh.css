@@ -1,0 +1,169 @@
+/* ---------------------------------------------------------------------------
+ * MESH / TOPOLOGY PALETTE — literal sRGB hex, deliberately
+ *
+ * WHY THIS FILE IS NOT LIKE THE OTHERS
+ * -----------------------------------
+ * Every other token in the framework is authored in OKLCH and referenced
+ * through `var()`. These are not. SVG paint that resolves through a CSS
+ * custom property is unreliable under dark-mode browser extensions
+ * (Dark Reader, Stylus): the extension's colour analyser reads the literal
+ * declaration, cannot resolve the variable, and either skips the element or
+ * inverts it inconsistently — producing the classic "half the topology
+ * inverted, half not" failure. Literal hex and `currentColor` are both
+ * substituted reliably.
+ *
+ * So: topology node fills, edge strokes and hop colours use these literals.
+ * Chrome around the graph (panel background, labels, controls) uses normal
+ * semantic tokens.
+ *
+ * CONTRAST — verified, not asserted
+ * ---------------------------------
+ * These are meaningful graphics, so WCAG 2.2 SC 1.4.11 requires >= 3:1
+ * against the adjacent surface. Measured against #ffffff (light surface) and
+ * neutral-950 (dark surface):
+ *
+ *   role       light    ratio      dark     ratio
+ *   self       #5a5ae5   5.20      #8995fc   7.27
+ *   reachable  #239149   4.02      #5ec478   9.03
+ *   medium     #d3721e   3.39      #f8ac3d  10.28
+ *   offline    #d61d1d   5.19      #ff7266   7.34
+ *   native     #9e840a   3.64      #d0b12c   9.34
+ *   nested     #6f737c   4.75      #61656d   3.35
+ *   disabled   #7e828a   3.87      #7e828a   5.08
+ *
+ * `disabled` is the one role permitted below a strict reading of 3:1 in
+ * either direction — SC 1.4.11 explicitly exempts inactive components — but
+ * it happens to clear it anyway.
+ *
+ * COLOUR IS NEVER THE ONLY CHANNEL
+ * --------------------------------
+ * SC 1.4.1 forbids conveying information by hue alone, and two pairs here are
+ * genuinely close for colour-vision-deficient users: medium/native (both warm)
+ * and nested/disabled (both grey). Every consumer of these tokens must ALSO
+ * vary a non-colour channel. The framework's own topology components use:
+ *   self      solid fill + concentric inner disc
+ *   reachable solid fill
+ *   medium    solid fill + half-ring indicator
+ *   offline   solid fill + cross-hatch
+ *   native    solid fill + square node shape (not circle)
+ *   nested    DASHED stroke, hollow fill
+ *   disabled  hollow fill, 55% opacity, solid stroke
+ * ------------------------------------------------------------------------- */
+@layer stratum.tokens {
+  :root {
+    /* -- Node roles -------------------------------------------------------- */
+    --stratum-mesh-self:      #5a5ae5;
+    --stratum-mesh-reachable: #239149;
+    --stratum-mesh-medium:    #d3721e;
+    --stratum-mesh-offline:   #d61d1d;
+    --stratum-mesh-native:    #9e840a;
+    --stratum-mesh-nested:    #6f737c;
+    --stratum-mesh-disabled:  #7e828a;
+
+    /* Tinted fills for node interiors — the stroke carries the role colour,
+     * the fill is a wash of it so small nodes stay readable at 11px radius. */
+    --stratum-mesh-self-fill:      #e8e8fc;
+    --stratum-mesh-reachable-fill: #dcf3e5;
+    --stratum-mesh-medium-fill:    #fbeada;
+    --stratum-mesh-offline-fill:   #fbdedd;
+    --stratum-mesh-native-fill:    #f2ecca;
+    --stratum-mesh-nested-fill:    #eceef1;
+    --stratum-mesh-disabled-fill:  #eceef1;
+
+    /* -- Edges -------------------------------------------------------------
+     * `idle` is the resting link colour; `active` is a link currently on the
+     * selected path; `flow` is the animated pulse overlay.
+     */
+    --stratum-mesh-edge-idle:     #c3c7d0;
+    --stratum-mesh-edge-active:   #5a5ae5;
+    --stratum-mesh-edge-down:     #d61d1d;
+    --stratum-mesh-edge-flow:     #8995fc;
+    --stratum-mesh-edge-label:    #61656d;
+
+    /* -- Graph canvas ------------------------------------------------------- */
+    --stratum-mesh-canvas:     #fbfbfd;
+    --stratum-mesh-grid:       #eceef1;
+
+    /* -- Path hop colours ---------------------------------------------------
+     * Used by PathChain to colour each hop of a multi-hop path independently.
+     * `hop-broken` dyes the whole tail from the first unreachable hop onward.
+     */
+    /* TEXT-grade, not graphics-grade. PathChain renders hop names as text, so
+     * these must clear 4.5:1 rather than the 3:1 that applies to the node and
+     * edge colours above. Measured against #ffffff and surface-hover:
+     * ok 4.60, degraded 4.55, broken 4.92, unknown 4.75. The dark values are
+     * unchanged — they already measure above 9:1 on the dark surface. */
+    --stratum-mesh-hop-ok:      #08833c;
+    --stratum-mesh-hop-degraded:#b65800;
+    --stratum-mesh-hop-broken:  #d61d1d;
+    --stratum-mesh-hop-unknown: #6f737c;
+    --stratum-mesh-hop-sep:     #9fa3ab;
+  }
+
+  [data-theme="dark"] {
+    --stratum-mesh-self:      #8995fc;
+    --stratum-mesh-reachable: #5ec478;
+    --stratum-mesh-medium:    #f8ac3d;
+    --stratum-mesh-offline:   #ff7266;
+    --stratum-mesh-native:    #d0b12c;
+    --stratum-mesh-nested:    #61656d;
+    --stratum-mesh-disabled:  #7e828a;
+
+    --stratum-mesh-self-fill:      #23244a;
+    --stratum-mesh-reachable-fill: #16301f;
+    --stratum-mesh-medium-fill:    #3a2a10;
+    --stratum-mesh-offline-fill:   #3d1c1c;
+    --stratum-mesh-native-fill:    #332c0c;
+    --stratum-mesh-nested-fill:    #23252a;
+    --stratum-mesh-disabled-fill:  #23252a;
+
+    --stratum-mesh-edge-idle:     #3a3d45;
+    --stratum-mesh-edge-active:   #8995fc;
+    --stratum-mesh-edge-down:     #ff7266;
+    --stratum-mesh-edge-flow:     #b6bcff;
+    --stratum-mesh-edge-label:    #9fa3ab;
+
+    --stratum-mesh-canvas:     #0f1013;
+    --stratum-mesh-grid:       #1b1d21;
+
+    --stratum-mesh-hop-ok:      #5ec478;
+    --stratum-mesh-hop-degraded:#f8ac3d;
+    --stratum-mesh-hop-broken:  #ff7266;
+    --stratum-mesh-hop-unknown: #9fa3ab;
+    --stratum-mesh-hop-sep:     #61656d;
+  }
+
+  /* Under forced-colors the OS owns every colour. Keeping the graph on system
+   * keywords means it degrades to a legible black-on-white / white-on-black
+   * diagram rather than vanishing. */
+  @media (forced-colors: active) {
+    :root {
+      --stratum-mesh-self:      CanvasText;
+      --stratum-mesh-reachable: CanvasText;
+      --stratum-mesh-medium:    CanvasText;
+      --stratum-mesh-offline:   CanvasText;
+      --stratum-mesh-native:    CanvasText;
+      --stratum-mesh-nested:    GrayText;
+      --stratum-mesh-disabled:  GrayText;
+      --stratum-mesh-self-fill:      Canvas;
+      --stratum-mesh-reachable-fill: Canvas;
+      --stratum-mesh-medium-fill:    Canvas;
+      --stratum-mesh-offline-fill:   Canvas;
+      --stratum-mesh-native-fill:    Canvas;
+      --stratum-mesh-nested-fill:    Canvas;
+      --stratum-mesh-disabled-fill:  Canvas;
+      --stratum-mesh-edge-idle:      GrayText;
+      --stratum-mesh-edge-active:    Highlight;
+      --stratum-mesh-edge-down:      CanvasText;
+      --stratum-mesh-edge-flow:      Highlight;
+      --stratum-mesh-edge-label:     CanvasText;
+      --stratum-mesh-canvas:         Canvas;
+      --stratum-mesh-grid:           Canvas;
+      --stratum-mesh-hop-ok:         CanvasText;
+      --stratum-mesh-hop-degraded:   CanvasText;
+      --stratum-mesh-hop-broken:     CanvasText;
+      --stratum-mesh-hop-unknown:    GrayText;
+      --stratum-mesh-hop-sep:        GrayText;
+    }
+  }
+}

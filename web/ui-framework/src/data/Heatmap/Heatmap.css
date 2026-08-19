@@ -1,0 +1,255 @@
+@layer stratum.components {
+  .stratum-heatmap {
+    --_label: var(--stratum-text-muted);
+    --_cursor: var(--stratum-text);
+    --_missing: var(--stratum-scale-empty);
+    --_missing-edge: var(--stratum-scale-empty-border);
+    --_missing-hatch: var(--stratum-unknown);
+    --_tooltip-max: 220px;
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+    color: var(--stratum-text);
+  }
+
+  /* A wide grid scrolls rather than shrinking its cells to illegibility.
+   * The block padding is slack for the tooltip, which is pinned to an edge of
+   * the grid: `overflow-x: auto` computes `overflow-y` to `auto` too, so
+   * anything that leaves the box vertically would raise a second scrollbar. */
+  .stratum-heatmap__scroll {
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow-x: auto;
+    max-width: 100%;
+    padding-block: var(--stratum-space-2);
+  }
+
+  /* The grid carries `.stratum-focus-inset`: an offset focus ring would be
+   * clipped by the scroll container, and the framework already owns that
+   * escape hatch, so nothing needs restating here. */
+  .stratum-heatmap__grid {
+    position: relative;
+  }
+
+  .stratum-heatmap__svg {
+    display: block;
+  }
+
+  .stratum-heatmap__col-labels,
+  .stratum-heatmap__row-labels {
+    fill: var(--_label);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* -- The sequential ramp --------------------------------------------------
+   * One hue, light to dark in the light theme and dark to light in the dark
+   * theme, so "more" always reads as "further from the surface". */
+  .stratum-heatmap__cell[data-bin='1'] { color: var(--stratum-scale-1); }
+  .stratum-heatmap__cell[data-bin='2'] { color: var(--stratum-scale-2); }
+  .stratum-heatmap__cell[data-bin='3'] { color: var(--stratum-scale-3); }
+  .stratum-heatmap__cell[data-bin='4'] { color: var(--stratum-scale-4); }
+  .stratum-heatmap__cell[data-bin='5'] { color: var(--stratum-scale-5); }
+  .stratum-heatmap__cell[data-bin='6'] { color: var(--stratum-scale-6); }
+
+  /* -- Status bands ---------------------------------------------------------
+   * Used where thresholds carry the meaning and magnitude does not. */
+  .stratum-heatmap__cell[data-status='ok']       { color: var(--stratum-success); }
+  .stratum-heatmap__cell[data-status='degraded'] { color: var(--stratum-warning); }
+  .stratum-heatmap__cell[data-status='failed']   { color: var(--stratum-danger); }
+
+  /* -- NOT OBSERVED ---------------------------------------------------------
+   * Deliberately not the bottom of the ramp. A cell nobody measured is drawn
+   * as an empty tile with a 45-degree hatch and a dashed edge: three channels
+   * (fill, texture, border style) that all survive grayscale, colour-vision
+   * deficiency and forced colours. Painting it as the lowest bin would claim a
+   * fast hop where the truth is an unprobed one. */
+  .stratum-heatmap__cell[data-missing] {
+    color: var(--_missing);
+  }
+  .stratum-heatmap__hatch-pattern {
+    color: var(--_missing-hatch);
+    opacity: 0.42;
+  }
+  .stratum-heatmap__missing-edge {
+    color: var(--_missing-edge);
+    stroke-width: 1;
+  }
+
+  .stratum-heatmap__cursor {
+    color: var(--_cursor);
+    stroke-width: 2;
+  }
+
+  /* -- Tooltip -------------------------------------------------------------- */
+
+  .stratum-heatmap__tooltip {
+    position: absolute;
+    z-index: var(--stratum-z-tooltip);
+    display: grid;
+    gap: var(--stratum-space-1);
+    min-width: max-content;
+    max-width: var(--_tooltip-max);
+    padding: var(--stratum-space-3) var(--stratum-space-4);
+    pointer-events: none;
+
+    font-size: var(--stratum-text-2xs);
+    line-height: var(--stratum-leading-snug);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    box-shadow: var(--stratum-shadow-md);
+
+    opacity: 1;
+    transition: opacity var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+  @starting-style {
+    .stratum-heatmap__tooltip { opacity: 0; }
+  }
+  .stratum-heatmap__tooltip[data-vside='top']    { inset-block-start: 0; }
+  .stratum-heatmap__tooltip[data-vside='bottom'] { inset-block-end: 0; }
+  .stratum-heatmap__tooltip[data-side='end'] {
+    translate: var(--stratum-space-4) 0;
+  }
+  .stratum-heatmap__tooltip[data-side='start'] {
+    translate: calc(-100% - var(--stratum-space-4)) 0;
+  }
+
+  .stratum-heatmap__tooltip-row {
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text);
+  }
+  .stratum-heatmap__tooltip-col {
+    color: var(--stratum-text-secondary);
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+  .stratum-heatmap__tooltip-value {
+    color: var(--stratum-text);
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+  /* `unknown-fg`, not `unknown`. The base token is the graphic grade used by
+   * the hatch above (3:1, SC 1.4.11); this is a value a human reads and takes
+   * the text grade (4.5:1, SC 1.4.3). Two grades, deliberately separate. */
+  .stratum-heatmap__tooltip-value[data-unobserved] {
+    font-family: var(--stratum-font-sans);
+    font-style: italic;
+    color: var(--stratum-unknown-fg);
+  }
+
+  /* -- Legend --------------------------------------------------------------- */
+
+  .stratum-heatmap__legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-2) var(--stratum-space-6);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-heatmap__legend-ramp {
+    display: inline-flex;
+    /* A hairline between swatches rather than a border on each: the gap is
+     * what separates them, so no ink is spent on the boundary. */
+    gap: var(--stratum-space-px);
+  }
+
+  .stratum-heatmap__legend-swatch {
+    display: inline-block;
+    width: 16px;
+    height: 10px;
+    border-radius: var(--stratum-radius-xs);
+    background: currentColor;
+  }
+  .stratum-heatmap__legend-swatch[data-bin='1'] { color: var(--stratum-scale-1); }
+  .stratum-heatmap__legend-swatch[data-bin='2'] { color: var(--stratum-scale-2); }
+  .stratum-heatmap__legend-swatch[data-bin='3'] { color: var(--stratum-scale-3); }
+  .stratum-heatmap__legend-swatch[data-bin='4'] { color: var(--stratum-scale-4); }
+  .stratum-heatmap__legend-swatch[data-bin='5'] { color: var(--stratum-scale-5); }
+  .stratum-heatmap__legend-swatch[data-bin='6'] { color: var(--stratum-scale-6); }
+  .stratum-heatmap__legend-swatch[data-status='ok']       { color: var(--stratum-success); }
+  .stratum-heatmap__legend-swatch[data-status='degraded'] { color: var(--stratum-warning); }
+  .stratum-heatmap__legend-swatch[data-status='failed']   { color: var(--stratum-danger); }
+
+  /* The no-data key repeats the cell's three channels so the legend teaches
+   * the reader what an empty tile means. */
+  .stratum-heatmap__legend-swatch[data-missing] {
+    color: var(--_missing);
+    border: 1px dashed var(--_missing-edge);
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--_missing-hatch) 0 1px,
+      transparent 1px 4px
+    );
+  }
+
+  .stratum-heatmap__legend-band {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+  }
+
+  .stratum-heatmap__legend-missing {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    /* Pushed away from the ramp: this is not the bottom of the scale. */
+    margin-inline-start: var(--stratum-space-4);
+  }
+
+  .stratum-heatmap__legend-end {
+    color: var(--stratum-text-subtle);
+  }
+
+  /* Text grade — see the tooltip note above. */
+  .stratum-heatmap__empty {
+    margin: 0;
+    font-size: var(--stratum-text-xs);
+    font-style: italic;
+    color: var(--stratum-unknown-fg);
+  }
+
+  /* -- Forced colours -------------------------------------------------------
+   * A sequential ramp has no channel other than colour, so the OS palette
+   * would flatten every bin into one. `forced-color-adjust: none` on the cell
+   * fills is the documented exception for data graphics — the chrome, labels,
+   * cursor and tooltip all still follow the system colours, and the hatched
+   * no-data tile keeps a CanvasText dashed edge so it stays separable even
+   * where the ramp is preserved. */
+  @media (forced-colors: active) {
+    .stratum-heatmap__fill,
+    .stratum-heatmap__legend-swatch:not([data-missing]) {
+      forced-color-adjust: none;
+    }
+    .stratum-heatmap__col-labels,
+    .stratum-heatmap__row-labels {
+      fill: CanvasText;
+    }
+    .stratum-heatmap__cursor {
+      color: Highlight;
+    }
+    .stratum-heatmap__cell[data-missing] {
+      color: Canvas;
+      forced-color-adjust: auto;
+    }
+    .stratum-heatmap__missing-edge {
+      color: CanvasText;
+    }
+    .stratum-heatmap__hatch-pattern {
+      color: GrayText;
+      opacity: 1;
+    }
+    .stratum-heatmap__legend-swatch[data-missing] {
+      border-color: CanvasText;
+      background-image: none;
+    }
+    .stratum-heatmap__tooltip {
+      background: Canvas;
+      border-color: CanvasText;
+    }
+  }
+}

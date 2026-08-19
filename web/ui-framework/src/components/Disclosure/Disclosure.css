@@ -1,0 +1,205 @@
+@layer stratum.components {
+  .stratum-disclosure {
+    --_px: var(--stratum-space-6);
+    --_py: var(--stratum-space-5);
+    --_fs: var(--stratum-text-sm);
+    --_gap: var(--stratum-space-5);
+
+    display: block;
+    min-width: 0;
+    color: var(--stratum-text);
+  }
+
+  .stratum-disclosure[data-size='sm'] {
+    --_px: var(--stratum-space-5);
+    --_py: var(--stratum-space-3);
+    --_fs: var(--stratum-text-xs);
+    --_gap: var(--stratum-space-4);
+  }
+  .stratum-disclosure[data-size='lg'] {
+    --_px: var(--stratum-space-8);
+    --_py: var(--stratum-space-7);
+    --_fs: var(--stratum-text-md);
+    --_gap: var(--stratum-space-6);
+  }
+
+  .stratum-disclosure[data-variant='contained'] {
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    overflow: hidden;
+  }
+
+  /* -- Heading --------------------------------------------------------------
+   * The heading is a structural wrapper only; every visual property lives on
+   * the button so consumers can change the level without restyling. */
+  .stratum-disclosure__heading {
+    margin: 0;
+    font: inherit;
+    color: inherit;
+  }
+
+  /* -- Trigger --------------------------------------------------------------- */
+  .stratum-disclosure__trigger {
+    display: flex;
+    align-items: center;
+    gap: var(--_gap);
+    width: 100%;
+    padding: var(--_py) var(--_px);
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-snug);
+    text-align: start;
+    color: var(--stratum-text);
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-disclosure__trigger:hover:not([data-disabled]) {
+    background: var(--stratum-surface-hover);
+  }
+
+  /* Focusable but inert — a collapsed section a keyboard user cannot reach is
+   * a section they cannot be told is unavailable. */
+  .stratum-disclosure__trigger[data-disabled] {
+    color: var(--stratum-text-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-disclosure__indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 1.15em;
+    color: var(--stratum-text-muted);
+    /* Rotation only — the chevron is decorative, so under reduced motion the
+     * state is still carried by aria-expanded and by the content itself. */
+    transition:
+      rotate var(--stratum-duration-md) var(--stratum-ease-emphasized),
+      color var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+  .stratum-disclosure__indicator > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  /* Leading chevron: a pointer, right when closed and down when open. */
+  .stratum-disclosure[data-state='open'] .stratum-disclosure__indicator {
+    rotate: 90deg;
+    color: var(--stratum-text);
+  }
+
+  /* Trailing chevron: a drawer handle, down when closed and up when open.
+   * The end alignment comes from the text column growing, NOT from an auto
+   * margin — two auto margins in one flex line share the free space equally,
+   * which would strand `meta` in the middle of the header. */
+  .stratum-disclosure__trigger[data-indicator-placement='end'] .stratum-disclosure__indicator {
+    order: 2;
+    rotate: 90deg;
+  }
+  .stratum-disclosure[data-state='open']
+    .stratum-disclosure__trigger[data-indicator-placement='end']
+    .stratum-disclosure__indicator {
+    rotate: 270deg;
+  }
+
+  .stratum-disclosure__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 1.15em;
+    color: var(--stratum-text-muted);
+  }
+  .stratum-disclosure__icon > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-disclosure__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+    /* Absorbs the free space so `meta` and a trailing chevron sit on the end
+     * edge, adjacent, in that order. */
+    flex: 1 1 auto;
+  }
+
+  .stratum-disclosure__title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-disclosure__description {
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-normal);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-disclosure__meta {
+    flex-shrink: 0;
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-normal);
+    color: var(--stratum-text-muted);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* -- Content --------------------------------------------------------------
+   * See the component doc comment for why this is a grid row rather than a
+   * measured height. `visibility` rides along so collapsed content leaves the
+   * tab order and the a11y tree, and because it interpolates asymmetrically it
+   * does so at the right end of each direction with no timer. */
+  .stratum-disclosure__content {
+    display: grid;
+    grid-template-rows: 1fr;
+    visibility: visible;
+    opacity: 1;
+    transition:
+      grid-template-rows var(--stratum-duration-lg) var(--stratum-ease-emphasized),
+      opacity var(--stratum-duration-sm) var(--stratum-ease-out),
+      visibility var(--stratum-duration-lg) var(--stratum-ease-emphasized);
+  }
+
+  .stratum-disclosure__content[data-state='closed'],
+  .stratum-disclosure__content[data-state='entering'],
+  .stratum-disclosure__content[data-state='exiting'],
+  .stratum-disclosure__content[data-state='exited'] {
+    grid-template-rows: 0fr;
+    visibility: hidden;
+    opacity: 0;
+  }
+
+  .stratum-disclosure__clip {
+    overflow: hidden;
+    /* Without this the row refuses to shrink below its content's min-content
+     * height and 0fr silently does nothing. */
+    min-height: 0;
+  }
+
+  .stratum-disclosure__body {
+    padding: 0 var(--_px) var(--_py);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-normal);
+    color: var(--stratum-text-secondary);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-disclosure[data-variant='contained'] {
+      border-color: CanvasText;
+    }
+    .stratum-disclosure__trigger {
+      color: ButtonText;
+    }
+    .stratum-disclosure__trigger[data-disabled] {
+      color: GrayText;
+    }
+    .stratum-disclosure__indicator {
+      color: ButtonText;
+    }
+  }
+}

@@ -1,0 +1,240 @@
+@layer stratum.components {
+  /* ======================================================================== */
+  /* RadioGroup                                                                */
+  /* ======================================================================== */
+  .stratum-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    min-width: 0;
+  }
+
+  .stratum-radio-group__label {
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text);
+  }
+
+  .stratum-radio-group__description {
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-radio-group__items {
+    display: flex;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+  }
+
+  .stratum-radio-group[data-orientation='vertical'] .stratum-radio-group__items {
+    flex-direction: column;
+  }
+  .stratum-radio-group[data-orientation='horizontal'] .stratum-radio-group__items {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: var(--stratum-space-10);
+  }
+
+  .stratum-radio-group[data-invalid] .stratum-radio-group__label {
+    color: var(--stratum-danger-fg);
+  }
+  /* `--stratum-text-disabled` (2.52:1) is only legal on an inactive CONTROL,
+   * and neither of these is one: the group label is a plain `<span>` wired up
+   * with `aria-labelledby`, and the description is separate content that
+   * usually carries the reason the group is locked. Both step back one
+   * readable role instead of dropping below AA — 9.02:1 and 5.06:1 in light,
+   * 12.24:1 and 5.08:1 in dark. The radios themselves still render disabled,
+   * which is what carries the state. */
+  .stratum-radio-group[data-disabled] .stratum-radio-group__label {
+    color: var(--stratum-text-secondary);
+  }
+  .stratum-radio-group[data-disabled] .stratum-radio-group__description {
+    color: var(--stratum-text-subtle);
+  }
+
+  /* ======================================================================== */
+  /* Radio                                                                     */
+  /* ======================================================================== */
+  .stratum-radio {
+    --_box: 16px;
+    --_dot: 7px;
+    --_bg: var(--stratum-surface);
+    --_border: var(--stratum-border-strong);
+    --_border-width: 1px;
+    --_mark: var(--stratum-accent-on-solid);
+    --_font: var(--stratum-text-sm);
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+    font-size: var(--_font);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+  }
+
+  .stratum-radio[data-block] {
+    align-items: flex-start;
+  }
+  .stratum-radio[data-block] .stratum-radio__control {
+    margin-block-start: var(--stratum-space-px);
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-radio[data-size='sm'] { --_box: 14px; --_dot: 6px;  --_font: var(--stratum-text-xs); }
+  .stratum-radio[data-size='md'] { --_box: 16px; --_dot: 7px;  --_font: var(--stratum-text-sm); }
+  .stratum-radio[data-size='lg'] { --_box: 18px; --_dot: 8px;  --_font: var(--stratum-text-md); }
+
+  /* -- Control ------------------------------------------------------------- */
+  .stratum-radio__control {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: var(--_box);
+    height: var(--_box);
+    background: var(--_bg);
+    border: var(--_border-width) solid var(--_border);
+    border-radius: var(--stratum-radius-full);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-radio__input {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: 50%;
+    translate: -50% -50%;
+    /* Grown past the paint for SC 2.5.8 without enlarging the visual control. */
+    width: max(100%, 24px);
+    height: max(100%, 24px);
+    margin: 0;
+    padding: 0;
+    opacity: 0;
+    cursor: pointer;
+    /* The dot below carries a `scale`, which makes it a stacking context
+     * painted alongside positioned content and therefore ABOVE this input in
+     * tree order. Without the explicit z-index it would swallow the click. */
+    z-index: 1;
+  }
+
+  .stratum-radio__dot {
+    /* Pure decoration must never be a hit target. */
+    pointer-events: none;
+    width: var(--_dot);
+    height: var(--_dot);
+    background: var(--_mark);
+    border-radius: var(--stratum-radius-full);
+    opacity: 0;
+    scale: var(--stratum-zoom-pop);
+    /* Opacity ahead of transform, as everywhere else in the framework. */
+    transition:
+      opacity var(--stratum-duration-2xs) var(--stratum-ease-out),
+      scale var(--stratum-duration-xs) var(--stratum-ease-signature);
+  }
+
+  .stratum-radio[data-state='checked'] .stratum-radio__dot {
+    opacity: 1;
+    scale: 1;
+  }
+
+  /* -- Text ---------------------------------------------------------------- */
+  .stratum-radio__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+  }
+
+  .stratum-radio__label {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .stratum-radio__description {
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- States -------------------------------------------------------------- */
+  .stratum-radio[data-state='checked'] {
+    --_bg: var(--stratum-accent);
+    --_border: var(--stratum-accent);
+  }
+
+  .stratum-radio:not([data-disabled]):hover {
+    --_border: var(--stratum-accent);
+  }
+  .stratum-radio[data-state='unchecked']:not([data-disabled]):hover {
+    --_bg: var(--stratum-surface-hover);
+  }
+
+  /* Invalid carries a doubled border as well as hue — never colour alone. */
+  .stratum-radio[data-invalid] {
+    --_border: var(--stratum-danger);
+    --_border-width: 2px;
+  }
+  .stratum-radio[data-invalid][data-state='checked'] {
+    --_bg: var(--stratum-danger);
+    --_mark: var(--stratum-danger-on-solid);
+  }
+
+  .stratum-radio[data-disabled] {
+    --_bg: var(--stratum-surface-disabled);
+    --_border: var(--stratum-border);
+    color: var(--stratum-text-disabled);
+  }
+  .stratum-radio[data-disabled][data-state='checked'] {
+    --_bg: var(--stratum-text-disabled);
+    --_border: var(--stratum-text-disabled);
+    --_mark: var(--stratum-surface);
+  }
+  .stratum-radio[data-disabled] .stratum-radio__input,
+  .stratum-radio[data-disabled] .stratum-radio__label {
+    cursor: not-allowed;
+  }
+  /* The LABEL inherits `--stratum-text-disabled` from the root above, which is
+   * legitimate: it is the accessible name of a genuinely disabled `<input>`,
+   * exactly the case WCAG 1.4.3 exempts. The description is not — it is
+   * ordinary content, and on a disabled radio it is usually the only thing
+   * that says why. `text-subtle` keeps it a step quieter than the enabled
+   * `text-muted` while still clearing 4.5:1 (5.06:1 light, 5.08:1 dark). */
+  .stratum-radio[data-disabled] .stratum-radio__description {
+    color: var(--stratum-text-subtle);
+  }
+
+  /* -- Focus ---------------------------------------------------------------
+   * The ring is drawn on the control the invisible input sits over. */
+  .stratum-radio__control:has(.stratum-radio__input:focus-visible) {
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-radio__control {
+      background: ButtonFace;
+      border-color: ButtonBorder;
+    }
+    .stratum-radio[data-state='checked'] .stratum-radio__control {
+      background: ButtonFace;
+      border-color: Highlight;
+    }
+    .stratum-radio__dot {
+      background: Highlight;
+    }
+    .stratum-radio[data-disabled] {
+      color: GrayText;
+    }
+    .stratum-radio[data-disabled] .stratum-radio__control {
+      border-color: GrayText;
+      background: ButtonFace;
+    }
+    .stratum-radio[data-disabled] .stratum-radio__dot {
+      background: GrayText;
+    }
+    .stratum-radio[data-disabled] .stratum-radio__description,
+    .stratum-radio-group[data-disabled] .stratum-radio-group__label,
+    .stratum-radio-group[data-disabled] .stratum-radio-group__description {
+      color: GrayText;
+    }
+  }
+}

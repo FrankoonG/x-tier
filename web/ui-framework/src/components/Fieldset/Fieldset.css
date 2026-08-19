@@ -1,0 +1,174 @@
+@layer stratum.components {
+  .stratum-fieldset {
+    /* A fieldset's initial `min-width: min-content` is not overridable by the
+     * usual `min-width: 0` inheritance rules and is the reason fieldsets
+     * famously refuse to shrink inside flex and grid parents. */
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    /* Query container so the fields and action rows inside can respond to the
+     * section's width rather than the window's. */
+    container-type: inline-size;
+    container-name: stratum-form;
+  }
+
+  .stratum-fieldset[data-size='sm'] {
+    --_legend-fs: var(--stratum-text-sm);
+    --_meta-fs: var(--stratum-text-2xs);
+    --_pad: var(--stratum-space-6);
+    --_panel-gap: var(--stratum-space-6);
+  }
+  .stratum-fieldset[data-size='md'] {
+    --_legend-fs: var(--stratum-text-md);
+    --_meta-fs: var(--stratum-text-xs);
+    --_pad: var(--stratum-space-8);
+    --_panel-gap: var(--stratum-space-8);
+  }
+  .stratum-fieldset[data-size='lg'] {
+    --_legend-fs: var(--stratum-text-lg);
+    --_meta-fs: var(--stratum-text-sm);
+    --_pad: var(--stratum-space-12);
+    --_panel-gap: var(--stratum-space-10);
+  }
+
+  /* -- Card ----------------------------------------------------------------
+   * The legend keeps its native position inside the border, which is the one
+   * piece of fieldset rendering no other element reproduces. */
+  .stratum-fieldset[data-variant='card'] {
+    padding: var(--_pad);
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-lg);
+  }
+  .stratum-fieldset[data-variant='card'] .stratum-fieldset__legend {
+    padding-inline: var(--stratum-space-3);
+    margin-inline-start: calc(-1 * var(--stratum-space-3));
+  }
+
+  /* -- Legend --------------------------------------------------------------- */
+  .stratum-fieldset__legend {
+    padding: 0;
+    font-size: var(--_legend-fs);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+  }
+
+  .stratum-fieldset__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-fieldset__toggle:hover {
+    color: var(--stratum-accent-fg);
+  }
+
+  .stratum-fieldset__chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: var(--stratum-text-muted);
+    rotate: 0deg;
+    transition: rotate var(--stratum-duration-sm) var(--stratum-ease-out);
+  }
+  .stratum-fieldset[data-state='open'] .stratum-fieldset__chevron {
+    rotate: 90deg;
+  }
+  .stratum-fieldset__chevron > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-fieldset__legend-text {
+    min-width: 0;
+  }
+
+  .stratum-fieldset__description {
+    margin-block-start: var(--stratum-space-3);
+    font-size: var(--_meta-fs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Panel ---------------------------------------------------------------
+   * `1fr → 0fr` is the only way to transition to and from intrinsic height in
+   * CSS. The inner element carries `min-height: 0` — without it a grid item
+   * refuses to shrink below its content and nothing moves — and the spacing
+   * above the content lives inside the clipped box, so a collapsed section
+   * leaves no orphaned gap behind. */
+  .stratum-fieldset__panel {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows var(--stratum-duration-spring) var(--stratum-ease-spring);
+  }
+  .stratum-fieldset[data-collapsible] .stratum-fieldset__panel[data-state='closed'] {
+    grid-template-rows: 0fr;
+  }
+
+  .stratum-fieldset__panel-inner {
+    min-height: 0;
+    overflow: hidden;
+    visibility: visible;
+    transition: visibility 0s;
+  }
+
+  /* The gap between the header and the content is a spacer INSIDE the clipped
+   * box, not padding on it. Padding is part of a grid item's own box, so it
+   * survives `overflow: hidden` and leaves a collapsed section sitting at the
+   * height of its own padding — visibly not closed. A pseudo-element child is
+   * clipped like any other content and collapses to nothing. */
+  .stratum-fieldset__panel-inner::before {
+    content: '';
+    display: block;
+    height: var(--_panel-gap);
+  }
+
+  /* Collapsed content must leave the tab order and the accessibility tree, or
+   * a keyboard user tabs into a section they cannot see. The zero-length
+   * visibility transition is delayed by the collapse duration so it lands
+   * after the animation rather than blanking the panel at frame one. */
+  .stratum-fieldset[data-collapsible]
+    .stratum-fieldset__panel[data-state='closed']
+    .stratum-fieldset__panel-inner {
+    visibility: hidden;
+    transition: visibility 0s linear var(--stratum-duration-spring);
+  }
+
+  /* Once open and settled the clip is released, so focus rings on the first
+   * and last control — and any popover they open — are not cut off.
+   *
+   * Qualified on the OPEN state as well as on `data-settled`: the commit that
+   * flips `data-state` to `closed` still carries `data-settled`, so keying on
+   * the latch alone would leave the panel un-clipped for the first frames of
+   * the collapse and spill the full section over whatever follows it. Written
+   * this way the clip is restored in the same commit that starts the collapse,
+   * with no dependence on when the JS latch is cleared. */
+  .stratum-fieldset__panel[data-state='open'][data-settled] .stratum-fieldset__panel-inner {
+    overflow: visible;
+  }
+
+  /* A fieldset with neither legend nor description has nothing above the
+   * panel to separate it from, so the leading gap would read as a stray
+   * indent. */
+  .stratum-fieldset:not([data-has-header]) .stratum-fieldset__panel-inner::before {
+    display: none;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-fieldset[data-variant='card'] {
+      border-color: CanvasText;
+    }
+    .stratum-fieldset__chevron {
+      color: CanvasText;
+    }
+    .stratum-fieldset__toggle:hover {
+      color: Highlight;
+    }
+  }
+}

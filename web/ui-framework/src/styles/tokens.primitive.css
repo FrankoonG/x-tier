@@ -1,0 +1,252 @@
+/* ---------------------------------------------------------------------------
+ * TIER 1 — PRIMITIVE TOKENS
+ *
+ * Raw values with no meaning attached. Nothing in a component may reference
+ * these directly; components consume tier-2 semantic tokens only. Keeping the
+ * ramps mechanical is what makes a theme swap a data change instead of an
+ * archaeology exercise.
+ *
+ * Colour is authored in OKLCH because it is perceptually uniform: step 500 of
+ * every hue reads as the same lightness, so a status colour can be swapped
+ * without silently changing which text passes contrast on top of it. sRGB hex
+ * ramps do not have this property — that is why hy2scale's green (#22c55e,
+ * L≈73%) and red (#ef4444, L≈63%) needed different foreground treatments
+ * despite being nominally the same "500" weight.
+ *
+ * NOTE: mesh/topology colours are NOT defined here. They live in
+ * tokens.mesh.css as literal sRGB hex, because SVG paint that resolves through
+ * var() is mangled by dark-mode browser extensions. See that file.
+ * ------------------------------------------------------------------------- */
+@layer stratum.tokens {
+  :root {
+    /* -- Neutral -------------------------------------------------------------
+     * Very slightly cool (hue 265, chroma ≤0.014) so it sits under the indigo
+     * primary without reading as a separate temperature. Half-steps are dense
+     * at the dark end (850/925/975) because dark themes need finer separation
+     * where the eye is most sensitive to small lightness deltas.
+     */
+    --stratum-neutral-0:    oklch(100%   0     0);
+    --stratum-neutral-25:   oklch(99.2%  0.002 265);
+    --stratum-neutral-50:   oklch(98.2%  0.004 265);
+    --stratum-neutral-100:  oklch(96.5%  0.005 265);
+    --stratum-neutral-150:  oklch(94.2%  0.006 265);
+    --stratum-neutral-200:  oklch(91.5%  0.008 265);
+    --stratum-neutral-300:  oklch(84.5%  0.010 265);
+    --stratum-neutral-400:  oklch(71.5%  0.013 265);
+    --stratum-neutral-500:  oklch(60.5%  0.014 265);
+    /* Half-step. Exists because 500 measures 3.87:1 on white — below the 4.5:1
+     * AA threshold for normal text — while 600 is darker than the "quiet"
+     * register wants. 550 is the lightest step that still passes on BOTH the
+     * white surface (5.06:1) and the neutral-100 page background (4.57:1). */
+    --stratum-neutral-550:  oklch(54.0%  0.014 265);
+    --stratum-neutral-600:  oklch(50.5%  0.014 265);
+    --stratum-neutral-700:  oklch(40.5%  0.013 265);
+    --stratum-neutral-800:  oklch(31.0%  0.012 265);
+    --stratum-neutral-850:  oklch(25.5%  0.011 265);
+    --stratum-neutral-900:  oklch(21.0%  0.010 265);
+    --stratum-neutral-925:  oklch(18.0%  0.009 265);
+    --stratum-neutral-950:  oklch(15.0%  0.009 265);
+    --stratum-neutral-975:  oklch(11.5%  0.008 265);
+    --stratum-neutral-1000: oklch(7.5%   0.006 265);
+
+    /* -- Indigo (brand / primary) -------------------------------------------
+     * Violet-leaning indigo at hue 277. Chosen to sit clear of all four status
+     * hues AND of the mesh "reachable" green, so an interactive control is
+     * never mistaken for a health signal — a failure mode in panels that use
+     * plain blue for both.
+     */
+    --stratum-indigo-50:   oklch(97.0% 0.015 277);
+    --stratum-indigo-100:  oklch(94.0% 0.034 277);
+    --stratum-indigo-200:  oklch(88.5% 0.065 277);
+    --stratum-indigo-300:  oklch(80.5% 0.100 277);
+    --stratum-indigo-400:  oklch(70.5% 0.150 277);
+    --stratum-indigo-500:  oklch(62.0% 0.190 277);
+    --stratum-indigo-600:  oklch(55.0% 0.205 277);
+    --stratum-indigo-700:  oklch(48.0% 0.190 277);
+    --stratum-indigo-800:  oklch(40.0% 0.155 277);
+    --stratum-indigo-900:  oklch(33.0% 0.120 277);
+    --stratum-indigo-950:  oklch(25.0% 0.085 277);
+
+    /* -- Green (success / healthy) ------------------------------------------ */
+    --stratum-green-50:   oklch(97.5% 0.020 150);
+    --stratum-green-100:  oklch(94.5% 0.045 150);
+    --stratum-green-200:  oklch(89.0% 0.080 150);
+    --stratum-green-300:  oklch(81.0% 0.115 150);
+    --stratum-green-400:  oklch(74.0% 0.145 150);
+    --stratum-green-500:  oklch(67.0% 0.160 150);
+    --stratum-green-600:  oklch(58.0% 0.145 150);
+    --stratum-green-700:  oklch(48.5% 0.120 150);
+    --stratum-green-800:  oklch(39.0% 0.095 150);
+    --stratum-green-900:  oklch(31.0% 0.075 150);
+    --stratum-green-950:  oklch(23.0% 0.055 150);
+
+    /* -- Amber (warning / degraded) ----------------------------------------- */
+    --stratum-amber-50:   oklch(98.0% 0.022 78);
+    --stratum-amber-100:  oklch(95.5% 0.050 78);
+    --stratum-amber-200:  oklch(91.0% 0.095 78);
+    --stratum-amber-300:  oklch(85.5% 0.130 78);
+    --stratum-amber-400:  oklch(80.0% 0.150 72);
+    --stratum-amber-500:  oklch(74.0% 0.155 66);
+    --stratum-amber-600:  oklch(65.0% 0.150 55);
+    --stratum-amber-700:  oklch(54.0% 0.130 48);
+    --stratum-amber-800:  oklch(44.0% 0.105 45);
+    --stratum-amber-900:  oklch(35.5% 0.085 45);
+    --stratum-amber-950:  oklch(26.0% 0.062 45);
+
+    /* -- Red (danger / offline) --------------------------------------------- */
+    --stratum-red-50:   oklch(97.5% 0.015 25);
+    --stratum-red-100:  oklch(94.5% 0.033 25);
+    --stratum-red-200:  oklch(89.0% 0.070 25);
+    --stratum-red-300:  oklch(81.0% 0.120 25);
+    --stratum-red-400:  oklch(72.0% 0.175 27);
+    --stratum-red-500:  oklch(63.5% 0.215 27);
+    --stratum-red-600:  oklch(56.0% 0.215 28);
+    --stratum-red-700:  oklch(47.5% 0.185 28);
+    --stratum-red-800:  oklch(39.0% 0.150 28);
+    --stratum-red-900:  oklch(32.0% 0.120 28);
+    --stratum-red-950:  oklch(24.0% 0.090 28);
+
+    /* -- Blue (info / neutral notice) ---------------------------------------
+     * Distinct from indigo primary by ~37° of hue — enough that an info banner
+     * never reads as a call to action.
+     */
+    --stratum-blue-50:   oklch(97.5% 0.018 240);
+    --stratum-blue-100:  oklch(94.5% 0.040 240);
+    --stratum-blue-200:  oklch(89.0% 0.075 240);
+    --stratum-blue-300:  oklch(81.5% 0.110 240);
+    --stratum-blue-400:  oklch(72.5% 0.140 240);
+    --stratum-blue-500:  oklch(65.0% 0.155 240);
+    --stratum-blue-600:  oklch(56.5% 0.165 245);
+    --stratum-blue-700:  oklch(47.5% 0.145 245);
+    --stratum-blue-800:  oklch(39.0% 0.115 245);
+    --stratum-blue-900:  oklch(31.5% 0.090 245);
+    --stratum-blue-950:  oklch(23.5% 0.068 245);
+
+    /* -- Gold (native / foreign-node accent) --------------------------------
+     * Deliberately pushed to hue 95 (olive-gold) to separate it from amber's
+     * 55-78 range. Colour alone is not relied on: components that use gold
+     * also change stroke style. WCAG 1.4.1.
+     */
+    --stratum-gold-100: oklch(95.5% 0.048 95);
+    --stratum-gold-300: oklch(86.0% 0.120 95);
+    --stratum-gold-500: oklch(76.5% 0.145 95);
+    --stratum-gold-600: oklch(67.0% 0.135 95);
+    --stratum-gold-700: oklch(55.5% 0.112 95);
+    --stratum-gold-900: oklch(34.0% 0.070 95);
+
+    /* -- Teal (secondary data series) --------------------------------------- */
+    --stratum-teal-100: oklch(94.5% 0.045 195);
+    --stratum-teal-300: oklch(82.0% 0.105 195);
+    --stratum-teal-500: oklch(68.0% 0.130 195);
+    --stratum-teal-600: oklch(58.5% 0.125 195);
+    --stratum-teal-700: oklch(48.5% 0.105 195);
+    --stratum-teal-900: oklch(31.0% 0.065 195);
+
+    /* -- Violet (tertiary data series) --------------------------------------- */
+    --stratum-violet-100: oklch(94.5% 0.040 315);
+    --stratum-violet-300: oklch(82.5% 0.105 315);
+    --stratum-violet-500: oklch(66.0% 0.175 315);
+    --stratum-violet-600: oklch(57.5% 0.185 315);
+    --stratum-violet-700: oklch(48.5% 0.160 315);
+    --stratum-violet-900: oklch(32.0% 0.100 315);
+
+    /* -- Spacing -------------------------------------------------------------
+     * 4px base. Dense operator tables need 2px and 6px, so the low end has
+     * half-steps; above 24px the scale opens up because layout gutters do not
+     * need that resolution.
+     */
+    --stratum-space-0:  0;
+    --stratum-space-px: 1px;
+    --stratum-space-1:  0.125rem;  /*  2px */
+    --stratum-space-2:  0.25rem;   /*  4px */
+    --stratum-space-3:  0.375rem;  /*  6px */
+    --stratum-space-4:  0.5rem;    /*  8px */
+    --stratum-space-5:  0.625rem;  /* 10px */
+    --stratum-space-6:  0.75rem;   /* 12px */
+    --stratum-space-7:  0.875rem;  /* 14px */
+    --stratum-space-8:  1rem;      /* 16px */
+    --stratum-space-10: 1.25rem;   /* 20px */
+    --stratum-space-12: 1.5rem;    /* 24px */
+    --stratum-space-16: 2rem;      /* 32px */
+    --stratum-space-20: 2.5rem;    /* 40px */
+    --stratum-space-24: 3rem;      /* 48px */
+    --stratum-space-32: 4rem;      /* 64px */
+    --stratum-space-40: 5rem;      /* 80px */
+
+    /* -- Radius -------------------------------------------------------------
+     * Sharper than hy2scale's 10px. Operator tools read as instruments, not
+     * cards; tighter corners increase apparent density at the same padding.
+     */
+    --stratum-radius-none: 0;
+    --stratum-radius-xs:   2px;
+    --stratum-radius-sm:   4px;
+    --stratum-radius-md:   6px;
+    --stratum-radius-lg:   8px;
+    --stratum-radius-xl:   12px;
+    --stratum-radius-2xl:  16px;
+    --stratum-radius-full: 9999px;
+
+    /* -- Type ---------------------------------------------------------------
+     * Ships no web font. The stack resolves to the host UI font so the panel
+     * looks native on each OS and costs zero bytes.
+     */
+    --stratum-font-sans:
+      ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+      "Segoe UI Variable Text", "Segoe UI", Inter, Roboto,
+      "Helvetica Neue", Arial, "Noto Sans", sans-serif,
+      "Apple Color Emoji", "Segoe UI Emoji";
+    --stratum-font-mono:
+      ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", "Segoe UI Mono",
+      "JetBrains Mono", "Roboto Mono", Menlo, Consolas, "Liberation Mono",
+      monospace;
+
+    /* Size ramp. 13px body: one step under the 14px web default because a
+     * 6-field-per-row table has to stay readable, and the ramp is tight
+     * (11 → 12 → 13 → 14 → 16 → 18 → 22) so hierarchy comes from weight and
+     * colour rather than from large jumps that waste vertical space. */
+    --stratum-text-2xs: 0.6875rem; /* 11px — micro labels, table meta */
+    --stratum-text-xs:  0.75rem;   /* 12px — labels, badges */
+    --stratum-text-sm:  0.8125rem; /* 13px — body, table cells */
+    --stratum-text-md:  0.875rem;  /* 14px — card titles, inputs */
+    --stratum-text-lg:  1rem;      /* 16px — section headings */
+    --stratum-text-xl:  1.125rem;  /* 18px — page titles */
+    --stratum-text-2xl: 1.375rem;  /* 22px — stat values */
+    --stratum-text-3xl: 1.75rem;   /* 28px — hero metrics only */
+
+    --stratum-weight-normal:   400;
+    --stratum-weight-medium:   500;
+    --stratum-weight-semibold: 600;
+    --stratum-weight-bold:     700;
+
+    --stratum-leading-none:  1;
+    --stratum-leading-tight: 1.25;
+    --stratum-leading-snug:  1.4;
+    --stratum-leading-normal:1.55;
+
+    /* Tabular figures for every metric. Without this, a live-updating rate
+     * column jitters horizontally on each poll — the single most common
+     * polish failure in telemetry UIs. */
+    --stratum-numeric: tabular-nums;
+
+    /* -- Z index ------------------------------------------------------------
+     * One authority. Components never invent their own values.
+     */
+    --stratum-z-base:     0;
+    --stratum-z-raised:   10;
+    --stratum-z-sticky:   100;
+    --stratum-z-drawer:   200;
+    --stratum-z-overlay:  300;
+    --stratum-z-dialog:   400;
+    --stratum-z-popover:  500;
+    --stratum-z-tooltip:  600;
+    --stratum-z-toast:    700;
+    --stratum-z-max:      9999;
+
+    /* -- Layout -------------------------------------------------------------- */
+    --stratum-sidebar-width: 216px;
+    --stratum-sidebar-width-collapsed: 52px;
+    --stratum-topbar-height: 48px;
+    --stratum-focus-ring-width: 2px;
+    --stratum-focus-ring-offset: 2px;
+  }
+}

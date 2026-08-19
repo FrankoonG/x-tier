@@ -1,0 +1,209 @@
+@layer stratum.components {
+  .stratum-field {
+    /* Public: set on any ancestor to align a whole group of horizontal fields
+     * on one label column. `max-content` means "as wide as the label needs",
+     * which is the right default for a single field and needs no magic
+     * number. */
+    --_label-width: var(--stratum-field-label-width, max-content);
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--_gap);
+    /* Without this a long value inside a grid or flex parent refuses to
+     * shrink and pushes the whole form wider. */
+    min-width: 0;
+  }
+
+  /* -- Density -------------------------------------------------------------- */
+  .stratum-field[data-size='sm'] {
+    --_gap: var(--stratum-space-2);
+    --_label-fs: var(--stratum-text-xs);
+    --_meta-fs: var(--stratum-text-2xs);
+    --_label-pad: var(--stratum-space-2);
+  }
+  .stratum-field[data-size='md'] {
+    --_gap: var(--stratum-space-3);
+    --_label-fs: var(--stratum-text-sm);
+    --_meta-fs: var(--stratum-text-xs);
+    --_label-pad: var(--stratum-space-3);
+  }
+  .stratum-field[data-size='lg'] {
+    --_gap: var(--stratum-space-4);
+    --_label-fs: var(--stratum-text-md);
+    --_meta-fs: var(--stratum-text-sm);
+    --_label-pad: var(--stratum-space-4);
+  }
+
+  /* -- Horizontal ----------------------------------------------------------
+   * Collapses to stacked without a container query or a breakpoint. The label
+   * column is sized by its content (or by `labelWidth`), the body asks for
+   * `controlMinWidth`, and flex wrapping does the rest: the two share a line
+   * only while the control can still be at least that wide, and drop onto
+   * separate lines the moment it cannot.
+   *
+   * A container query would need a literal breakpoint — query conditions
+   * cannot read custom properties, so the threshold could not follow
+   * `labelWidth` — and would silently do nothing unless an ancestor happened
+   * to declare `container-type`. Intrinsic sizing has neither problem.
+   */
+  .stratum-field[data-orientation='horizontal'] {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    column-gap: var(--stratum-space-8);
+    row-gap: var(--_gap);
+  }
+  .stratum-field[data-orientation='horizontal'] .stratum-field__header {
+    flex: 0 1 var(--_label-width);
+    /* Nudges the label onto the optical centre line of a single-row control
+     * instead of the top of its box. */
+    padding-block-start: var(--_label-pad);
+  }
+  .stratum-field[data-orientation='horizontal'] .stratum-field__body {
+    /* `min(100%, …)` so a container narrower than the control's preferred
+     * width still wraps cleanly instead of forcing an overflow. */
+    flex: 1 1 min(100%, var(--_control-min));
+  }
+
+  /* -- Header --------------------------------------------------------------- */
+  .stratum-field__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--stratum-space-2) var(--stratum-space-6);
+    min-width: 0;
+  }
+
+  .stratum-field__label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--stratum-space-2);
+    min-width: 0;
+    font-size: var(--_label-fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+  }
+
+  .stratum-field__marker {
+    color: var(--stratum-danger);
+    line-height: var(--stratum-leading-none);
+  }
+
+  /* Muted rather than subtle: this is small text carrying real information —
+   * that it is safe to leave the field empty — and it shares the header line
+   * with a full-strength label, so it wants the extra headroom. (`subtle` is
+   * no longer the 3.6:1 role this comment used to warn about; it was moved to
+   * neutral-550 and now clears 4.5:1 too. It is used for the same text in the
+   * disabled block below, where the whole header steps back together.) */
+  .stratum-field__optional {
+    font-size: var(--_meta-fs);
+    font-weight: var(--stratum-weight-normal);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-field__hint {
+    font-size: var(--_meta-fs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Body ----------------------------------------------------------------
+   * Spacing is applied as margins on the description and the error, never as
+   * a `gap` on this container: the live region that holds the error is always
+   * in the DOM, and a `gap` would reserve space beside it even while it is
+   * empty.
+   */
+  .stratum-field__body {
+    min-width: 0;
+  }
+
+  .stratum-field__description {
+    margin-block-end: var(--stratum-space-3);
+    font-size: var(--_meta-fs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-field__control {
+    min-width: 0;
+  }
+
+  .stratum-field__error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--stratum-space-2);
+    margin-block-start: var(--stratum-space-3);
+    font-size: var(--_meta-fs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-danger-fg);
+  }
+
+  /* The icon box is exactly one line tall and centres the glyph inside it, so
+   * the icon sits on the first line of a wrapping message without an eyeballed
+   * margin. */
+  .stratum-field__error-icon {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    height: calc(var(--stratum-leading-snug) * 1em);
+  }
+  .stratum-field__error-icon > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-field__error-text {
+    min-width: 0;
+  }
+
+  /* -- Disabled -------------------------------------------------------------
+   * `--stratum-text-disabled` is 2.52:1 and is only legal on an inactive
+   * CONTROL. Exactly one element here qualifies, and only in one of its two
+   * shapes: `__label` when it is a real `<label for>` naming the disabled
+   * control. There it keeps the dimmed treatment, so the field still reads as
+   * locked. In the `group` variant the same element is a plain `<span>` named
+   * by `aria-labelledby` — it labels no control at all, nothing exempts it,
+   * and it steps back to `text-secondary` (9.02:1 / 12.24:1) instead.
+   *
+   * Nothing else is part of the control either. `__hint` and `__description`
+   * are separate elements wired up with `aria-describedby`, and on a disabled
+   * field they are usually the only thing that says WHY. `__marker` and
+   * `__optional` sit inside the label but make independent statements about
+   * the field — "required", "safe to leave empty" — that stay true whether or
+   * not it can be edited. All step back to a readable role: 5.06:1 in light,
+   * 5.08:1 in dark.
+   */
+  .stratum-field[data-disabled] .stratum-field__label {
+    color: var(--stratum-text-disabled);
+  }
+  .stratum-field[data-group][data-disabled] .stratum-field__label {
+    color: var(--stratum-text-secondary);
+  }
+  .stratum-field[data-disabled] .stratum-field__description,
+  .stratum-field[data-disabled] .stratum-field__hint,
+  .stratum-field[data-disabled] .stratum-field__optional,
+  .stratum-field[data-disabled] .stratum-field__marker {
+    color: var(--stratum-text-subtle);
+  }
+
+  /* -- Forced colours -------------------------------------------------------
+   * Every author colour is replaced by the OS here, so the error stops being
+   * red. The icon is what keeps the message distinguishable from ordinary
+   * help text, which is why it is a shape and not a coloured dot.
+   */
+  @media (forced-colors: active) {
+    .stratum-field__error,
+    .stratum-field__marker {
+      color: CanvasText;
+    }
+    .stratum-field[data-disabled] .stratum-field__label,
+    .stratum-field[data-disabled] .stratum-field__description,
+    .stratum-field[data-disabled] .stratum-field__hint,
+    .stratum-field[data-disabled] .stratum-field__optional,
+    .stratum-field[data-disabled] .stratum-field__marker {
+      color: GrayText;
+    }
+  }
+}

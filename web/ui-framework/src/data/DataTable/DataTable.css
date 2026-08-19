@@ -1,0 +1,170 @@
+/* ---------------------------------------------------------------------------
+ * DataTable — viewport, toolbar, resizers, expansion.
+ *
+ * Layers on top of Table.css, which owns every shared cell/header/row class.
+ *
+ * The root is a column flexbox: an optional toolbar that stays put, and a
+ * scroll region beneath it. That split is what lets the header pin to the TOP
+ * OF THE ROWS rather than to the top of the whole component — a filter field
+ * that scrolls away with the data is a filter nobody can clear.
+ * ------------------------------------------------------------------------- */
+@layer stratum.components {
+  .stratum-data-table {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    min-inline-size: 0;
+    background: var(--stratum-surface);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  .stratum-data-table__scroll {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    /* Both axes: pinned columns need horizontal overflow to pin against, and
+     * the virtualiser needs vertical overflow to measure. */
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+    /* Anchoring fights the virtualiser: the browser tries to preserve the
+     * scroll position relative to an element that is about to be unmounted,
+     * which shows up as a jump every time the window recycles. */
+    overflow-anchor: none;
+  }
+
+  .stratum-data-table__table {
+    min-inline-size: 100%;
+  }
+
+  /* -- Toolbar --------------------------------------------------------------- */
+  .stratum-data-table__toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-6);
+    flex-wrap: wrap;
+    padding: var(--stratum-space-4);
+    border-block-end: 1px solid var(--stratum-border);
+  }
+
+  /* Layout slot only. The field is a <SearchInput>, so its border, radius,
+   * typography, focus ring, clear button and forced-colors treatment come from
+   * Input.css instead of being restated here. */
+  .stratum-data-table__filter {
+    flex: 0 1 220px;
+    min-inline-size: 0;
+  }
+
+  .stratum-data-table__columns {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    flex-wrap: wrap;
+  }
+
+  /* A pressed toggle differs by fill AND by weight, so the on/off state does
+   * not rest on colour alone. */
+  .stratum-data-table__column-toggle {
+    block-size: 22px;
+    padding-inline: var(--stratum-space-4);
+    color: var(--stratum-text-muted);
+    font: inherit;
+    font-size: var(--stratum-text-2xs);
+    background: transparent;
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-data-table__column-toggle:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-data-table__column-toggle[aria-pressed='true'] {
+    color: var(--stratum-accent-fg);
+    font-weight: var(--stratum-weight-medium);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent-border);
+  }
+
+  /* -- Resize handle --------------------------------------------------------
+   * Sits in the header's trailing padding. It is a real <button>, not a bare
+   * div, because a column width is a setting and a setting a mouse can change
+   * has to be changeable from the keyboard too — Arrow keys nudge it. */
+  .stratum-data-table__resizer {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: 0;
+    inline-size: 9px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+  }
+  .stratum-data-table__resizer::after {
+    content: '';
+    position: absolute;
+    inset-block: 20%;
+    inset-inline-end: 4px;
+    inline-size: 1px;
+    background: var(--stratum-border-strong);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-data-table__resizer:hover::after,
+  .stratum-data-table__resizer:focus-visible::after {
+    inset-block: 0;
+    background: var(--stratum-accent);
+    inline-size: 2px;
+  }
+  .stratum-data-table__resizer:focus-visible {
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+
+  /* -- Expansion ------------------------------------------------------------- */
+  .stratum-data-table__tree-cell {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    min-inline-size: 0;
+    /* Depth is a plain indent here: hierarchical sub-rows in a DataTable are
+     * usually one level deep, and TreeTable exists for the case where the
+     * shape of the hierarchy is itself the information. */
+    padding-inline-start: calc(var(--_depth, 0) * var(--stratum-space-10));
+  }
+
+  .stratum-data-table__tree-label {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-data-table__detail-row {
+    --_row-bg: var(--stratum-surface-sunken);
+  }
+  .stratum-data-table__detail-cell {
+    padding-block: var(--stratum-space-6);
+    padding-inline: var(--stratum-space-10);
+  }
+
+  /* -- Virtual spacers ------------------------------------------------------
+   * Zero-content rows carrying the height of the rows above and below the
+   * rendered window. They must never receive borders or padding, or the total
+   * height stops matching what the virtualiser calculated and the scrollbar
+   * drifts. */
+  .stratum-data-table__spacer-cell {
+    padding: 0;
+    border: 0;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-data-table__resizer::after {
+      background: CanvasText;
+    }
+    .stratum-data-table__column-toggle[aria-pressed='true'] {
+      background: Highlight;
+      color: HighlightText;
+      border-color: Highlight;
+      forced-color-adjust: none;
+    }
+  }
+}

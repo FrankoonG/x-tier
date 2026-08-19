@@ -1,0 +1,113 @@
+@layer stratum.components {
+  .stratum-meter {
+    --_fill: var(--stratum-accent);
+    --_h: 6px;
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .stratum-meter[data-size='xs'] { --_h: 3px; }
+  .stratum-meter[data-size='sm'] { --_h: 6px; }
+  .stratum-meter[data-size='md'] { --_h: 10px; }
+
+  /* No thresholds configured: the meter is a plain level readout, so it uses
+   * the accent rather than implying a health judgement it was never given. */
+  .stratum-meter[data-level='none']       { --_fill: var(--stratum-accent); }
+  .stratum-meter[data-level='optimum']    { --_fill: var(--stratum-success); }
+  .stratum-meter[data-level='suboptimal'] { --_fill: var(--stratum-warning); }
+  .stratum-meter[data-level='poor']       { --_fill: var(--stratum-danger); }
+
+  .stratum-meter__header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--stratum-space-4);
+    font-size: var(--stratum-text-xs);
+    line-height: var(--stratum-leading-tight);
+  }
+
+  .stratum-meter__label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-secondary);
+  }
+
+  .stratum-meter__value {
+    flex-shrink: 0;
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text);
+  }
+  /* A reinforcement of the band, never the only carrier of it: the text
+   * channel lives in `aria-valuetext` via `labelLevel`, and the ticks show
+   * where the band starts. This just keeps the number and the fill in step. */
+  .stratum-meter[data-level='poor'] .stratum-meter__value {
+    color: var(--stratum-danger-fg);
+  }
+  .stratum-meter[data-level='suboptimal'] .stratum-meter__value {
+    color: var(--stratum-warning-fg);
+  }
+
+  .stratum-meter__track {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: var(--_h);
+    background: var(--stratum-track);
+    border-radius: var(--stratum-radius-full);
+  }
+
+  .stratum-meter__fill {
+    height: 100%;
+    background: var(--_fill);
+    border-radius: inherit;
+    transform-origin: 0 50%;
+    transform: scaleX(var(--_fraction, 0));
+    transition:
+      transform var(--stratum-duration-lg) var(--stratum-ease-out),
+      background-color var(--stratum-duration-md) var(--stratum-ease-out);
+  }
+
+  /* -- Thresholds -----------------------------------------------------------
+   * Drawn as hairlines through the track. They are what makes "amber" mean
+   * something specific — the reader can see WHERE the band starts rather than
+   * inferring it from a colour change.
+   */
+  .stratum-meter__tick {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: var(--_at);
+    width: 1px;
+    background: var(--stratum-surface);
+    opacity: 0.9;
+  }
+  .stratum-meter__tick[data-threshold='high'] {
+    width: 2px;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-meter__track {
+      border: 1px solid CanvasText;
+      background: Canvas;
+    }
+    .stratum-meter__fill {
+      forced-color-adjust: none;
+      background-color: Highlight;
+    }
+    .stratum-meter__tick {
+      forced-color-adjust: none;
+      background-color: CanvasText;
+      opacity: 1;
+    }
+    .stratum-meter__value,
+    .stratum-meter__label {
+      color: CanvasText;
+    }
+  }
+}

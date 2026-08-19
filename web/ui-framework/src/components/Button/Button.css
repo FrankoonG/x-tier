@@ -1,0 +1,201 @@
+@layer stratum.components {
+  .stratum-button {
+    /* Per-component custom properties are the styling contract. A consumer
+     * retheming a single button sets these rather than fighting selectors. */
+    --_bg: transparent;
+    --_fg: var(--stratum-text);
+    --_border: transparent;
+    --_bg-hover: var(--stratum-surface-hover);
+    --_bg-active: var(--stratum-surface-active);
+    --_border-hover: var(--_border);
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--stratum-space-3);
+
+    height: var(--_h);
+    padding-inline: var(--_px);
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-medium);
+    line-height: var(--stratum-leading-none);
+    white-space: nowrap;
+    user-select: none;
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+
+    transition: var(--stratum-transition-control);
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-button[data-size='xs'] { --_h: 22px; --_px: var(--stratum-space-4); --_fs: var(--stratum-text-2xs); }
+  .stratum-button[data-size='sm'] { --_h: 26px; --_px: var(--stratum-space-5); --_fs: var(--stratum-text-xs); }
+  .stratum-button[data-size='md'] { --_h: 32px; --_px: var(--stratum-space-6); --_fs: var(--stratum-text-sm); }
+  .stratum-button[data-size='lg'] { --_h: 38px; --_px: var(--stratum-space-8); --_fs: var(--stratum-text-md); }
+
+  /* Icon-only collapses to a square and drops the label gap. WCAG 2.2 SC
+   * 2.5.8 wants a 24x24 minimum target; xs is 22px so it gets a transparent
+   * outset via ::after rather than being visually enlarged. */
+  .stratum-button[data-icon-only] {
+    padding-inline: 0;
+    width: var(--_h);
+    gap: 0;
+  }
+  .stratum-button[data-icon-only][data-size='xs'] {
+    position: relative;
+  }
+  .stratum-button[data-icon-only][data-size='xs']::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    /* Expands the pointer target to 24x24 without changing the visual box. */
+  }
+
+  .stratum-button[data-full-width] {
+    width: 100%;
+  }
+
+  /* -- Variants ------------------------------------------------------------ */
+  .stratum-button[data-variant='primary'] {
+    --_bg: var(--stratum-accent);
+    --_fg: var(--stratum-accent-on-solid);
+    --_border: var(--stratum-accent);
+    --_bg-hover: var(--stratum-accent-hover);
+    --_bg-active: var(--stratum-accent-active);
+    --_border-hover: var(--stratum-accent-hover);
+  }
+
+  .stratum-button[data-variant='default'] {
+    --_bg: var(--stratum-surface);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-border-strong);
+    --_bg-hover: var(--stratum-surface-hover);
+    --_bg-active: var(--stratum-surface-active);
+  }
+
+  .stratum-button[data-variant='subtle'] {
+    --_bg: var(--stratum-accent-subtle);
+    --_fg: var(--stratum-accent-fg);
+    --_border: transparent;
+    --_bg-hover: var(--stratum-accent-subtle-hover);
+    --_bg-active: var(--stratum-accent-subtle-hover);
+  }
+
+  .stratum-button[data-variant='ghost'] {
+    --_bg: transparent;
+    --_fg: var(--stratum-text-secondary);
+    --_border: transparent;
+    --_bg-hover: var(--stratum-surface-hover);
+    --_bg-active: var(--stratum-surface-active);
+  }
+  .stratum-button[data-variant='ghost']:hover:not(:disabled) {
+    --_fg: var(--stratum-text);
+  }
+
+  .stratum-button[data-variant='danger'] {
+    --_bg: var(--stratum-danger);
+    --_fg: var(--stratum-danger-on-solid);
+    --_border: var(--stratum-danger);
+    --_bg-hover: var(--stratum-danger-hover);
+    --_bg-active: var(--stratum-danger-active);
+    --_border-hover: var(--stratum-danger-hover);
+  }
+
+  .stratum-button[data-variant='danger-subtle'] {
+    --_bg: var(--stratum-danger-subtle);
+    --_fg: var(--stratum-danger-fg);
+    --_border: transparent;
+    --_bg-hover: var(--stratum-danger);
+    --_bg-active: var(--stratum-danger-hover);
+  }
+  .stratum-button[data-variant='danger-subtle']:hover:not(:disabled) {
+    --_fg: var(--stratum-danger-on-solid);
+  }
+
+  .stratum-button[data-variant='link'] {
+    --_bg: transparent;
+    --_fg: var(--stratum-accent-fg);
+    --_border: transparent;
+    --_bg-hover: transparent;
+    --_bg-active: transparent;
+    height: auto;
+    padding: 0;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+    /* Link colour alone is not a sufficient affordance (SC 1.4.1), hence the
+     * permanent underline rather than one that appears on hover. */
+  }
+  .stratum-button[data-variant='link']:hover:not(:disabled) {
+    --_fg: var(--stratum-accent-hover);
+    text-decoration-thickness: 2px;
+  }
+
+  /* -- States -------------------------------------------------------------- */
+  .stratum-button:hover:not(:disabled):not([aria-disabled='true']) {
+    background: var(--_bg-hover);
+    border-color: var(--_border-hover);
+  }
+
+  .stratum-button:active:not(:disabled):not([aria-disabled='true']) {
+    background: var(--_bg-active);
+    /* 1px of travel reads as physical depression without shifting layout. */
+    transform: translateY(calc(1px * var(--stratum-motion-distance)));
+  }
+
+  .stratum-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* Busy, not disabled: still focusable, so it keeps a normal appearance and
+   * only the cursor signals that input is being ignored. */
+  .stratum-button[aria-disabled='true'] {
+    cursor: progress;
+  }
+
+  .stratum-button__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* Icons scale with the type step so a button never looks top-heavy. */
+    font-size: 1.15em;
+  }
+  .stratum-button__icon > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-button__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-button__spinner {
+    color: currentColor;
+  }
+
+  /* Forced colours: the OS repaints fills, so every variant needs a real
+   * border to remain distinguishable, and the busy/disabled states must be
+   * conveyed by system keywords rather than opacity. */
+  @media (forced-colors: active) {
+    .stratum-button {
+      border-color: ButtonBorder;
+      color: ButtonText;
+      background: ButtonFace;
+    }
+    .stratum-button[data-variant='primary'] {
+      background: Highlight;
+      color: HighlightText;
+      border-color: Highlight;
+    }
+    .stratum-button:disabled {
+      color: GrayText;
+      border-color: GrayText;
+      opacity: 1;
+    }
+  }
+}

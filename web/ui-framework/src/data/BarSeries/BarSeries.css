@@ -1,0 +1,216 @@
+@layer stratum.components {
+  .stratum-bar-series {
+    --_label-w: 9rem;
+    --_bar-h: 8px;
+    --_rail: var(--stratum-track);
+    --_fill: var(--stratum-series-1);
+    --_unobserved-edge: var(--stratum-unknown-border);
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    color: var(--stratum-text);
+  }
+
+  .stratum-bar-series__list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    min-width: 0;
+  }
+
+  .stratum-bar-series__row {
+    display: grid;
+    grid-template-columns: minmax(0, var(--_label-w)) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--stratum-space-6);
+    min-width: 0;
+    font-size: var(--stratum-text-xs);
+    border-radius: var(--stratum-radius-sm);
+  }
+
+  /* -- Series colour --------------------------------------------------------
+   * `color` on the row is what the SVG fill resolves against. A literal colour
+   * arrives as an inline `color`, so no rule is needed for that case. */
+  .stratum-bar-series__row[data-series='1'] { --_fill: var(--stratum-series-1); }
+  .stratum-bar-series__row[data-series='2'] { --_fill: var(--stratum-series-2); }
+  .stratum-bar-series__row[data-series='3'] { --_fill: var(--stratum-series-3); }
+  .stratum-bar-series__row[data-series='4'] { --_fill: var(--stratum-series-4); }
+  .stratum-bar-series__row[data-series='5'] { --_fill: var(--stratum-series-5); }
+  .stratum-bar-series__row[data-series='6'] { --_fill: var(--stratum-series-6); }
+  .stratum-bar-series__row[data-series='7'] { --_fill: var(--stratum-series-7); }
+  .stratum-bar-series__row[data-series='8'] { --_fill: var(--stratum-series-8); }
+
+  .stratum-bar-series__row[data-status='ok']       { --_fill: var(--stratum-success); }
+  .stratum-bar-series__row[data-status='warning']  { --_fill: var(--stratum-warning); }
+  .stratum-bar-series__row[data-status='danger']   { --_fill: var(--stratum-danger); }
+  .stratum-bar-series__row[data-status='info']     { --_fill: var(--stratum-info); }
+  .stratum-bar-series__row[data-status='neutral']  { --_fill: var(--stratum-unknown); }
+
+  /* A literal colour arrives as an inline `color`; the fill follows it. */
+  .stratum-bar-series__row[data-custom-color] {
+    --_fill: currentColor;
+  }
+
+  /* -- Interactive rows ------------------------------------------------------ */
+
+  .stratum-bar-series__button {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    align-items: center;
+    gap: inherit;
+    min-width: 0;
+    padding: var(--stratum-space-1) var(--stratum-space-2);
+    margin-inline: calc(-1 * var(--stratum-space-2));
+    font: inherit;
+    color: inherit;
+    text-align: start;
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-bar-series__button:hover {
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-bar-series__row[data-selected] .stratum-bar-series__button,
+  .stratum-bar-series__row[data-selected] {
+    background: var(--stratum-selected-bg);
+  }
+
+  /* -- Label ----------------------------------------------------------------- */
+
+  .stratum-bar-series__label {
+    display: block;
+    min-width: 0;
+    /* Labels wear text ink, never the bar colour: several series hues are far
+     * too light to read as text on the surface. */
+    color: var(--stratum-text-secondary);
+    /* One line, ellipsised. A wrapping label would make rows different heights
+     * and destroy the shared baseline the bars are read against. The full text
+     * stays available via `title` and the data table. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Inline rather than a flex sibling: as a flex child it could not be
+   * ellipsised by the parent, so a long remainder caption was clipped
+   * mid-word with no visual indication that anything had been cut. */
+  .stratum-bar-series__meta {
+    margin-inline-start: var(--stratum-space-3);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-subtle);
+  }
+
+  /* -- Bar -------------------------------------------------------------------
+   * The track is the full width; the fill is the value. A 4px round cap on the
+   * data end with a square baseline, so a column of bars shares one crisp
+   * left edge instead of a ragged one. */
+  .stratum-bar-series__track {
+    position: relative;
+    display: block;
+    min-width: 0;
+    line-height: 0;
+    border-radius: var(--stratum-radius-xs);
+  }
+
+  .stratum-bar-series__svg {
+    display: block;
+    width: 100%;
+    height: var(--_bar-h);
+  }
+
+  .stratum-bar-series__rail {
+    color: var(--_rail);
+  }
+
+  .stratum-bar-series__fill {
+    color: var(--_fill);
+    /* Only the data end is rounded. `inset(... round ...)` clamps its own radii
+     * on a bar narrower than the radius, so a near-zero value degrades to a
+     * lozenge rather than overflowing. */
+    clip-path: inset(0 round 0 var(--stratum-radius-sm) var(--stratum-radius-sm) 0);
+  }
+
+  /* NOT OBSERVED. An empty dashed rail — never a zero-length bar, which would
+   * assert a measurement of nothing. `outline` rather than `border` so the row
+   * height does not change between observed and unobserved. */
+  .stratum-bar-series__track[data-unobserved] {
+    outline: 1px dashed var(--_unobserved-edge);
+    outline-offset: -1px;
+  }
+  .stratum-bar-series__track[data-unobserved] .stratum-bar-series__rail {
+    color: var(--stratum-unknown-subtle);
+  }
+
+  /* -- Value ------------------------------------------------------------------ */
+
+  .stratum-bar-series__value {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--stratum-space-3);
+    justify-self: end;
+    font-family: var(--stratum-font-mono);
+    /* A column of numbers that must align — the case tabular figures exist
+     * for. Without it the value column jitters on every poll. */
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text);
+    white-space: nowrap;
+  }
+
+  .stratum-bar-series__value[data-unobserved] {
+    font-family: var(--stratum-font-sans);
+    font-style: italic;
+    color: var(--stratum-unknown);
+  }
+
+  .stratum-bar-series__share {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-bar-series__empty {
+    margin: 0;
+    font-size: var(--stratum-text-xs);
+    font-style: italic;
+    color: var(--stratum-unknown);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-bar-series__rail {
+      color: Canvas;
+    }
+    /* Bar length, not hue, carries the value here, so the OS palette is
+     * allowed to repaint the fill — nothing is lost. */
+    .stratum-bar-series__fill {
+      color: CanvasText;
+    }
+    .stratum-bar-series__track {
+      /* The rail loses its fill here, so it needs a real boundary to remain a
+       * visible measurement rail rather than empty space. */
+      outline: 1px solid GrayText;
+      outline-offset: -1px;
+    }
+    .stratum-bar-series__track[data-unobserved] {
+      outline-style: dashed;
+      outline-color: GrayText;
+    }
+    .stratum-bar-series__track[data-unobserved] .stratum-bar-series__rail {
+      color: Canvas;
+    }
+    .stratum-bar-series__value[data-unobserved],
+    .stratum-bar-series__meta {
+      color: GrayText;
+    }
+    .stratum-bar-series__row[data-selected] {
+      outline: 2px solid Highlight;
+    }
+  }
+}

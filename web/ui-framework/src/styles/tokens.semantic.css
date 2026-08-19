@@ -1,0 +1,672 @@
+/* ---------------------------------------------------------------------------
+ * TIER 2 — SEMANTIC TOKENS
+ *
+ * Every token here names a ROLE, never an appearance. Components reference
+ * only this tier. Swapping `--stratum-accent` from indigo to teal must not
+ * require touching a single component file.
+ *
+ * THEME MECHANISM
+ * ---------------
+ * Light values live on :root; dark values live under [data-theme="dark"].
+ * `light-dark()` is deliberately NOT used, for three reasons:
+ *   1. It is ignored entirely under `forced-colors: active`, so a separate
+ *      layer would be needed anyway.
+ *   2. Dark-mode browser extensions detect themes by sampling computed
+ *      background colours and do not honour `color-scheme`; an explicit
+ *      attribute gives us something testable and something the extension can
+ *      actually see.
+ *   3. An explicit attribute lets the app resolve "auto" once in JS and pin
+ *      the result, which avoids the flash that `prefers-color-scheme` alone
+ *      produces on first paint.
+ * ThemeProvider owns the attribute and tracks the system preference live.
+ *
+ * CONTRAST
+ * --------
+ * Text roles are placed to clear WCAG 2.2 AA on their intended surface:
+ * 4.5:1 for body, 3:1 for large text and for meaningful graphics/UI borders.
+ * ------------------------------------------------------------------------- */
+@layer stratum.tokens {
+
+  /* ======================================================================= */
+  /* LIGHT                                                                    */
+  /* ======================================================================= */
+  :root {
+    color-scheme: light;
+
+    /* -- Surfaces ---------------------------------------------------------- */
+    --stratum-bg:                var(--stratum-neutral-100);
+    --stratum-surface:           var(--stratum-neutral-0);
+    --stratum-surface-hover:     var(--stratum-neutral-50);
+    --stratum-surface-active:    var(--stratum-neutral-150);
+    --stratum-surface-sunken:    var(--stratum-neutral-50);
+    --stratum-surface-elevated:  var(--stratum-neutral-0);
+    --stratum-surface-inverse:   var(--stratum-neutral-900);
+    --stratum-surface-disabled:  var(--stratum-neutral-100);
+
+    /* Scrim behind dialogs. Kept as a colour token, never a backdrop-filter,
+     * because blur behind a dense table is both expensive and illegible. */
+    --stratum-scrim: oklch(21% 0.010 265 / 0.44);
+
+    /* -- Text -------------------------------------------------------------- */
+    --stratum-text:            var(--stratum-neutral-900);
+    --stratum-text-secondary:  var(--stratum-neutral-700);
+    --stratum-text-muted:      var(--stratum-neutral-600);
+    /* 550, not 500: 500 measures 3.87:1 on white and fails AA for normal
+     * text. `subtle` is quiet content, not decoration, so it must pass.
+     * Dark keeps 500, which measures 5.08:1 against the dark surface. */
+    --stratum-text-subtle:     var(--stratum-neutral-550);
+    /* Below AA deliberately. WCAG 1.4.3 exempts inactive controls, and a
+     * disabled field rendered at full contrast does not look disabled.
+     * Never use this for content that is merely de-emphasised. */
+    --stratum-text-disabled:   var(--stratum-neutral-400);
+    --stratum-text-inverse:    var(--stratum-neutral-50);
+    --stratum-text-on-accent:  var(--stratum-neutral-0);
+
+    /* -- Borders ----------------------------------------------------------- */
+    --stratum-border:          var(--stratum-neutral-200);
+    --stratum-border-subtle:   var(--stratum-neutral-150);
+    --stratum-border-strong:   var(--stratum-neutral-300);
+    --stratum-border-inverse:  var(--stratum-neutral-700);
+    --stratum-divider:         var(--stratum-neutral-150);
+
+    /* -- Accent (brand / primary) ------------------------------------------ */
+    --stratum-accent:           var(--stratum-indigo-600);
+    --stratum-accent-hover:     var(--stratum-indigo-700);
+    --stratum-accent-active:    var(--stratum-indigo-800);
+    --stratum-accent-subtle:    var(--stratum-indigo-50);
+    --stratum-accent-subtle-hover: var(--stratum-indigo-100);
+    --stratum-accent-border:    var(--stratum-indigo-200);
+    --stratum-accent-fg:        var(--stratum-indigo-700);
+    --stratum-accent-on-solid:  var(--stratum-neutral-0);
+
+    /* -- Status: success ---------------------------------------------------- */
+    --stratum-success:          var(--stratum-green-600);
+    --stratum-success-hover:    var(--stratum-green-700);
+    --stratum-success-subtle:   var(--stratum-green-50);
+    --stratum-success-border:   var(--stratum-green-200);
+    --stratum-success-fg:       var(--stratum-green-800);
+    --stratum-success-on-solid: var(--stratum-neutral-0);
+
+    /* -- Status: warning ---------------------------------------------------- */
+    --stratum-warning:          var(--stratum-amber-600);
+    --stratum-warning-hover:    var(--stratum-amber-700);
+    --stratum-warning-subtle:   var(--stratum-amber-50);
+    --stratum-warning-border:   var(--stratum-amber-200);
+    --stratum-warning-fg:       var(--stratum-amber-800);
+    --stratum-warning-on-solid: var(--stratum-neutral-0);
+
+    /* -- Status: danger ----------------------------------------------------- */
+    --stratum-danger:          var(--stratum-red-600);
+    --stratum-danger-hover:    var(--stratum-red-700);
+    --stratum-danger-active:   var(--stratum-red-800);
+    --stratum-danger-subtle:   var(--stratum-red-50);
+    --stratum-danger-border:   var(--stratum-red-200);
+    --stratum-danger-fg:       var(--stratum-red-700);
+    --stratum-danger-on-solid: var(--stratum-neutral-0);
+
+    /* -- Status: info ------------------------------------------------------- */
+    --stratum-info:          var(--stratum-blue-600);
+    --stratum-info-hover:    var(--stratum-blue-700);
+    --stratum-info-subtle:   var(--stratum-blue-50);
+    --stratum-info-border:   var(--stratum-blue-200);
+    --stratum-info-fg:       var(--stratum-blue-700);
+    --stratum-info-on-solid: var(--stratum-neutral-0);
+
+    /* -- Status: neutral / unknown -----------------------------------------
+     * A first-class role, not an afterthought. The domain this framework
+     * targets distinguishes "confirmed absent" from "not observed", and the
+     * second must never be painted as the first.
+     */
+    /* Marker and graphic use (3:1 threshold). For TEXT use
+     * --stratum-unknown-fg, which clears 4.5:1. */
+    --stratum-unknown:        var(--stratum-neutral-550);
+    --stratum-unknown-subtle: var(--stratum-neutral-100);
+    --stratum-unknown-border: var(--stratum-neutral-300);
+    --stratum-unknown-fg:     var(--stratum-neutral-700);
+
+    /* -- Focus ------------------------------------------------------------- */
+    --stratum-focus-ring:    var(--stratum-indigo-600);
+    --stratum-focus-ring-contrast: var(--stratum-neutral-0);
+
+    /* -- Pointer targets ----------------------------------------------------
+     * WCAG 2.2 SC 2.5.8 (Target Size, Minimum), AA. Any control smaller than
+     * this gets a TRANSPARENT `::after` outset up to it, so the hit area grows
+     * and the paint does not — a 14px checkbox has to stay a 14px checkbox.
+     *
+     * Deliberately `px`, not `rem`. The success criterion is written in CSS
+     * pixels, so a token that scaled with the root font size would drop below
+     * the bar for anyone who reduces it.
+     *
+     * NOT repeated in the dark block below, and not missing from it: this is a
+     * geometry token and geometry does not change with the theme.
+     */
+    --stratum-target-min: 24px;
+
+    /* -- Selection --------------------------------------------------------- */
+    --stratum-selected-bg:       var(--stratum-indigo-50);
+    --stratum-selected-bg-hover: var(--stratum-indigo-100);
+    --stratum-selected-border:   var(--stratum-indigo-300);
+
+    /* -- Measurement rails --------------------------------------------------
+     * The unfilled part of a progress bar, meter or slider. Distinct from a
+     * surface role because it must stay visible ON a surface, including on
+     * `surface-sunken`, where `surface-active` would vanish.
+     */
+    --stratum-track:        var(--stratum-neutral-200);
+    --stratum-track-border: var(--stratum-neutral-300);
+
+    /* -- Skeleton -----------------------------------------------------------
+     * Two roles, not one: the resting block and the sheen that sweeps across
+     * it. The sheen is always the LIGHTER of the pair in both themes, so the
+     * sweep reads the same direction regardless of theme — a shimmer that
+     * inverts between light and dark reads as a defect.
+     */
+    --stratum-skeleton-base:  var(--stratum-neutral-150);
+    --stratum-skeleton-sheen: var(--stratum-neutral-50);
+
+    /* -- Data-series palette -----------------------------------------------
+     * Ordered for maximum pairwise separation at the first four entries,
+     * which is where almost every chart in a network panel actually stops.
+     */
+    --stratum-series-1: var(--stratum-indigo-500);
+    --stratum-series-2: var(--stratum-teal-500);
+    --stratum-series-3: var(--stratum-amber-500);
+    --stratum-series-4: var(--stratum-violet-500);
+    --stratum-series-5: var(--stratum-green-500);
+    --stratum-series-6: var(--stratum-red-400);
+    --stratum-series-7: var(--stratum-blue-400);
+    --stratum-series-8: var(--stratum-gold-600);
+
+    /* Directional traffic. Fixed by convention across the whole framework:
+     * inbound/down is teal, outbound/up is indigo. Never swapped per-view. */
+    --stratum-traffic-in:  var(--stratum-teal-600);
+    --stratum-traffic-out: var(--stratum-indigo-500);
+    /* Text-grade pair. The values above are tuned for chart strokes and dots
+     * (3:1); a rate rendered as text needs 4.5:1 and teal-600 only reaches
+     * 3.79:1 on white. */
+    --stratum-traffic-in-fg:  var(--stratum-teal-700);
+    --stratum-traffic-out-fg: var(--stratum-indigo-700);
+
+    /* -- Sequential value scale ---------------------------------------------
+     * For magnitude, not identity: heat maps, density grids, bin counts. ONE
+     * hue, light to dark. Never a rainbow — a multi-hue ramp makes the reader
+     * decode an arbitrary colour order instead of reading lightness, which is
+     * the only channel humans rank reliably without a legend.
+     *
+     * Authored as explicit OKLCH rather than as aliases of the blue ramp
+     * because the primitive steps are spaced for UI states, not for a
+     * perceptually even six-step ramp: reusing them puts two of the six within
+     * 5% lightness of each other and leaves a 17% gap elsewhere, which reads as
+     * four bins with two duplicates. Same precedent as the scrim and the dark
+     * subtle fills above.
+     *
+     * Six is the ceiling. Past about seven bins adjacent classes stop
+     * separating and the honest answer is a table.
+     */
+    --stratum-scale-1: oklch(91.0% 0.036 243);
+    --stratum-scale-2: oklch(83.0% 0.062 243);
+    --stratum-scale-3: oklch(74.5% 0.092 244);
+    --stratum-scale-4: oklch(66.0% 0.122 244);
+    --stratum-scale-5: oklch(56.5% 0.150 245);
+    --stratum-scale-6: oklch(45.0% 0.140 246);
+
+    /* NOT OBSERVED, deliberately outside the ramp.
+     *
+     * This is the single most important pair in the file. A heat-map cell with
+     * no reading painted as the ramp's lowest step claims a measurement it does
+     * not have — on a latency grid that renders "never probed" as "fast", in
+     * exactly the place an operator is looking for an outage. So the empty cell
+     * gets a role of its own, and the components that use it pair it with a
+     * hatch and a dashed edge so it is separable without colour too.
+     */
+    --stratum-scale-empty:        var(--stratum-unknown-subtle);
+    --stratum-scale-empty-border: var(--stratum-unknown-border);
+
+    /* -- Elevation ----------------------------------------------------------
+     * Two-part shadows (contact + diffusion) at low alpha. Operator surfaces
+     * should read as flat panels with just enough lift to establish stacking.
+     */
+    --stratum-shadow-xs: 0 1px 1px oklch(21% 0.01 265 / 0.05);
+    --stratum-shadow-sm:
+      0 1px 2px oklch(21% 0.01 265 / 0.06),
+      0 1px 3px oklch(21% 0.01 265 / 0.05);
+    --stratum-shadow-md:
+      0 2px 4px oklch(21% 0.01 265 / 0.05),
+      0 4px 12px oklch(21% 0.01 265 / 0.07);
+    --stratum-shadow-lg:
+      0 4px 8px oklch(21% 0.01 265 / 0.05),
+      0 12px 28px oklch(21% 0.01 265 / 0.10);
+    --stratum-shadow-xl:
+      0 8px 16px oklch(21% 0.01 265 / 0.06),
+      0 24px 48px oklch(21% 0.01 265 / 0.13);
+
+    /* Ring used instead of a shadow where a crisp edge matters more than
+     * lift — popovers over dense tables, for example. */
+    --stratum-ring-subtle: inset 0 0 0 1px var(--stratum-border);
+
+    /* -- Monospace text surfaces --------------------------------------------
+     * Shared by LogViewer, DiffViewer, JsonViewer and CodeBlock. A code surface
+     * is sunken relative to the card it sits on, in both themes, so the eye
+     * reads it as a well of machine output rather than as another panel.
+     */
+    --stratum-code-bg:        var(--stratum-neutral-50);
+    --stratum-code-fg:        var(--stratum-neutral-900);
+    --stratum-code-border:    var(--stratum-neutral-200);
+    --stratum-code-gutter-bg: var(--stratum-neutral-100);
+    /* neutral-600, not the quieter neutral-500: a line number is small text
+     * (11-12px) and has to clear 4.5:1 against BOTH the code surface and the
+     * slightly darker gutter fill it sits on. neutral-500 measures 3.5-3.7 on
+     * those and fails. */
+    --stratum-code-gutter-fg: var(--stratum-neutral-600);
+    /* Secondary annotation inside a code surface: source tags, type hints,
+     * item counts. Never the content itself. */
+    --stratum-code-meta:      var(--stratum-neutral-600);
+
+    /* Search hit. The rule is a second, non-colour channel — a hit landing on
+     * an ANSI-coloured or syntax-coloured run must still read as a hit. */
+    --stratum-code-match:        var(--stratum-amber-200);
+    --stratum-code-match-rule:   var(--stratum-amber-700);
+    --stratum-code-match-active: var(--stratum-amber-400);
+
+    /* Caller-designated lines in a CodeBlock. */
+    --stratum-code-line-highlight:        var(--stratum-amber-50);
+    --stratum-code-line-highlight-border: var(--stratum-amber-600);
+
+    /* Value roles for structured data. Hues are pulled from four different
+     * families so string/number/boolean stay separable under the two most
+     * common colour-vision deficiencies. */
+    --stratum-code-key:     var(--stratum-indigo-700);
+    --stratum-code-string:  var(--stratum-green-700);
+    --stratum-code-number:  var(--stratum-blue-700);
+    --stratum-code-boolean: var(--stratum-violet-700);
+    /* `null` is a VALUE, not an absence of one. It is deliberately not the
+     * `unknown` role: a JSON document that says `null` has told you something. */
+    --stratum-code-null:    var(--stratum-neutral-600);
+    --stratum-code-punct:   var(--stratum-neutral-600);
+
+    /* -- Diff ---------------------------------------------------------------
+     * Two intensities per side: a wash for the whole changed line and a
+     * stronger fill for the changed words inside it. Both sides also carry a
+     * border token, because a diff must remain readable when the OS discards
+     * fills under forced colours and for readers who cannot separate the two
+     * hues — hence the +/- gutter markers in the components themselves.
+     */
+    --stratum-diff-add-bg:        var(--stratum-green-50);
+    --stratum-diff-add-bg-strong: var(--stratum-green-200);
+    --stratum-diff-add-fg:        var(--stratum-green-800);
+    --stratum-diff-add-border:    var(--stratum-green-600);
+    --stratum-diff-del-bg:        var(--stratum-red-50);
+    --stratum-diff-del-bg-strong: var(--stratum-red-200);
+    --stratum-diff-del-fg:        var(--stratum-red-700);
+    --stratum-diff-del-border:    var(--stratum-red-600);
+    --stratum-diff-collapse-bg:   var(--stratum-neutral-100);
+
+    /* -- Log severity -------------------------------------------------------
+     * `error` and `fatal` share a hue on purpose: they are separated by a row
+     * tint rather than by asking anyone to distinguish two reds.
+     */
+    /* Both quiet levels are greys, but neither may drop below 4.5:1 — a level
+     * label is 11px text, and the chip that toggles it is a control. */
+    --stratum-log-trace: var(--stratum-neutral-600);
+    --stratum-log-debug: var(--stratum-neutral-700);
+    --stratum-log-info:  var(--stratum-blue-700);
+    --stratum-log-warn:  var(--stratum-amber-700);
+    --stratum-log-error: var(--stratum-red-700);
+    --stratum-log-fatal: var(--stratum-red-800);
+
+    /* -- ANSI terminal palette ----------------------------------------------
+     * These paint text a REMOTE PROCESS chose the colour of. Which pairings
+     * occur is not ours to decide — a producer can emit blue on blue — but the
+     * mapping from escape code to actual colour IS ours, so every value here is
+     * placed to clear 4.5:1 against the code surface on its own. That is the
+     * most that can honestly be guaranteed, which is why components offering
+     * ANSI must also offer a way to turn it off.
+     *
+     * The four greys follow terminal convention rather than a mechanical
+     * "bright = lighter" rule: `bright-black` is the conventional mid grey, and
+     * `bright-white` is the most conspicuous of the pair in both themes. On a
+     * light surface that means bright-white is DARKER than white, which is what
+     * "bright" has always meant in practice — more conspicuous, not lighter.
+     */
+    --stratum-ansi-black:   var(--stratum-neutral-900);
+    --stratum-ansi-red:     var(--stratum-red-700);
+    --stratum-ansi-green:   var(--stratum-green-700);
+    --stratum-ansi-yellow:  var(--stratum-amber-700);
+    --stratum-ansi-blue:    var(--stratum-blue-700);
+    --stratum-ansi-magenta: var(--stratum-violet-700);
+    --stratum-ansi-cyan:    var(--stratum-teal-700);
+    --stratum-ansi-white:   var(--stratum-neutral-600);
+
+    --stratum-ansi-bright-black:   var(--stratum-neutral-800);
+    --stratum-ansi-bright-red:     var(--stratum-red-600);
+    --stratum-ansi-bright-green:   var(--stratum-green-600);
+    --stratum-ansi-bright-yellow:  var(--stratum-amber-600);
+    --stratum-ansi-bright-blue:    var(--stratum-blue-600);
+    --stratum-ansi-bright-magenta: var(--stratum-violet-600);
+    --stratum-ansi-bright-cyan:    var(--stratum-teal-600);
+    --stratum-ansi-bright-white:   var(--stratum-neutral-700);
+  }
+
+  /* ======================================================================= */
+  /* DARK                                                                     */
+  /* ======================================================================= */
+  [data-theme="dark"] {
+    color-scheme: dark;
+
+    /* Surfaces climb toward the viewer: bg is darkest, each elevation step is
+     * lighter. Dark themes that use shadow alone for elevation fail, because a
+     * black shadow on a near-black surface is invisible. */
+    --stratum-bg:                var(--stratum-neutral-1000);
+    --stratum-surface:           var(--stratum-neutral-950);
+    --stratum-surface-hover:     var(--stratum-neutral-925);
+    --stratum-surface-active:    var(--stratum-neutral-900);
+    --stratum-surface-sunken:    var(--stratum-neutral-1000);
+    --stratum-surface-elevated:  var(--stratum-neutral-925);
+    --stratum-surface-inverse:   var(--stratum-neutral-100);
+    --stratum-surface-disabled:  var(--stratum-neutral-925);
+
+    --stratum-scrim: oklch(4% 0.004 265 / 0.66);
+
+    /* Pure white body text on a dark surface causes halation. Backing off to
+     * neutral-100 keeps contrast well past AA while reducing that shimmer. */
+    --stratum-text:            var(--stratum-neutral-100);
+    --stratum-text-secondary:  var(--stratum-neutral-300);
+    --stratum-text-muted:      var(--stratum-neutral-400);
+    --stratum-text-subtle:     var(--stratum-neutral-500);
+    --stratum-text-disabled:   var(--stratum-neutral-600);
+    --stratum-text-inverse:    var(--stratum-neutral-900);
+    --stratum-text-on-accent:  var(--stratum-neutral-0);
+
+    --stratum-border:          var(--stratum-neutral-850);
+    --stratum-border-subtle:   var(--stratum-neutral-900);
+    --stratum-border-strong:   var(--stratum-neutral-700);
+    --stratum-border-inverse:  var(--stratum-neutral-300);
+    --stratum-divider:         var(--stratum-neutral-900);
+
+    /* Accent lightens in dark so it stays legible as text and as a fill that
+     * carries white-ish labels. */
+    --stratum-accent:           var(--stratum-indigo-500);
+    --stratum-accent-hover:     var(--stratum-indigo-400);
+    --stratum-accent-active:    var(--stratum-indigo-300);
+    --stratum-accent-subtle:    oklch(25% 0.085 277 / 0.42);
+    --stratum-accent-subtle-hover: oklch(25% 0.085 277 / 0.60);
+    --stratum-accent-border:    var(--stratum-indigo-800);
+    --stratum-accent-fg:        var(--stratum-indigo-300);
+    /* Dark, not white. The dark theme keeps the accent bright so it still
+     * reads as a colour against near-black chrome, and white on indigo-500
+     * measures only 3.84:1. Near-black gives 5.42:1. */
+    --stratum-accent-on-solid:  var(--stratum-neutral-1000);
+
+    --stratum-success:          var(--stratum-green-500);
+    --stratum-success-hover:    var(--stratum-green-400);
+    --stratum-success-subtle:   oklch(23% 0.055 150 / 0.42);
+    --stratum-success-border:   var(--stratum-green-800);
+    --stratum-success-fg:       var(--stratum-green-300);
+    --stratum-success-on-solid: var(--stratum-neutral-1000);
+
+    --stratum-warning:          var(--stratum-amber-500);
+    --stratum-warning-hover:    var(--stratum-amber-400);
+    --stratum-warning-subtle:   oklch(26% 0.062 45 / 0.42);
+    --stratum-warning-border:   var(--stratum-amber-800);
+    --stratum-warning-fg:       var(--stratum-amber-300);
+    --stratum-warning-on-solid: var(--stratum-neutral-1000);
+
+    --stratum-danger:          var(--stratum-red-500);
+    --stratum-danger-hover:    var(--stratum-red-400);
+    --stratum-danger-active:   var(--stratum-red-300);
+    --stratum-danger-subtle:   oklch(24% 0.090 28 / 0.42);
+    --stratum-danger-border:   var(--stratum-red-800);
+    --stratum-danger-fg:       var(--stratum-red-300);
+    /* Same reasoning as accent above: white on red-500 is 3.81:1,
+     * near-black is 5.47:1. */
+    --stratum-danger-on-solid: var(--stratum-neutral-1000);
+
+    --stratum-info:          var(--stratum-blue-500);
+    --stratum-info-hover:    var(--stratum-blue-400);
+    --stratum-info-subtle:   oklch(23.5% 0.068 245 / 0.42);
+    --stratum-info-border:   var(--stratum-blue-800);
+    --stratum-info-fg:       var(--stratum-blue-300);
+    --stratum-info-on-solid: var(--stratum-neutral-1000);
+
+    --stratum-unknown:        var(--stratum-neutral-500);
+    --stratum-unknown-subtle: var(--stratum-neutral-900);
+    --stratum-unknown-border: var(--stratum-neutral-700);
+    --stratum-unknown-fg:     var(--stratum-neutral-300);
+
+    --stratum-focus-ring:          var(--stratum-indigo-400);
+    --stratum-focus-ring-contrast: var(--stratum-neutral-1000);
+
+    --stratum-selected-bg:       oklch(25% 0.085 277 / 0.46);
+    --stratum-selected-bg-hover: oklch(25% 0.085 277 / 0.62);
+    --stratum-selected-border:   var(--stratum-indigo-700);
+
+    --stratum-track:        var(--stratum-neutral-850);
+    --stratum-track-border: var(--stratum-neutral-800);
+
+    --stratum-skeleton-base:  var(--stratum-neutral-900);
+    --stratum-skeleton-sheen: var(--stratum-neutral-850);
+
+    /* Series colours shift one step lighter so they hold saturation against a
+     * dark plot area instead of muddying into it. */
+    --stratum-series-1: var(--stratum-indigo-400);
+    --stratum-series-2: var(--stratum-teal-300);
+    --stratum-series-3: var(--stratum-amber-400);
+    --stratum-series-4: var(--stratum-violet-300);
+    --stratum-series-5: var(--stratum-green-400);
+    --stratum-series-6: var(--stratum-red-400);
+    --stratum-series-7: var(--stratum-blue-300);
+    --stratum-series-8: var(--stratum-gold-500);
+
+    --stratum-traffic-in:  var(--stratum-teal-300);
+    --stratum-traffic-out: var(--stratum-indigo-400);
+    --stratum-traffic-in-fg:  var(--stratum-teal-300);
+    --stratum-traffic-out-fg: var(--stratum-indigo-300);
+
+    /* The sequential ramp runs the other way in dark: step 1 sits just above
+     * the panel and step 6 is the brightest, so "more" is always "further from
+     * the surface" in both themes. Mirroring the light ramp instead — dark
+     * where the value is low — would make a quiet grid look alarming and a busy
+     * one look empty. Chroma peaks in the middle and eases at both ends, which
+     * is what stops the top of a dark ramp glowing. */
+    --stratum-scale-1: oklch(26.0% 0.055 245);
+    --stratum-scale-2: oklch(34.0% 0.080 245);
+    --stratum-scale-3: oklch(44.0% 0.110 245);
+    --stratum-scale-4: oklch(55.0% 0.140 244);
+    --stratum-scale-5: oklch(67.0% 0.150 243);
+    --stratum-scale-6: oklch(80.0% 0.115 242);
+
+    --stratum-scale-empty:        var(--stratum-unknown-subtle);
+    --stratum-scale-empty-border: var(--stratum-unknown-border);
+
+    /* Shadows are near-black and deeper; the visible elevation cue in dark is
+     * primarily the surface-lightness step above, with shadow as support. */
+    --stratum-shadow-xs: 0 1px 1px oklch(0% 0 0 / 0.30);
+    --stratum-shadow-sm:
+      0 1px 2px oklch(0% 0 0 / 0.36),
+      0 1px 3px oklch(0% 0 0 / 0.28);
+    --stratum-shadow-md:
+      0 2px 4px oklch(0% 0 0 / 0.36),
+      0 4px 12px oklch(0% 0 0 / 0.40);
+    --stratum-shadow-lg:
+      0 4px 8px oklch(0% 0 0 / 0.38),
+      0 12px 28px oklch(0% 0 0 / 0.48);
+    --stratum-shadow-xl:
+      0 8px 16px oklch(0% 0 0 / 0.42),
+      0 24px 48px oklch(0% 0 0 / 0.56);
+
+    --stratum-ring-subtle: inset 0 0 0 1px var(--stratum-border);
+
+    /* -- Monospace text surfaces --------------------------------------------
+     * Code goes to the darkest step in dark mode. A log pane that is lighter
+     * than the card around it reads as elevated, which is exactly backwards for
+     * a well of output you are looking down into.
+     */
+    --stratum-code-bg:        var(--stratum-neutral-1000);
+    --stratum-code-fg:        var(--stratum-neutral-200);
+    --stratum-code-border:    var(--stratum-neutral-850);
+    --stratum-code-gutter-bg: var(--stratum-neutral-975);
+    --stratum-code-gutter-fg: var(--stratum-neutral-500);
+    --stratum-code-meta:      var(--stratum-neutral-400);
+
+    --stratum-code-match:        oklch(44% 0.105 45 / 0.85);
+    --stratum-code-match-rule:   var(--stratum-amber-300);
+    --stratum-code-match-active: var(--stratum-amber-600);
+
+    --stratum-code-line-highlight:        oklch(26% 0.062 45 / 0.55);
+    --stratum-code-line-highlight-border: var(--stratum-amber-500);
+
+    --stratum-code-key:     var(--stratum-indigo-300);
+    --stratum-code-string:  var(--stratum-green-300);
+    --stratum-code-number:  var(--stratum-blue-300);
+    --stratum-code-boolean: var(--stratum-violet-300);
+    --stratum-code-null:    var(--stratum-neutral-400);
+    --stratum-code-punct:   var(--stratum-neutral-500);
+
+    /* -- Diff ---------------------------------------------------------------
+     * Translucent so the fill composites over the code surface rather than
+     * over an assumed background; `prefers-reduced-transparency` flattens them
+     * in base.css alongside the other subtle roles.
+     */
+    --stratum-diff-add-bg:        oklch(23% 0.055 150 / 0.45);
+    --stratum-diff-add-bg-strong: oklch(39% 0.095 150 / 0.70);
+    --stratum-diff-add-fg:        var(--stratum-green-300);
+    --stratum-diff-add-border:    var(--stratum-green-500);
+    --stratum-diff-del-bg:        oklch(24% 0.090 28 / 0.45);
+    --stratum-diff-del-bg-strong: oklch(39% 0.150 28 / 0.65);
+    --stratum-diff-del-fg:        var(--stratum-red-300);
+    --stratum-diff-del-border:    var(--stratum-red-500);
+    --stratum-diff-collapse-bg:   var(--stratum-neutral-950);
+
+    /* -- Log severity -------------------------------------------------------- */
+    --stratum-log-trace: var(--stratum-neutral-500);
+    --stratum-log-debug: var(--stratum-neutral-400);
+    --stratum-log-info:  var(--stratum-blue-300);
+    --stratum-log-warn:  var(--stratum-amber-400);
+    --stratum-log-error: var(--stratum-red-400);
+    --stratum-log-fatal: var(--stratum-red-300);
+
+    /* -- ANSI terminal palette ------------------------------------------------
+     * `black` lands on a mid grey rather than an actual black: a process
+     * emitting SGR 30 assumes a light terminal, and honouring it literally in a
+     * dark theme makes the text vanish. As in light, every value clears 4.5:1
+     * against the code surface, and `bright` means more conspicuous.
+     */
+    --stratum-ansi-black:   var(--stratum-neutral-500);
+    --stratum-ansi-red:     var(--stratum-red-400);
+    --stratum-ansi-green:   var(--stratum-green-400);
+    --stratum-ansi-yellow:  var(--stratum-amber-400);
+    --stratum-ansi-blue:    var(--stratum-blue-400);
+    --stratum-ansi-magenta: var(--stratum-violet-300);
+    --stratum-ansi-cyan:    var(--stratum-teal-300);
+    --stratum-ansi-white:   var(--stratum-neutral-300);
+
+    --stratum-ansi-bright-black:   var(--stratum-neutral-400);
+    --stratum-ansi-bright-red:     var(--stratum-red-300);
+    --stratum-ansi-bright-green:   var(--stratum-green-300);
+    --stratum-ansi-bright-yellow:  var(--stratum-amber-300);
+    --stratum-ansi-bright-blue:    var(--stratum-blue-300);
+    --stratum-ansi-bright-magenta: var(--stratum-violet-100);
+    --stratum-ansi-bright-cyan:    var(--stratum-teal-100);
+    --stratum-ansi-bright-white:   var(--stratum-neutral-100);
+  }
+
+  /* ======================================================================= */
+  /* HIGH CONTRAST — user asked for more contrast, still our colours          */
+  /* ======================================================================= */
+  @media (prefers-contrast: more) {
+    :root {
+      --stratum-text-muted:    var(--stratum-neutral-700);
+      --stratum-text-subtle:   var(--stratum-neutral-700);
+      --stratum-border:        var(--stratum-neutral-400);
+      --stratum-border-subtle: var(--stratum-neutral-300);
+      --stratum-border-strong: var(--stratum-neutral-600);
+      --stratum-divider:       var(--stratum-neutral-300);
+      --stratum-focus-ring-width: 3px;
+    }
+    [data-theme="dark"] {
+      --stratum-text-muted:    var(--stratum-neutral-300);
+      --stratum-text-subtle:   var(--stratum-neutral-300);
+      --stratum-border:        var(--stratum-neutral-600);
+      --stratum-border-subtle: var(--stratum-neutral-700);
+      --stratum-border-strong: var(--stratum-neutral-400);
+      --stratum-divider:       var(--stratum-neutral-700);
+    }
+  }
+
+  /* ======================================================================= */
+  /* FORCED COLORS — Windows High Contrast                                    */
+  /*                                                                          */
+  /* Author colours are discarded by the OS here, so the job is not to pick    */
+  /* colours but to make sure every boundary we normally express with fill or  */
+  /* shadow ALSO exists as a real border the OS can repaint.                   */
+  /* ======================================================================= */
+  @media (forced-colors: active) {
+    :root {
+      --stratum-shadow-xs: none;
+      --stratum-shadow-sm: none;
+      --stratum-shadow-md: none;
+      --stratum-shadow-lg: none;
+      --stratum-shadow-xl: none;
+      --stratum-focus-ring: Highlight;
+      --stratum-scrim: Canvas;
+
+      /* Text surfaces. The OS repaints every fill, so the diff washes collapse
+       * to Canvas and the borders become the only carrier — which is why the
+       * diff components draw +/- gutter markers unconditionally rather than
+       * treating them as decoration. */
+      --stratum-code-bg:        Canvas;
+      --stratum-code-fg:        CanvasText;
+      --stratum-code-border:    CanvasText;
+      --stratum-code-gutter-bg: Canvas;
+      --stratum-code-gutter-fg: GrayText;
+      --stratum-code-meta:      GrayText;
+
+      --stratum-code-match:        Highlight;
+      --stratum-code-match-rule:   HighlightText;
+      --stratum-code-match-active: Highlight;
+      --stratum-code-line-highlight:        Canvas;
+      --stratum-code-line-highlight-border: CanvasText;
+
+      --stratum-code-key:     CanvasText;
+      --stratum-code-string:  CanvasText;
+      --stratum-code-number:  CanvasText;
+      --stratum-code-boolean: CanvasText;
+      --stratum-code-null:    GrayText;
+      --stratum-code-punct:   GrayText;
+
+      --stratum-diff-add-bg:        Canvas;
+      --stratum-diff-add-bg-strong: Canvas;
+      --stratum-diff-add-fg:        CanvasText;
+      --stratum-diff-add-border:    CanvasText;
+      --stratum-diff-del-bg:        Canvas;
+      --stratum-diff-del-bg-strong: Canvas;
+      --stratum-diff-del-fg:        CanvasText;
+      --stratum-diff-del-border:    CanvasText;
+      --stratum-diff-collapse-bg:   Canvas;
+
+      --stratum-log-trace: GrayText;
+      --stratum-log-debug: GrayText;
+      --stratum-log-info:  CanvasText;
+      --stratum-log-warn:  CanvasText;
+      --stratum-log-error: CanvasText;
+      --stratum-log-fatal: CanvasText;
+
+      --stratum-ansi-black:   CanvasText;
+      --stratum-ansi-red:     CanvasText;
+      --stratum-ansi-green:   CanvasText;
+      --stratum-ansi-yellow:  CanvasText;
+      --stratum-ansi-blue:    CanvasText;
+      --stratum-ansi-magenta: CanvasText;
+      --stratum-ansi-cyan:    CanvasText;
+      --stratum-ansi-white:   GrayText;
+      --stratum-ansi-bright-black:   GrayText;
+      --stratum-ansi-bright-red:     CanvasText;
+      --stratum-ansi-bright-green:   CanvasText;
+      --stratum-ansi-bright-yellow:  CanvasText;
+      --stratum-ansi-bright-blue:    CanvasText;
+      --stratum-ansi-bright-magenta: CanvasText;
+      --stratum-ansi-bright-cyan:    CanvasText;
+      --stratum-ansi-bright-white:   CanvasText;
+    }
+  }
+}

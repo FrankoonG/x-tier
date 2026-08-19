@@ -1,0 +1,79 @@
+@layer stratum.components {
+  .stratum-accordion {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .stratum-accordion__item {
+    min-width: 0;
+  }
+
+  .stratum-accordion__disclosure {
+    /* The item wrapper owns the chrome; the disclosure inside is always plain
+     * so that a variant change here never has to be mirrored there. */
+    background: transparent;
+    border: 0;
+  }
+
+  /* -- Variant: contained ---------------------------------------------------
+   * One card, hairline rules between items. */
+  .stratum-accordion[data-variant='contained'] {
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    overflow: hidden;
+  }
+  .stratum-accordion[data-variant='contained'] .stratum-accordion__item + .stratum-accordion__item {
+    border-top: 1px solid var(--stratum-divider);
+  }
+
+  /* -- Variant: plain -------------------------------------------------------
+   * Rules only, no container. Reads as part of the page rather than as a
+   * component, which is what a settings column usually wants. */
+  .stratum-accordion[data-variant='plain'] .stratum-accordion__item + .stratum-accordion__item {
+    border-top: 1px solid var(--stratum-divider);
+  }
+
+  /* -- Variant: separated ---------------------------------------------------- */
+  .stratum-accordion[data-variant='separated'] {
+    gap: var(--stratum-space-4);
+  }
+  .stratum-accordion[data-variant='separated'] .stratum-accordion__item {
+    background: var(--stratum-surface);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    overflow: hidden;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-accordion[data-variant='separated'] .stratum-accordion__item[data-state='open'] {
+    border-color: var(--stratum-border-strong);
+  }
+
+  /* An open item is marked by more than the chevron: colour alone would fail
+   * SC 1.4.1, and the chevron is small enough to be easy to miss on a dense
+   * page. The start-edge accent gives the open section a real boundary. */
+  .stratum-accordion__item[data-state='open'] > .stratum-accordion__disclosure {
+    box-shadow: inset var(--stratum-space-1) 0 0 0 var(--stratum-accent);
+  }
+
+  .stratum-accordion__item[data-disabled] {
+    background: var(--stratum-surface-disabled);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-accordion[data-variant='contained'],
+    .stratum-accordion[data-variant='separated'] .stratum-accordion__item {
+      border-color: CanvasText;
+    }
+    .stratum-accordion[data-variant='contained'] .stratum-accordion__item + .stratum-accordion__item,
+    .stratum-accordion[data-variant='plain'] .stratum-accordion__item + .stratum-accordion__item {
+      border-top-color: CanvasText;
+    }
+    .stratum-accordion__item[data-state='open'] > .stratum-accordion__disclosure {
+      box-shadow: none;
+      outline: 1px solid Highlight;
+      outline-offset: -1px;
+    }
+  }
+}

@@ -1,0 +1,9 @@
+/* Stratum UI — full stylesheet entry.
+ * Order matters: layers.css must be first so the layer order is fixed. */
+@import "./layers.css";
+@import "./reset.css";
+@import "./tokens.primitive.css";
+@import "./tokens.semantic.css";
+@import "./tokens.mesh.css";
+@import "./tokens.motion.css";
+@import "./base.css";

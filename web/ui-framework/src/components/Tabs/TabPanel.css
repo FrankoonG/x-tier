@@ -1,0 +1,57 @@
+@layer stratum.components {
+  .stratum-tab-panel {
+    --_dx: 0;
+    --_dy: 0;
+
+    display: block;
+    min-width: 0;
+    flex: 1 1 auto;
+    padding-block-start: var(--stratum-space-8);
+    opacity: 1;
+    translate: 0 0;
+
+    /* Opacity finishes first, so the panel reads as "arrived" while it is
+     * still settling.
+     *
+     * `display` is deliberately NOT in this list. With `allow-discrete` the
+     * switch to `display: none` is deferred to the END of the transition, so a
+     * keepMounted panel that had just been hidden would stay fully opaque and
+     * in normal flow while the incoming panel was already in flow — the
+     * container's height would be the sum of both, then snap. There is no exit
+     * style here by design (only the entry animates), so the outgoing panel
+     * must leave flow immediately. The entry still animates: @starting-style
+     * below applies on the `display: none` -> `block` change regardless,
+     * because the element goes from not-rendered to rendered. */
+    transition:
+      opacity var(--stratum-duration-sm) var(--stratum-ease-out),
+      translate var(--stratum-duration-lg) var(--stratum-ease-signature);
+  }
+
+  .stratum-tabs[data-orientation='vertical'] .stratum-tab-panel {
+    padding-block-start: 0;
+    padding-inline-start: 0;
+  }
+
+  /* The `hidden` attribute is honoured explicitly: our own `display: block`
+   * above is an author style and would otherwise beat the UA rule. */
+  .stratum-tab-panel[hidden] {
+    display: none;
+  }
+
+  /* Applies on insertion and on the display:none -> block transition, which
+   * covers both the unmounting default and the keepMounted case.
+   * --stratum-slide already carries --stratum-motion-distance, so reduced
+   * motion zeroes the travel and leaves a half-length fade. */
+  @starting-style {
+    .stratum-tab-panel:not([hidden]) {
+      opacity: 0;
+      translate: calc(var(--_dx) * var(--stratum-slide)) calc(var(--_dy) * var(--stratum-slide));
+    }
+  }
+
+  /* A panel is a tab stop, so it needs a ring — but it is also frequently a
+   * scroll container, where an outset ring gets clipped. */
+  .stratum-tab-panel:focus-visible {
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+}

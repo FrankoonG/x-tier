@@ -1,0 +1,220 @@
+@layer stratum.components {
+  .stratum-slider {
+    --_thumb: 16px;
+    --_rail: 4px;
+    --_mark: 4px;
+
+    --_rail-bg: var(--stratum-border);
+    --_fill-bg: var(--stratum-accent);
+    --_thumb-bg: var(--stratum-surface);
+    --_thumb-border: var(--stratum-accent);
+
+    position: relative;
+    display: block;
+    /* Half a thumb of inline padding so the extremes are not clipped by the
+     * parent. Percentages inside the control stay a clean 0–100%. */
+    padding-inline: calc(var(--_thumb) / 2);
+    touch-action: none;
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-slider[data-size='sm'] { --_thumb: 14px; --_rail: 3px; --_mark: 3px; }
+  .stratum-slider[data-size='md'] { --_thumb: 16px; --_rail: 4px; --_mark: 4px; }
+
+  /* -- Track --------------------------------------------------------------- */
+  .stratum-slider__control {
+    position: relative;
+    height: var(--_thumb);
+    /* The whole strip is grabbable, not just the rail — a 4px pointer target
+     * would fail SC 2.5.8 outright. */
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  .stratum-slider__rail,
+  .stratum-slider__fill {
+    position: absolute;
+    inset-block-start: 50%;
+    height: var(--_rail);
+    translate: 0 -50%;
+    border-radius: var(--stratum-radius-full);
+  }
+
+  .stratum-slider__rail {
+    inset-inline: 0;
+    background: var(--_rail-bg);
+  }
+
+  /* Logical insets, so the fill flips with writing direction for free. */
+  .stratum-slider__fill {
+    inset-inline-start: calc(var(--_from, 0) * 100%);
+    inset-inline-end: calc((1 - var(--_to, 0)) * 100%);
+    background: var(--_fill-bg);
+  }
+
+  /* -- Marks --------------------------------------------------------------- */
+  .stratum-slider__mark {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: calc(var(--_at, 0) * 100%);
+    width: var(--_mark);
+    height: var(--_mark);
+    translate: -50% -50%;
+    border-radius: var(--stratum-radius-full);
+    background: var(--stratum-border-strong);
+    pointer-events: none;
+  }
+  .stratum-slider__mark[data-state='filled'] {
+    background: var(--stratum-accent-on-solid);
+    opacity: 0.7;
+  }
+
+  .stratum-slider__mark-labels {
+    position: relative;
+    height: var(--stratum-space-10);
+    margin-block-start: var(--stratum-space-2);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-slider__mark-label {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: calc(var(--_at, 0) * 100%);
+    translate: -50% 0;
+    white-space: nowrap;
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* -- Thumb ---------------------------------------------------------------
+   * Position is a percentage of the track, so a resize repositions it with no
+   * JS and no animation frame. The offset is NOT scaled by
+   * --stratum-motion-distance: it encodes the value, not decoration. */
+  .stratum-slider__thumb {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: calc(var(--_at, 0) * 100%);
+    width: var(--_thumb);
+    height: var(--_thumb);
+    translate: -50% -50%;
+    background: var(--_thumb-bg);
+    border: 2px solid var(--_thumb-border);
+    border-radius: var(--stratum-radius-full);
+    box-shadow: var(--stratum-shadow-sm);
+    cursor: grab;
+    transition:
+      box-shadow var(--stratum-duration-2xs) var(--stratum-ease-out),
+      border-color var(--stratum-duration-2xs) var(--stratum-ease-out),
+      background-color var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+
+  .stratum-slider__thumb:hover {
+    border-color: var(--stratum-accent-hover);
+  }
+
+  .stratum-slider__thumb[data-dragging] {
+    cursor: grabbing;
+    box-shadow: var(--stratum-shadow-md);
+  }
+
+  /* -- Value bubble --------------------------------------------------------
+   * A child of the thumb, so it tracks it exactly with no measurement and no
+   * per-frame repositioning. */
+  .stratum-slider__tooltip {
+    position: absolute;
+    inset-block-end: calc(100% + var(--stratum-space-3));
+    inset-inline-start: 50%;
+    padding: var(--stratum-space-1) var(--stratum-space-3);
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    line-height: var(--stratum-leading-tight);
+    white-space: nowrap;
+    color: var(--stratum-text-inverse);
+    background: var(--stratum-surface-inverse);
+    border-radius: var(--stratum-radius-sm);
+    box-shadow: var(--stratum-shadow-sm);
+    pointer-events: none;
+    opacity: 0;
+    translate: -50% var(--stratum-lift-xs);
+    transition:
+      opacity var(--stratum-duration-xs) var(--stratum-ease-out),
+      translate var(--stratum-duration-sm) var(--stratum-ease-signature);
+  }
+
+  .stratum-slider[data-tooltip='always'] .stratum-slider__tooltip,
+  .stratum-slider[data-tooltip='auto'] .stratum-slider__thumb:hover .stratum-slider__tooltip,
+  .stratum-slider[data-tooltip='auto']
+    .stratum-slider__thumb:focus-visible
+    .stratum-slider__tooltip,
+  .stratum-slider[data-tooltip='auto']
+    .stratum-slider__thumb[data-dragging]
+    .stratum-slider__tooltip {
+    opacity: 1;
+    translate: -50% 0;
+  }
+
+  /* -- States -------------------------------------------------------------- */
+  .stratum-slider[data-invalid] {
+    --_fill-bg: var(--stratum-danger);
+    --_thumb-border: var(--stratum-danger);
+  }
+
+  .stratum-slider[data-disabled] {
+    --_rail-bg: var(--stratum-surface-disabled);
+    --_fill-bg: var(--stratum-text-disabled);
+    --_thumb-border: var(--stratum-text-disabled);
+    --_thumb-bg: var(--stratum-surface-disabled);
+  }
+  .stratum-slider[data-disabled] .stratum-slider__control,
+  .stratum-slider[data-disabled] .stratum-slider__thumb {
+    cursor: not-allowed;
+  }
+  .stratum-slider[data-disabled] .stratum-slider__thumb {
+    box-shadow: none;
+  }
+  /* The mark labels are the slider's SCALE — "0 ms", "250 ms", "1 s". They are
+   * content, not part of the control: a disabled slider still has to be read,
+   * and the numbers are what make its current value mean anything. So they
+   * step back to `text-subtle` (5.06:1 light, 5.08:1 dark) rather than to
+   * `--stratum-text-disabled`, which at 2.52:1 is reserved for the inactive
+   * control itself. The rail, fill and thumb above already carry the state. */
+  .stratum-slider[data-disabled] .stratum-slider__mark-labels {
+    color: var(--stratum-text-subtle);
+  }
+
+  /* While dragging, the bubble should not lag behind the thumb — the thumb has
+   * no positional transition, so neither should the bubble. */
+  .stratum-slider[data-dragging] .stratum-slider__tooltip {
+    transition: opacity var(--stratum-duration-xs) var(--stratum-ease-out);
+  }
+
+  /* Forced colours remove the fill/rail distinction, so the filled portion is
+   * repainted with Highlight and the thumb keeps a real border. */
+  @media (forced-colors: active) {
+    .stratum-slider__rail {
+      background: ButtonBorder;
+    }
+    .stratum-slider__fill {
+      background: Highlight;
+    }
+    .stratum-slider__thumb {
+      background: ButtonFace;
+      border-color: ButtonText;
+    }
+    .stratum-slider__mark {
+      background: ButtonText;
+    }
+    .stratum-slider__tooltip {
+      color: CanvasText;
+      background: Canvas;
+      border: 1px solid CanvasText;
+    }
+    .stratum-slider[data-disabled] .stratum-slider__fill,
+    .stratum-slider[data-disabled] .stratum-slider__rail {
+      background: GrayText;
+    }
+    .stratum-slider[data-disabled] .stratum-slider__thumb {
+      border-color: GrayText;
+    }
+  }
+}

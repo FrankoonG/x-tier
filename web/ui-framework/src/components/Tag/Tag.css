@@ -1,0 +1,179 @@
+@layer stratum.components {
+  /* The root carries `.stratum-badge` too, so all of Badge's variant, size and
+   * forced-colors rules already apply. Only the interactive structure is new:
+   * padding moves off the root and onto the parts, because the remove control
+   * needs its own hit area. */
+  /* Doubled class on every rule that REDECLARES something Badge already set.
+   * Both files live in the same layer at equal specificity, so without this
+   * the winner would depend on bundler import order — which is exactly the
+   * kind of breakage that only shows up in a production build. */
+  .stratum-badge.stratum-tag {
+    padding-inline: 0;
+    gap: 0;
+    align-items: stretch;
+    overflow: visible;
+  }
+
+  .stratum-tag[data-size='sm'] { --_remove: 18px; }
+  .stratum-tag[data-size='md'] { --_remove: 20px; }
+
+  /* -- Body ------------------------------------------------------------------ */
+  .stratum-tag__body {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--_gap);
+    min-inline-size: 0;
+    padding-inline: var(--_px);
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    border-radius: inherit;
+    text-align: start;
+  }
+
+  .stratum-tag[data-selectable] .stratum-tag__body {
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+
+  /* Hover recolours the BORDER rather than the fill: a tinted chip has no
+   * headroom left for a lighter background, and a border shift stays correct
+   * for all seven variants without inventing a hover token per status. */
+  .stratum-badge.stratum-tag[data-selectable]:not([data-disabled]):hover {
+    --_border: var(--_dot);
+  }
+
+  /* Selection is signalled by ring THICKNESS as well as colour, so it survives
+   * a monochrome display; `aria-pressed` carries it for assistive tech. */
+  .stratum-badge.stratum-tag[data-selected] {
+    --_border: var(--_dot);
+    box-shadow: 0 0 0 1px var(--_dot);
+  }
+
+  /* -- Remove ---------------------------------------------------------------- */
+  .stratum-tag[data-removable] .stratum-tag__body {
+    padding-inline-end: var(--stratum-space-1);
+  }
+
+  .stratum-tag__remove {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--_remove);
+    flex: 0 0 auto;
+    margin-inline-end: var(--stratum-space-1);
+    color: var(--_fg);
+    background: none;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    opacity: 0.7;
+    transition: var(--stratum-transition-control), opacity var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+
+  .stratum-tag__remove:hover:not(:disabled) {
+    opacity: 1;
+    background: var(--stratum-surface-active);
+  }
+
+  .stratum-tag__remove:disabled {
+    cursor: not-allowed;
+  }
+
+  .stratum-tag__remove > svg {
+    inline-size: 10px;
+    block-size: 10px;
+  }
+
+  /* WCAG 2.2 SC 2.5.8 wants a 24x24 pointer target. The chip is deliberately
+   * denser than that, so the target is grown with a transparent outset that
+   * changes neither the visual box nor the layout — the same technique Button
+   * uses for its xs icon-only size. The pseudo-element is part of the button's
+   * box, so hit testing anywhere in the 24x24 region resolves to the button.
+   *
+   * The growth is deliberately NOT centred. `--_remove` is 18-20px, so a
+   * centred 24x24 box overhung the inline-start edge by 3px — straight over
+   * `.stratum-tag__body`. The remove button is later in DOM order and
+   * positioned, so its pseudo-element won that hit test: on a tag that is both
+   * selectable and removable, clicks on the last 3px of the label removed the
+   * tag instead of toggling it. The box is pinned to the button's inline-start
+   * edge and grows only outward (inline-end) and vertically, where there is
+   * nothing to steal from.
+   *
+   * Note for auditors: axe-core's `target-size` rule measures the painted
+   * border box and cannot see a pseudo-element's hit region, so it reports
+   * this as a violation. Verified by `document.elementFromPoint` at all four
+   * corners of the 24x24 square: every one resolves to the remove button. */
+  .stratum-tag__remove::after {
+    content: '';
+    position: absolute;
+    /* Percentages resolve against the button's own box: block against its
+     * height, inline against its width. Both terms go negative while the
+     * button is smaller than 24px, which is what pushes the edge outward. */
+    inset-block: calc((24px - 100%) / -2);
+    inset-inline-start: 0;
+    inset-inline-end: calc(100% - 24px);
+  }
+
+  /* -- Disabled --------------------------------------------------------------
+   * This was `opacity: 0.55` on the root, which is the one thing opacity must
+   * never be asked to do. It multiplies contrast rather than replacing it, so
+   * every variant's already-at-threshold `-fg` text fell through AA at once:
+   * the neutral chip measured 2.71:1 against 4.5:1 required. Nor is the
+   * exemption available — a non-selectable tag is a plain `<span>`, so nothing
+   * in it is an inactive control.
+   *
+   * Inactivity is expressed with roles instead, across three channels that
+   * each cost nothing in contrast:
+   *   fill + border  drop to the inert surface roles, so the chip stops
+   *                  claiming a status it can no longer act on;
+   *   border-style   goes dashed — a non-colour channel, so the state
+   *                  survives monochrome, CVD and forced colours;
+   *   label          steps back one role to `text-muted`, which measures
+   *                  5.31:1 on `surface-disabled` in light and 7.44:1 in dark.
+   *
+   * Doubled class as everywhere else in this file: these four custom
+   * properties are declared by Badge's `[data-variant]` rules at the same
+   * specificity, and disabled has to win regardless of import order. */
+  .stratum-badge.stratum-tag[data-disabled] {
+    --_bg: var(--stratum-surface-disabled);
+    --_fg: var(--stratum-text-muted);
+    --_border: var(--stratum-border);
+    --_dot: var(--stratum-text-subtle);
+    border-style: dashed;
+  }
+  /* An outline tag has no fill to neutralise; the dashed border carries it. */
+  .stratum-badge.stratum-tag[data-disabled][data-outline] {
+    --_bg: transparent;
+  }
+  .stratum-tag[data-disabled] .stratum-tag__body,
+  .stratum-tag[data-disabled] .stratum-tag__remove {
+    cursor: not-allowed;
+  }
+  /* The glyph is already carried by the muted `--_fg`; stacking the resting
+   * 0.7 fade on top of it would drop this meaningful graphic to 2.91:1, under
+   * the 3:1 that SC 1.4.11 asks of a control's icon. */
+  .stratum-tag[data-disabled] .stratum-tag__remove {
+    opacity: 1;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-tag__remove {
+      color: ButtonText;
+      opacity: 1;
+    }
+    .stratum-badge.stratum-tag[data-selected] {
+      box-shadow: none;
+      /* Fills are flattened, so selection has to be an outline the OS keeps. */
+      outline: 2px solid Highlight;
+      outline-offset: -2px;
+    }
+    /* The dashed border set above survives here untouched and is what keeps
+     * "inactive" visible once the OS has repainted every colour. */
+    .stratum-tag[data-disabled] {
+      color: GrayText;
+    }
+  }
+}

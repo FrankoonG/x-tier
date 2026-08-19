@@ -1,0 +1,175 @@
+/* ---------------------------------------------------------------------------
+ * BASE
+ *
+ * Document-level defaults and the cross-cutting primitives (focus ring,
+ * scrollbars, selection, utility classes) that every component relies on.
+ * ------------------------------------------------------------------------- */
+@layer stratum.base {
+  body {
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-normal);
+    color: var(--stratum-text);
+    background: var(--stratum-bg);
+  }
+
+  /* -- Focus ---------------------------------------------------------------
+   * One ring, defined once, used everywhere.
+   *
+   * `:focus-visible` rather than `:focus` so pointer users never see it, and
+   * an offset ring rather than an inset one so it stays visible on controls
+   * that already have a border. The paired white/dark contrast ring keeps it
+   * legible against BOTH a light surface and a saturated accent fill — a
+   * single-colour ring disappears on one or the other.
+   */
+  :focus-visible {
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+    border-radius: inherit;
+  }
+
+  /* Where the ring cannot use `outline` — inside a scroll container that
+   * would clip it — components opt into this instead. */
+  .stratum-focus-inset:focus-visible {
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+
+  ::selection {
+    background: var(--stratum-selected-bg-hover);
+    color: var(--stratum-text);
+  }
+
+  /* -- Scrollbars ----------------------------------------------------------
+   * Thin, low-contrast until hovered. Firefox gets the standard property;
+   * WebKit/Blink get the pseudo-elements. Both are needed — neither engine
+   * supports the other's syntax.
+   */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--stratum-border-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-full);
+    /* Transparent border + background-clip gives the thumb breathing room
+     * without shrinking the hit target. */
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--stratum-text-subtle);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* -- Utilities ----------------------------------------------------------- */
+
+  /* Accessible-name text that is not shown. The clip-path variant is the
+   * modern one; the clip/rect fallback is kept for older engines.
+   *
+   * The `[data-focusable]:focus-within` exclusion is what reveals the skip-link
+   * variant (see primitives/VisuallyHidden). It has to live here, in the
+   * selector, rather than as a restoring override in a later layer: an override
+   * can only put back the properties it remembers to name, and every property
+   * it forgets stays forced on a revealed element. Not matching at all leaves
+   * the consumer's own padding, border and everything else untouched. */
+  .stratum-visually-hidden:not(:focus):not(:active):not([data-focusable]:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+
+    /* `table-layout: fixed` is here for one specific and non-obvious reason.
+     *
+     * A CSS table box clamps its used width to its min-content width under the
+     * automatic table layout algorithm, so `width: 1px` above is simply ignored
+     * on a `<table>`. Neither escape hatch above rescues it: `clip` is defined
+     * to apply only while `clip-path` is `none`, so the modern property wins and
+     * the legacy rect is dead; and `clip-path` clips ink, not scrollable
+     * overflow, so the full-width box still counts. Meanwhile `position:
+     * absolute` means the nearest positioned ancestor is the containing block —
+     * and when a component has none, that is the initial containing block, so
+     * the box escapes every `overflow: hidden` between it and the page.
+     *
+     * Measured, not reasoned: the Heatmap's screen-reader table alternative
+     * computed 9421px wide and pushed the document 8249px past the viewport,
+     * straight through the lab shell's own clip. With fixed layout the same
+     * table lands at 190px and the document overflow is 0, while `display`
+     * stays `table` so the accessibility tree is untouched. `display: block`
+     * also removes the overflow but takes the table role with it, which is the
+     * whole reason the element exists.
+     *
+     * This belongs in the utility, not in Heatmap: a text-alternative table for
+     * a visual chart is a recurring pattern here, and every future one inherits
+     * the fix. The property is inert on every non-table display type.
+     *
+     * The caption sits outside the table grid and still contributes its
+     * min-content width, which `white-space: nowrap` above would otherwise
+     * force onto a single line — so captions are allowed to wrap. */
+    table-layout: fixed;
+  }
+  .stratum-visually-hidden:not(:focus):not(:active) > caption {
+    white-space: normal;
+  }
+
+  /* Every metric in the framework. Prevents the horizontal jitter that
+   * proportional digits cause on a live-updating value. */
+  .stratum-numeric {
+    font-variant-numeric: var(--stratum-numeric);
+    font-feature-settings: "tnum" 1;
+  }
+
+  .stratum-mono {
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* Single-line truncation with a title-attribute escape hatch expected. */
+  .stratum-truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  /* -- Reduced transparency ------------------------------------------------
+   * Users who set this get flat fills rather than the translucent subtle
+   * backgrounds used in dark mode.
+   */
+  @media (prefers-reduced-transparency: reduce) {
+    [data-theme="dark"] {
+      --stratum-accent-subtle:  var(--stratum-indigo-950);
+      --stratum-success-subtle: var(--stratum-green-950);
+      --stratum-warning-subtle: var(--stratum-amber-950);
+      --stratum-danger-subtle:  var(--stratum-red-950);
+      --stratum-info-subtle:    var(--stratum-blue-950);
+      --stratum-selected-bg:    var(--stratum-indigo-950);
+
+      /* The diff and match washes are authored translucent so they composite
+       * over whatever code surface they land on. Flattened here to the nearest
+       * opaque step. */
+      --stratum-diff-add-bg:        var(--stratum-green-950);
+      --stratum-diff-add-bg-strong: var(--stratum-green-800);
+      --stratum-diff-del-bg:        var(--stratum-red-950);
+      --stratum-diff-del-bg-strong: var(--stratum-red-800);
+      --stratum-code-match:         var(--stratum-amber-800);
+      --stratum-code-line-highlight: var(--stratum-amber-950);
+    }
+  }
+}

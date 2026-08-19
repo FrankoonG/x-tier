@@ -1,0 +1,345 @@
+@layer stratum.components {
+  .stratum-diff {
+    --_bg: var(--stratum-code-bg);
+    --_fg: var(--stratum-code-fg);
+    --_border: var(--stratum-border);
+    --_fs: var(--stratum-text-xs);
+    --_leading: 1.55;
+    --_num-w: 4ch;
+    --_marker-w: 2ch;
+
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* -- Header -------------------------------------------------------------- */
+
+  .stratum-diff__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-6);
+    padding: var(--stratum-space-3) var(--stratum-space-5);
+    font-family: var(--stratum-font-sans);
+    background: var(--stratum-surface);
+    border-bottom: 1px solid var(--stratum-border);
+    border-start-start-radius: inherit;
+    border-start-end-radius: inherit;
+  }
+
+  .stratum-diff__titles {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .stratum-diff__title {
+    overflow: hidden;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-medium);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .stratum-diff__title[data-side='before'] { color: var(--stratum-diff-del-fg); }
+  .stratum-diff__title[data-side='after']  { color: var(--stratum-diff-add-fg); }
+
+  .stratum-diff__arrow {
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-diff__counts {
+    display: flex;
+    gap: var(--stratum-space-4);
+    margin: 0;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+  .stratum-diff__count[data-kind='add'] { color: var(--stratum-diff-add-fg); }
+  .stratum-diff__count[data-kind='del'] { color: var(--stratum-diff-del-fg); }
+
+  .stratum-diff__controls {
+    display: flex;
+    gap: var(--stratum-space-1);
+    margin-inline-start: auto;
+  }
+
+  .stratum-diff__control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    font-size: var(--stratum-text-md);
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-diff__control:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  .stratum-diff__control[aria-pressed='true'] {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent-border);
+  }
+
+  .stratum-diff__control--text {
+    width: auto;
+    padding-inline: var(--stratum-space-4);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+  }
+
+  .stratum-diff__notice,
+  .stratum-diff__identical {
+    margin: 0;
+    padding: var(--stratum-space-4) var(--stratum-space-5);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-xs);
+  }
+  .stratum-diff__notice {
+    color: var(--stratum-warning-fg);
+    background: var(--stratum-warning-subtle);
+    border-bottom: 1px solid var(--stratum-warning-border);
+  }
+  .stratum-diff__identical {
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Body ---------------------------------------------------------------- */
+
+  .stratum-diff__body {
+    position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .stratum-diff__table {
+    display: block;
+    min-width: max-content;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--_fs);
+    line-height: var(--_leading);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+  .stratum-diff[data-wrap] .stratum-diff__table {
+    min-width: 100%;
+  }
+
+  .stratum-diff__rows {
+    display: block;
+  }
+
+  .stratum-diff__row {
+    display: grid;
+    align-items: start;
+  }
+
+  /* Column templates. `max-content` on the content column is what lets the
+   * body scroll horizontally when wrapping is off. */
+  .stratum-diff[data-view='unified'] .stratum-diff__row {
+    grid-template-columns: var(--_num-w) var(--_num-w) var(--_marker-w) minmax(0, 1fr);
+  }
+  .stratum-diff[data-view='unified']:not([data-line-numbers]) .stratum-diff__row {
+    grid-template-columns: var(--_marker-w) minmax(0, 1fr);
+  }
+  .stratum-diff[data-view='split'] .stratum-diff__row {
+    grid-template-columns: var(--_num-w) minmax(0, 1fr) var(--_num-w) minmax(0, 1fr);
+  }
+  .stratum-diff[data-view='split']:not([data-line-numbers]) .stratum-diff__row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  /* -- Cells --------------------------------------------------------------- */
+
+  .stratum-diff__num {
+    padding-inline: var(--stratum-space-3) var(--stratum-space-2);
+    color: var(--stratum-code-gutter-fg);
+    text-align: end;
+    /* Excluded from selection so copying a diff yields the text, not the
+     * numbering. Copying line numbers into a config file is a real and very
+     * annoying failure. */
+    user-select: none;
+    background: var(--stratum-code-gutter-bg);
+  }
+
+  /* No line on this side. Distinct from an empty line, which is real content —
+   * the hatch says "there is nothing here", a blank cell would say "there is an
+   * empty line here", and those are different facts. */
+  .stratum-diff__num[data-absent],
+  .stratum-diff__content[data-absent] {
+    background-color: var(--stratum-diff-collapse-bg);
+    background-image: repeating-linear-gradient(
+      135deg,
+      transparent 0 5px,
+      var(--stratum-border) 5px 6px
+    );
+  }
+
+  .stratum-diff__marker {
+    color: var(--stratum-code-gutter-fg);
+    text-align: center;
+    user-select: none;
+  }
+
+  .stratum-diff__content {
+    /* An empty line still occupies a row. Without this the row collapses and
+     * the line numbering visibly desynchronises from the content. */
+    min-height: calc(1em * var(--_leading));
+    padding-inline: var(--stratum-space-3);
+    white-space: pre;
+    tab-size: 4;
+  }
+  .stratum-diff[data-wrap] .stratum-diff__content {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* Unified: the ROW carries the tint, because the row is the change.
+   *
+   * Scoped to the unified view on purpose. In split view a row has two sides
+   * whose states differ, and an unscoped row-level rule paints the empty filler
+   * cell opposite a deletion as though it too were deleted — which is exactly
+   * the "absent is not empty" confusion this component exists to avoid. */
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='add'] .stratum-diff__content,
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='add'] .stratum-diff__marker {
+    background: var(--stratum-diff-add-bg);
+  }
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='delete'] .stratum-diff__content,
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='delete'] .stratum-diff__marker {
+    background: var(--stratum-diff-del-bg);
+  }
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='add'] .stratum-diff__marker {
+    color: var(--stratum-diff-add-fg);
+  }
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='delete'] .stratum-diff__marker {
+    color: var(--stratum-diff-del-fg);
+  }
+
+  /* Split: the CELL carries the tint, because the two sides differ. The inline
+   * marker rides inside the content cell. */
+  .stratum-diff__content[data-type='add']    { background: var(--stratum-diff-add-bg); }
+  .stratum-diff__content[data-type='delete'] { background: var(--stratum-diff-del-bg); }
+
+  .stratum-diff__content .stratum-diff__marker {
+    display: inline-block;
+    width: var(--_marker-w);
+    margin-inline-start: calc(-1 * var(--_marker-w));
+    background: none;
+  }
+  .stratum-diff__content[data-type='add'] .stratum-diff__marker    { color: var(--stratum-diff-add-fg); }
+  .stratum-diff__content[data-type='delete'] .stratum-diff__marker { color: var(--stratum-diff-del-fg); }
+  .stratum-diff[data-view='split'] .stratum-diff__content {
+    padding-inline-start: calc(var(--stratum-space-3) + var(--_marker-w));
+  }
+
+  /* A changed line also gets a solid edge on its own side, so the two sides
+   * stay separable when the fills are discarded or the hues are not. */
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='add'] .stratum-diff__content,
+  .stratum-diff__content[data-type='add'] {
+    box-shadow: inset 2px 0 0 0 var(--stratum-diff-add-border);
+  }
+  .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='delete'] .stratum-diff__content,
+  .stratum-diff__content[data-type='delete'] {
+    box-shadow: inset 2px 0 0 0 var(--stratum-diff-del-border);
+  }
+
+  /* The absent side of a split change. Declared last so it wins over any tint,
+   * and paired with `background-color` so the hatch composites over the right
+   * base rather than over whatever was there. */
+  .stratum-diff__content[data-absent] {
+    box-shadow: none;
+  }
+
+  /* -- Intra-line ---------------------------------------------------------- */
+
+  .stratum-diff__word {
+    color: inherit;
+    border-radius: var(--stratum-radius-xs);
+  }
+  .stratum-diff__word[data-side='after']  { background: var(--stratum-diff-add-bg-strong); }
+  .stratum-diff__word[data-side='before'] {
+    background: var(--stratum-diff-del-bg-strong);
+    /* Removed words also get struck through: a second channel, and the one an
+     * operator scanning a config actually reads first. */
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+
+  /* -- Collapsed regions --------------------------------------------------- */
+
+  .stratum-diff__collapsed {
+    padding: 0;
+    background: var(--stratum-diff-collapse-bg);
+    border-block: 1px solid var(--stratum-border-subtle);
+  }
+
+  .stratum-diff__expand {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    width: 100%;
+    padding: var(--stratum-space-2) var(--stratum-space-5);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+    background: transparent;
+    border: none;
+    text-align: start;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-diff__expand:hover {
+    color: var(--stratum-accent-fg);
+    background: var(--stratum-surface-hover);
+  }
+
+  /* -- Forced colours ------------------------------------------------------ */
+
+  @media (forced-colors: active) {
+    .stratum-diff {
+      border-color: CanvasText;
+    }
+    /* Forced colours strips `box-shadow` outright, so the inset edge rule that
+     * carries the change in normal rendering is simply gone here. An `outline`
+     * with a negative offset survives, costs no layout, and gives the changed
+     * cell a visible boundary; the +/- markers, which are real text, do the
+     * work of telling the two apart. */
+    .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='add'] .stratum-diff__content,
+    .stratum-diff__content[data-type='add'],
+    .stratum-diff[data-view='unified'] .stratum-diff__row[data-type='delete'] .stratum-diff__content,
+    .stratum-diff__content[data-type='delete'] {
+      box-shadow: none;
+      outline: 1px solid CanvasText;
+      outline-offset: -1px;
+    }
+    .stratum-diff__word {
+      background: Highlight;
+      color: HighlightText;
+      forced-color-adjust: none;
+    }
+    .stratum-diff__num[data-absent],
+    .stratum-diff__content[data-absent] {
+      background-image: none;
+      border: 1px dashed GrayText;
+    }
+    .stratum-diff__control[aria-pressed='true'] {
+      border-color: Highlight;
+      color: Highlight;
+    }
+    .stratum-diff__collapsed {
+      border-block-color: CanvasText;
+    }
+  }
+}

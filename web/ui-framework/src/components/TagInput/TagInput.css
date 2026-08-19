@@ -1,0 +1,141 @@
+@layer stratum.components {
+  .stratum-tag-input {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    min-inline-size: 0;
+  }
+
+  /* -------------------------------------------------------------------------
+   * CONTROL SHELL
+   *
+   * No fixed height: the chips set it. The minimum keeps an empty field the
+   * same size as an Input or a Select standing beside it.
+   * ---------------------------------------------------------------------- */
+  .stratum-tag-input__control {
+    --_bg: var(--stratum-surface);
+    --_border: var(--stratum-border-strong);
+
+    display: inline-flex;
+    align-items: flex-start;
+    inline-size: auto;
+    max-inline-size: 100%;
+    min-block-size: var(--_h);
+    padding-block: var(--stratum-space-1);
+    padding-inline: var(--_px);
+
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--stratum-radius-md);
+    cursor: text;
+
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-tag-input[data-size='sm'] .stratum-tag-input__control { --_h: 26px; --_px: var(--stratum-space-3); --_fs: var(--stratum-text-xs); }
+  .stratum-tag-input[data-size='md'] .stratum-tag-input__control { --_h: 32px; --_px: var(--stratum-space-4); --_fs: var(--stratum-text-sm); }
+  .stratum-tag-input[data-size='lg'] .stratum-tag-input__control { --_h: 38px; --_px: var(--stratum-space-5); --_fs: var(--stratum-text-md); }
+
+  .stratum-tag-input[data-full-width] .stratum-tag-input__control {
+    display: flex;
+    inline-size: 100%;
+  }
+
+  .stratum-tag-input:not([data-disabled]) .stratum-tag-input__control:hover {
+    --_bg: var(--stratum-surface-hover);
+  }
+
+  .stratum-tag-input__control:focus-within {
+    --_bg: var(--stratum-surface);
+    --_border: var(--stratum-accent);
+  }
+
+  .stratum-tag-input[data-invalid] .stratum-tag-input__control {
+    --_border: var(--stratum-danger);
+  }
+
+  .stratum-tag-input[data-disabled] .stratum-tag-input__control {
+    --_bg: var(--stratum-surface-disabled);
+    cursor: not-allowed;
+  }
+
+  .stratum-tag-input[data-readonly] .stratum-tag-input__control {
+    --_bg: var(--stratum-surface-sunken);
+    cursor: default;
+  }
+
+  /* The ring belongs to the whole control, not to the bare input inside it —
+   * an outline around only the text caret column reads as a different widget. */
+  .stratum-tag-input__control:has(.stratum-tag-input__field:focus-visible) {
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: var(--stratum-focus-ring-offset);
+  }
+  .stratum-tag-input__field:focus-visible {
+    outline: none;
+  }
+
+  .stratum-tag-input__tokens {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    min-inline-size: 0;
+    padding-block: var(--stratum-space-1);
+  }
+
+  .stratum-tag-input__field {
+    flex: 1 1 var(--stratum-space-20);
+    min-inline-size: var(--stratum-space-20);
+    padding: 0;
+    font: inherit;
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+    background: transparent;
+    border: 0;
+  }
+  .stratum-tag-input__field::placeholder {
+    color: var(--stratum-text-muted);
+    opacity: 1;
+  }
+  .stratum-tag-input__field:disabled {
+    cursor: not-allowed;
+  }
+
+  .stratum-tag-input__token {
+    max-inline-size: 100%;
+  }
+
+  /* Confirms that a re-entered value is already present, by pointing at the
+   * one that is. Ends on its own; nothing at rest keeps animating. */
+  .stratum-tag-input__token[data-flash] {
+    animation: stratum-tag-input-flash var(--stratum-duration-2xl) var(--stratum-ease-out) 2;
+  }
+
+  @keyframes stratum-tag-input-flash {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 0 2px var(--stratum-accent); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-tag-input__token[data-flash] {
+      animation: none;
+      box-shadow: 0 0 0 2px var(--stratum-accent);
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-tag-input__control {
+      border-color: ButtonBorder;
+    }
+    .stratum-tag-input__control:focus-within,
+    .stratum-tag-input[data-invalid] .stratum-tag-input__control {
+      border-color: Highlight;
+    }
+    .stratum-tag-input__token[data-flash] {
+      animation: none;
+      outline: 2px solid Highlight;
+    }
+  }
+}

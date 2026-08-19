@@ -1,0 +1,315 @@
+@layer stratum.components {
+  .stratum-degradation-ladder {
+    --_marker: 9px;
+    --_spine: 20px;
+
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    font-size: var(--_fs);
+  }
+
+  .stratum-degradation-ladder[data-size='sm'] { --_fs: var(--stratum-text-2xs); --_gap: var(--stratum-space-3); }
+  .stratum-degradation-ladder[data-size='md'] { --_fs: var(--stratum-text-xs);  --_gap: var(--stratum-space-4); }
+
+  .stratum-degradation-ladder__list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .stratum-degradation-ladder__rung {
+    display: flex;
+    align-items: stretch;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+    padding-block: var(--_gap);
+    /* Default paint. Every rung starts in the unobserved vocabulary and has to
+     * earn anything stronger.
+     *
+     * THREE roles, not two. `--_fg` paints the state WORD and must clear
+     * SC 1.4.3's 4.5:1; `--_mark` paints the marker disc, a meaningful graphic
+     * that SC 1.4.11 puts at 3:1 and that looks anaemic at text contrast;
+     * `--_text` paints the rung label. Driving the word and the disc from one
+     * token is what left "in use" at 4.02:1 — green-600 is a fill colour. */
+    --_fg: var(--stratum-unknown-fg);
+    --_mark: var(--stratum-unknown);
+    --_text: var(--stratum-text-secondary);
+  }
+
+  /* -- Spine ----------------------------------------------------------------
+   * Marker plus the connecting rail. Built from flex children rather than
+   * absolute positioning so a rung with a long description stretches the rail
+   * automatically. */
+  .stratum-degradation-ladder__spine {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    width: var(--_spine);
+  }
+
+  .stratum-degradation-ladder__line {
+    flex: 1;
+    width: 1px;
+    min-height: var(--stratum-space-2);
+    background: var(--stratum-border);
+  }
+
+  .stratum-degradation-ladder__rung:first-child .stratum-degradation-ladder__line-in,
+  .stratum-degradation-ladder__rung:last-child .stratum-degradation-ladder__line-out {
+    background: transparent;
+  }
+
+  .stratum-degradation-ladder__marker {
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: var(--_marker);
+    height: var(--_marker);
+    margin-block: var(--stratum-space-1);
+    border-radius: var(--stratum-radius-full);
+    border: 1px solid transparent;
+    background: var(--_mark);
+    position: relative;
+  }
+
+  /* -- Body ------------------------------------------------------------------ */
+  .stratum-degradation-ladder__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+  }
+
+  .stratum-degradation-ladder__head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+  }
+
+  .stratum-degradation-ladder__rank {
+    flex-shrink: 0;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-degradation-ladder__label {
+    color: var(--_text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-degradation-ladder__state {
+    font-size: var(--stratum-text-2xs);
+    color: var(--_fg);
+  }
+
+  .stratum-degradation-ladder__preferred {
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-degradation-ladder__desc,
+  .stratum-degradation-ladder__reason {
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-subtle);
+  }
+
+  .stratum-degradation-ladder__reason {
+    font-style: italic;
+  }
+
+  .stratum-degradation-ladder__explicit {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--stratum-accent);
+    cursor: help;
+  }
+
+  /* "No strategy configured" is a fact the component is reporting, not an
+   * inactive control, so it does not get the sub-AA `text-disabled` token. */
+  .stratum-degradation-ladder__none {
+    margin: 0;
+    font-size: var(--stratum-text-2xs);
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Outcomes: shape first, colour second ---------------------------------
+   *   active        filled disc
+   *   rejected      ring with a slash        <- tried, and it did not work
+   *   unattempted   DASHED hollow ring       <- never reached; not evidence
+   *   unavailable   ring with a bar          <- known unusable, not a failure
+   */
+
+  /* active — healthy by default. Index 0 is normal operation, so nothing here
+   * signals a problem. */
+  .stratum-degradation-ladder__rung[data-active] {
+    --_fg: var(--stratum-success-fg);
+    --_mark: var(--stratum-success);
+    --_text: var(--stratum-text);
+  }
+  .stratum-degradation-ladder__rung[data-active] .stratum-degradation-ladder__label {
+    font-weight: var(--stratum-weight-medium);
+  }
+  /* A ring around the active marker so "this one" is legible without hue. */
+  .stratum-degradation-ladder__rung[data-active] .stratum-degradation-ladder__marker::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border: 1px solid var(--_mark);
+    border-radius: var(--stratum-radius-full);
+  }
+
+  /* An unrequested drop below the preferred rung — the ONLY case that warns. */
+  .stratum-degradation-ladder__rung[data-degraded] {
+    --_fg: var(--stratum-warning-fg);
+    --_mark: var(--stratum-warning);
+  }
+
+  /* Chosen on purpose: accent, not warning. This is a configuration, not an
+   * incident. */
+  .stratum-degradation-ladder__rung[data-active][data-explicit] {
+    --_fg: var(--stratum-accent-fg);
+    --_mark: var(--stratum-accent);
+  }
+
+  /* rejected — a real negative outcome, so it is allowed the danger role; but
+   * only the marker and the state word carry it, never the whole row. */
+  .stratum-degradation-ladder__rung[data-outcome='rejected'] {
+    --_fg: var(--stratum-danger-fg);
+    --_mark: var(--stratum-danger);
+  }
+  .stratum-degradation-ladder__rung[data-outcome='rejected'] .stratum-degradation-ladder__marker {
+    background: transparent;
+    border-color: var(--_mark);
+  }
+  .stratum-degradation-ladder__rung[data-outcome='rejected'] .stratum-degradation-ladder__marker::before {
+    content: '';
+    position: absolute;
+    inset-block: -1px;
+    inset-inline-start: 50%;
+    margin-inline-start: -0.5px;
+    width: 1px;
+    background: var(--_mark);
+    rotate: 45deg;
+  }
+
+  /* unattempted — dashed and hollow, the library's unobserved vocabulary.
+   * Deliberately NOT the rejected treatment: nothing was learned here. */
+  .stratum-degradation-ladder__rung[data-outcome='unattempted'] {
+    --_fg: var(--stratum-unknown-fg);
+    --_mark: var(--stratum-unknown);
+    --_text: var(--stratum-text-muted);
+  }
+  .stratum-degradation-ladder__rung[data-outcome='unattempted'] .stratum-degradation-ladder__marker {
+    background: transparent;
+    border-color: var(--_mark);
+    border-style: dashed;
+  }
+  .stratum-degradation-ladder__rung[data-outcome='unattempted'] .stratum-degradation-ladder__state {
+    font-style: italic;
+  }
+
+  /* unavailable — a settled negative: solid ring, horizontal bar. Neutral,
+   * because being switched off is not an error. */
+  .stratum-degradation-ladder__rung[data-outcome='unavailable'] {
+    --_fg: var(--stratum-text-muted);
+    --_mark: var(--stratum-text-muted);
+    --_text: var(--stratum-text-muted);
+  }
+  .stratum-degradation-ladder__rung[data-outcome='unavailable'] .stratum-degradation-ladder__marker {
+    background: transparent;
+    border-color: var(--_mark);
+  }
+  .stratum-degradation-ladder__rung[data-outcome='unavailable'] .stratum-degradation-ladder__marker::before {
+    content: '';
+    position: absolute;
+    inset-inline: 1px;
+    top: 50%;
+    height: 1px;
+    margin-top: -0.5px;
+    background: var(--_mark);
+  }
+
+  /* -- Horizontal ------------------------------------------------------------
+   * Same semantics, rotated. The rail runs between markers instead of through
+   * them, and rungs share the row width evenly. */
+  .stratum-degradation-ladder[data-orientation='horizontal'] .stratum-degradation-ladder__list {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+  .stratum-degradation-ladder[data-orientation='horizontal'] .stratum-degradation-ladder__rung {
+    flex: 1 1 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--stratum-space-2);
+    min-width: 0;
+    padding-block: 0;
+    padding-inline: var(--stratum-space-2);
+  }
+  .stratum-degradation-ladder[data-orientation='horizontal'] .stratum-degradation-ladder__spine {
+    flex-direction: row;
+    align-items: center;
+    width: auto;
+    height: var(--_spine);
+  }
+  .stratum-degradation-ladder[data-orientation='horizontal'] .stratum-degradation-ladder__line {
+    width: auto;
+    height: 1px;
+    min-height: 0;
+    min-width: var(--stratum-space-2);
+  }
+  .stratum-degradation-ladder[data-orientation='horizontal'] .stratum-degradation-ladder__marker {
+    margin-block: 0;
+    margin-inline: var(--stratum-space-1);
+  }
+
+  /* Under forced colours the OS discards our four hues, so the marker shapes
+   * and the state words are the whole signal — which is why they were built as
+   * four different shapes rather than four tints. */
+  @media (forced-colors: active) {
+    .stratum-degradation-ladder__marker {
+      background: CanvasText;
+      border-color: CanvasText;
+    }
+    .stratum-degradation-ladder__rung[data-outcome='unattempted'] .stratum-degradation-ladder__marker {
+      background: Canvas;
+      border-color: GrayText;
+      border-style: dashed;
+    }
+    .stratum-degradation-ladder__rung[data-outcome='rejected'] .stratum-degradation-ladder__marker,
+    .stratum-degradation-ladder__rung[data-outcome='unavailable'] .stratum-degradation-ladder__marker {
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-degradation-ladder__rung[data-outcome='rejected'] .stratum-degradation-ladder__marker::before,
+    .stratum-degradation-ladder__rung[data-outcome='unavailable'] .stratum-degradation-ladder__marker::before {
+      background: CanvasText;
+    }
+    .stratum-degradation-ladder__rung[data-active] .stratum-degradation-ladder__marker::after {
+      border-color: Highlight;
+    }
+    .stratum-degradation-ladder__label,
+    .stratum-degradation-ladder__state {
+      color: CanvasText;
+    }
+    .stratum-degradation-ladder__rung[data-outcome='unattempted'] .stratum-degradation-ladder__label,
+    .stratum-degradation-ladder__rung[data-outcome='unattempted'] .stratum-degradation-ladder__state,
+    .stratum-degradation-ladder__none,
+    .stratum-degradation-ladder__desc,
+    .stratum-degradation-ladder__reason,
+    .stratum-degradation-ladder__rank {
+      color: GrayText;
+    }
+    .stratum-degradation-ladder__line {
+      background: GrayText;
+    }
+  }
+}

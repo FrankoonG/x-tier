@@ -1,0 +1,252 @@
+@layer stratum.components {
+  .stratum-banner {
+    --_bg: var(--stratum-info-subtle);
+    --_fg: var(--stratum-text);
+    --_border: var(--stratum-info-border);
+    --_accent: var(--stratum-info);
+    --_icon: var(--stratum-info-fg);
+
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: start;
+    gap: var(--_gap-y) var(--_gap-x);
+    width: 100%;
+    padding: var(--_py) var(--_px);
+
+    color: var(--_fg);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    /* The tone is carried by a real border as well as by the fill, so it
+     * survives forced-colors and never depends on colour alone. */
+    border-inline-start: 3px solid var(--_accent);
+    border-radius: var(--stratum-radius-md);
+
+    transition: var(--stratum-transition-popover-enter), display allow-discrete;
+  }
+
+  /* A banner normally renders already-open, so its first computed style is
+   * `entered`; the starting style has to be attached to the bare selector. */
+  @starting-style {
+    .stratum-banner {
+      opacity: 0;
+      transform: translateY(calc(-1 * var(--stratum-lift-sm)));
+    }
+  }
+
+  .stratum-banner[data-state='exiting'] {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--stratum-lift-sm)));
+    transition: var(--stratum-transition-popover-exit);
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-banner[data-size='sm'] {
+    --_py: var(--stratum-space-4);
+    --_px: var(--stratum-space-5);
+    --_gap-x: var(--stratum-space-4);
+    --_gap-y: var(--stratum-space-2);
+    font-size: var(--stratum-text-xs);
+  }
+  .stratum-banner[data-size='md'] {
+    --_py: var(--stratum-space-6);
+    --_px: var(--stratum-space-7);
+    --_gap-x: var(--stratum-space-5);
+    --_gap-y: var(--stratum-space-2);
+    font-size: var(--stratum-text-sm);
+  }
+
+  /* Page-wide strip: no radius and no side borders, so it reads as part of
+   * the chrome rather than as a card that happens to be very wide. */
+  .stratum-banner[data-full-bleed] {
+    border-radius: 0;
+    border-inline-end: 0;
+    border-inline-start-width: 0;
+    border-block-start: 0;
+    box-shadow: inset 0 -1px 0 var(--_border);
+  }
+
+  /* -- Variants ------------------------------------------------------------ */
+  .stratum-banner[data-variant='info'] {
+    --_bg: var(--stratum-info-subtle);
+    --_border: var(--stratum-info-border);
+    --_accent: var(--stratum-info);
+    --_icon: var(--stratum-info-fg);
+  }
+  .stratum-banner[data-variant='success'] {
+    --_bg: var(--stratum-success-subtle);
+    --_border: var(--stratum-success-border);
+    --_accent: var(--stratum-success);
+    --_icon: var(--stratum-success-fg);
+  }
+  .stratum-banner[data-variant='warning'] {
+    --_bg: var(--stratum-warning-subtle);
+    --_border: var(--stratum-warning-border);
+    --_accent: var(--stratum-warning);
+    --_icon: var(--stratum-warning-fg);
+  }
+  .stratum-banner[data-variant='danger'] {
+    --_bg: var(--stratum-danger-subtle);
+    --_border: var(--stratum-danger-border);
+    --_accent: var(--stratum-danger);
+    --_icon: var(--stratum-danger-fg);
+  }
+  .stratum-banner[data-variant='neutral'] {
+    --_bg: var(--stratum-unknown-subtle);
+    --_border: var(--stratum-unknown-border);
+    --_accent: var(--stratum-unknown);
+    --_icon: var(--stratum-unknown-fg);
+  }
+  .stratum-banner[data-variant='accent'] {
+    --_bg: var(--stratum-accent-subtle);
+    --_border: var(--stratum-accent-border);
+    --_accent: var(--stratum-accent);
+    --_icon: var(--stratum-accent-fg);
+  }
+
+  /* -- Solid emphasis ------------------------------------------------------
+   * For the one banner on the page that must not be scrolled past. The
+   * foreground pairs are the `-on-solid` roles, which are placed against the
+   * saturated fill rather than against the surface.
+   */
+  .stratum-banner[data-emphasis='solid'] {
+    --_fg: var(--stratum-text-inverse);
+    --_border: transparent;
+    color: var(--_fg);
+  }
+  .stratum-banner[data-emphasis='solid'][data-variant='info'] {
+    --_bg: var(--stratum-info);
+    --_fg: var(--stratum-info-on-solid);
+    --_icon: var(--stratum-info-on-solid);
+  }
+  .stratum-banner[data-emphasis='solid'][data-variant='success'] {
+    --_bg: var(--stratum-success);
+    --_fg: var(--stratum-success-on-solid);
+    --_icon: var(--stratum-success-on-solid);
+  }
+  .stratum-banner[data-emphasis='solid'][data-variant='warning'] {
+    --_bg: var(--stratum-warning);
+    --_fg: var(--stratum-warning-on-solid);
+    --_icon: var(--stratum-warning-on-solid);
+  }
+  .stratum-banner[data-emphasis='solid'][data-variant='danger'] {
+    --_bg: var(--stratum-danger);
+    --_fg: var(--stratum-danger-on-solid);
+    --_icon: var(--stratum-danger-on-solid);
+  }
+  .stratum-banner[data-emphasis='solid'][data-variant='neutral'] {
+    --_bg: var(--stratum-surface-inverse);
+    --_fg: var(--stratum-text-inverse);
+    --_icon: var(--stratum-text-inverse);
+  }
+  .stratum-banner[data-emphasis='solid'][data-variant='accent'] {
+    --_bg: var(--stratum-accent);
+    --_fg: var(--stratum-accent-on-solid);
+    --_icon: var(--stratum-accent-on-solid);
+  }
+  .stratum-banner[data-emphasis='solid'] {
+    border-inline-start-color: transparent;
+  }
+
+  /* -- Parts --------------------------------------------------------------- */
+  .stratum-banner__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-block-start: 1px;
+    font-size: var(--stratum-text-lg);
+    color: var(--_icon);
+  }
+
+  .stratum-banner__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+  }
+
+  .stratum-banner__title {
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--_fg);
+  }
+
+  .stratum-banner__text {
+    line-height: var(--stratum-leading-snug);
+    color: var(--_fg);
+    opacity: 0.88;
+    overflow-wrap: anywhere;
+  }
+  .stratum-banner[data-emphasis='subtle'] .stratum-banner__text {
+    color: var(--stratum-text-secondary);
+    opacity: 1;
+  }
+
+  .stratum-banner__action {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    /* Aligns the action row with the first line of the title rather than the
+     * vertical centre of a multi-line body. */
+    margin-block-start: calc(-1 * var(--stratum-space-1));
+  }
+
+  .stratum-banner__dismiss {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    font-size: var(--stratum-text-md);
+    color: var(--_fg);
+    opacity: 0.7;
+    border-radius: var(--stratum-radius-sm);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-banner__dismiss:hover {
+    opacity: 1;
+    background: var(--stratum-surface-hover);
+  }
+  /* The reset paints every `svg` with `fill: currentColor`, which would turn
+   * this stroke-drawn cross into a filled shape. Scoped to the component's own
+   * glyph so a consumer-supplied filled `icon` is left alone. */
+  .stratum-banner__dismiss > svg {
+    fill: none;
+  }
+  .stratum-banner[data-emphasis='solid'] .stratum-banner__dismiss:hover {
+    /* A light hover plate would vanish on a saturated fill. */
+    background: transparent;
+    text-decoration: none;
+    outline: 1px solid currentColor;
+    outline-offset: -1px;
+  }
+
+  /* Narrow viewports: the action row drops under the text rather than
+   * squeezing the message to two words per line. A media query rather than a
+   * container query, because a container query cannot match the element that
+   * declares the container and this component ships without a wrapper. */
+  @media (max-width: 560px) {
+    .stratum-banner {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+    .stratum-banner__action {
+      grid-column: 2 / -1;
+      margin-block-start: var(--stratum-space-2);
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-banner {
+      background: Canvas;
+      color: CanvasText;
+      border-color: CanvasText;
+      border-inline-start-color: Highlight;
+    }
+    .stratum-banner__icon,
+    .stratum-banner__title,
+    .stratum-banner__text,
+    .stratum-banner__dismiss {
+      color: CanvasText;
+      opacity: 1;
+    }
+  }
+}

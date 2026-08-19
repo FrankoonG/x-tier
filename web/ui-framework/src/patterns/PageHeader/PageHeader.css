@@ -1,0 +1,112 @@
+@layer stratum.components {
+  .stratum-page-header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--_gap);
+    padding: var(--_py) var(--_px) 0;
+    background: var(--stratum-bg);
+  }
+
+  .stratum-page-header[data-size='sm'] {
+    --_gap: var(--stratum-space-3);
+    --_py: var(--stratum-space-6);
+    --_px: var(--stratum-space-8);
+    --_title: var(--stratum-text-md);
+  }
+  .stratum-page-header[data-size='md'] {
+    --_gap: var(--stratum-space-4);
+    --_py: var(--stratum-space-8);
+    --_px: var(--stratum-space-10);
+    --_title: var(--stratum-text-xl);
+  }
+
+  .stratum-page-header[data-sticky] {
+    position: sticky;
+    top: 0;
+    z-index: var(--stratum-z-sticky);
+    /* Opaque, not translucent: a blurred backdrop over a dense table is both
+     * expensive to composite and hard to read through. */
+    background: var(--stratum-bg);
+  }
+
+  .stratum-page-header__above {
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-page-header__row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--stratum-space-8);
+    min-width: 0;
+  }
+
+  .stratum-page-header__titles {
+    min-width: 0;
+  }
+
+  .stratum-page-header__title-line {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-5);
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .stratum-page-header__title {
+    font-size: var(--_title);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-page-header__meta {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+  }
+
+  .stratum-page-header__description {
+    margin-top: var(--stratum-space-2);
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-muted);
+    /* One line's worth. A longer explanation is page content, not chrome. */
+    max-width: 80ch;
+  }
+
+  .stratum-page-header__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    flex-shrink: 0;
+  }
+
+  .stratum-page-header__below {
+    margin-inline: calc(-1 * var(--_px));
+    padding-inline: var(--_px);
+    border-bottom: 1px solid var(--stratum-border);
+  }
+
+  /* Narrow screens: actions drop below the title rather than squeezing it. */
+  @container (max-width: 560px) {
+    .stratum-page-header__row {
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--stratum-space-5);
+    }
+    .stratum-page-header__actions {
+      justify-content: flex-end;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .stratum-page-header__below {
+      border-color: CanvasText;
+    }
+  }
+}

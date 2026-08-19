@@ -1,0 +1,185 @@
+@layer stratum.components {
+  .stratum-status-dot {
+    /* Retheming contract: a consumer recolours one instance by setting --_fg
+     * rather than fighting a selector. */
+    --_fg: var(--stratum-unknown);
+    --_ring: 1px;
+
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    /* Never stretches a table row: the dot is always exactly --_d tall. */
+    line-height: var(--stratum-leading-none);
+    vertical-align: middle;
+  }
+
+  .stratum-status-dot[data-size='xs'] { --_d: 6px;  --_fs: var(--stratum-text-2xs); }
+  .stratum-status-dot[data-size='sm'] { --_d: 8px;  --_fs: var(--stratum-text-2xs); }
+  .stratum-status-dot[data-size='md'] { --_d: 10px; --_fs: var(--stratum-text-xs); }
+  .stratum-status-dot[data-size='lg'] { --_d: 13px; --_fs: var(--stratum-text-sm); }
+
+  .stratum-status-dot__mark {
+    /* Positioned so it paints above the halo, which precedes it in the DOM.
+     * No z-index is used: a negative z-index child would drop behind the
+     * ancestor's background in most real table rows. */
+    position: relative;
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: var(--_d);
+    height: var(--_d);
+    border-radius: var(--stratum-radius-full);
+    background: var(--_fg);
+    /* Border stays transparent by default so the box size is identical for
+     * every status — a ring status must not shift the text beside it. */
+    border: var(--_ring) solid transparent;
+  }
+
+  .stratum-status-dot__label {
+    font-size: var(--_fs);
+    color: var(--stratum-text-secondary);
+    white-space: nowrap;
+  }
+
+  /* -- Status: colour AND shape -------------------------------------------- */
+
+  /* ok — filled disc. The only status that is a solid circle. */
+  .stratum-status-dot[data-status='ok'] { --_fg: var(--stratum-success); }
+
+  /* degraded — thick hollow ring. Reads as "present but hollowed out". */
+  .stratum-status-dot[data-status='degraded'] {
+    --_fg: var(--stratum-warning);
+  }
+  .stratum-status-dot[data-status='degraded'] .stratum-status-dot__mark {
+    background: transparent;
+    box-shadow: inset 0 0 0 2px var(--_fg);
+  }
+
+  /* failed — filled square. The silhouette differs at a glance, which is what
+   * keeps it separable from `ok` for a red/green-confused reader. */
+  .stratum-status-dot[data-status='failed'] {
+    --_fg: var(--stratum-danger);
+  }
+  .stratum-status-dot[data-status='failed'] .stratum-status-dot__mark {
+    border-radius: var(--stratum-radius-xs);
+  }
+
+  /* unknown — DASHED hollow ring. Deliberately unlike every observed state,
+   * including `failed`. "We did not look" must never render as "it is off". */
+  .stratum-status-dot[data-status='unknown'] {
+    --_fg: var(--stratum-unknown);
+  }
+  .stratum-status-dot[data-status='unknown'] .stratum-status-dot__mark {
+    background: transparent;
+    border-color: var(--_fg);
+    border-style: dashed;
+  }
+
+  /* inactive — thin SOLID hollow ring. A settled negative, not a missing
+   * reading: solid where `unknown` is dashed.
+   *
+   * The ring is a meaningful graphic and answers to SC 1.4.11's 3:1;
+   * `text-disabled` is neutral-400 at 2.52:1 and misses it. `text-muted` sits a
+   * step DARKER than the `unknown` grey, which is also the right reading: a
+   * settled negative is a stronger claim than an absent one. */
+  .stratum-status-dot[data-status='inactive'] {
+    --_fg: var(--stratum-text-muted);
+  }
+  .stratum-status-dot[data-status='inactive'] .stratum-status-dot__mark {
+    background: transparent;
+    border-color: var(--_fg);
+  }
+
+  /* pending — ring with a centre dot. Concentric reads as "in progress"
+   * without borrowing the dashed vocabulary of unobserved. */
+  .stratum-status-dot[data-status='pending'] {
+    --_fg: var(--stratum-info);
+  }
+  .stratum-status-dot[data-status='pending'] .stratum-status-dot__mark {
+    background: transparent;
+    border-color: var(--_fg);
+  }
+  .stratum-status-dot[data-status='pending'] .stratum-status-dot__mark::after {
+    content: '';
+    position: absolute;
+    inset: 22%;
+    border-radius: var(--stratum-radius-full);
+    background: var(--_fg);
+  }
+
+  /* -- Pulse ----------------------------------------------------------------
+   * A halo that expands and fades. It is absolutely positioned over the mark's
+   * slot and painted underneath it, so it never changes layout: a pulsing row
+   * is exactly as tall as a resting one. This is one of only two looping
+   * animations the framework ships. */
+  .stratum-status-dot__halo {
+    position: absolute;
+    inset-inline-start: 0;
+    top: 50%;
+    width: var(--_d);
+    height: var(--_d);
+    margin-top: calc(var(--_d) / -2);
+    border-radius: var(--stratum-radius-full);
+    background: var(--_fg);
+    /* Derived from the duration scale rather than inlined, so the loop period
+     * still responds to --stratum-motion-scale. 470ms * 3.83 ≈ 1800ms. */
+    animation: stratum-pulse-ring calc(var(--stratum-duration-2xl) * 3.83) var(--stratum-ease-out)
+      infinite;
+    pointer-events: none;
+  }
+  .stratum-status-dot[data-status='failed'] .stratum-status-dot__halo {
+    border-radius: var(--stratum-radius-xs);
+  }
+
+  /* A perpetual pulse is precisely what this preference exists to suppress.
+   * The dot keeps its shape and colour; only the loop stops, leaving a faint
+   * static halo so "this one is live" is still legible with no movement. */
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-status-dot__halo {
+      animation: none;
+      /* Expressed as a static SIZE rather than a transform, so nothing here is
+       * a movement the preference would have to be scaled out of. */
+      width: calc(var(--_d) * 1.8);
+      height: calc(var(--_d) * 1.8);
+      margin-top: calc(var(--_d) * -0.9);
+      margin-inline-start: calc(var(--_d) * -0.4);
+      opacity: 0.24;
+    }
+  }
+
+  /* Fills and shadows are discarded by the OS here, so every status has to be
+   * carried by border style and border width alone. */
+  @media (forced-colors: active) {
+    .stratum-status-dot__mark {
+      background: CanvasText;
+      border-color: CanvasText;
+    }
+    .stratum-status-dot[data-status='degraded'] .stratum-status-dot__mark {
+      background: Canvas;
+      border-width: 2px;
+      box-shadow: none;
+    }
+    .stratum-status-dot[data-status='unknown'] .stratum-status-dot__mark {
+      background: Canvas;
+      border-color: GrayText;
+      border-style: dashed;
+    }
+    .stratum-status-dot[data-status='inactive'] .stratum-status-dot__mark {
+      background: Canvas;
+      border-color: GrayText;
+    }
+    .stratum-status-dot[data-status='pending'] .stratum-status-dot__mark {
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-status-dot[data-status='pending'] .stratum-status-dot__mark::after {
+      background: CanvasText;
+    }
+    .stratum-status-dot__halo {
+      background: Highlight;
+    }
+    .stratum-status-dot__label {
+      color: CanvasText;
+    }
+  }
+}

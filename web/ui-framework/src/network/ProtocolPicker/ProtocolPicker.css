@@ -1,0 +1,131 @@
+@layer stratum.components {
+  .stratum-protocol-picker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-6);
+    min-width: 0;
+  }
+
+  .stratum-protocol-picker__picker {
+    min-width: 0;
+  }
+
+  /* Both pickers — the protocol selector and any `kind: 'select'` field — are
+   * the framework's <Select>. They are flattened into a seamless field inside
+   * the shared control shell rather than drawn as a bordered box inside another
+   * bordered box: the shell already owns the border, the validity colour, the
+   * disabled fill and the focus ring. `fullWidth` on the component fills the
+   * shell so its whole width is a click target.
+   *
+   * `block-size: auto` matters. Select's own step (26/32/38px) equals the
+   * shell's `min-height`, so an explicit height would push the border-box past
+   * the shell and grow the row by 2px, breaking alignment with an AddressInput
+   * or PortRangeInput sitting in the same form.
+   *
+   * Specificity is deliberate: Select's base rule collides with
+   * `.stratum-net-input` at (0,1,0) and its size rule sits at (0,2,0), so the
+   * attribute selector is what makes these win outright instead of on
+   * stylesheet order — which depends on import order and would flip. */
+  .stratum-protocol-picker__select[data-size] {
+    block-size: auto;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 0;
+    /* A protocol name is prose, not an identifier to compare glyph by glyph, so
+     * it keeps the sans face rather than `.stratum-net-input`'s mono. */
+    font-family: var(--stratum-font-sans);
+    line-height: var(--stratum-leading-tight);
+    cursor: pointer;
+  }
+  .stratum-protocol-picker__select[data-size]:disabled {
+    cursor: not-allowed;
+  }
+
+  /* The registry may supply an icon per protocol. Decorative only: the option
+   * label is the accessible name, so a missing or unrecognised icon costs
+   * nothing. */
+  .stratum-protocol-picker__icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--stratum-text-md);
+    color: var(--stratum-text-secondary);
+  }
+  .stratum-protocol-picker__icon > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  /* -- Declared fields ------------------------------------------------------ */
+  .stratum-protocol-picker__fields {
+    display: grid;
+    /* Two columns where there is room, one where there is not. Protocol
+     * settings are mostly short scalars, and a single 600px-wide column of
+     * them scans badly. */
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: var(--stratum-space-6) var(--stratum-space-8);
+
+    padding: var(--stratum-space-6);
+    background: var(--stratum-surface-sunken);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* Fields that need the room take the whole row rather than being squeezed
+   * next to a checkbox. */
+  .stratum-protocol-picker__field[data-kind='address'],
+  .stratum-protocol-picker__field[data-kind='ports'],
+  .stratum-protocol-picker__field[data-kind='secret'],
+  .stratum-protocol-picker__field[data-kind='custom'] {
+    grid-column: 1 / -1;
+  }
+
+  .stratum-protocol-picker__field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-2);
+    min-width: 0;
+  }
+
+  .stratum-protocol-picker__label {
+    display: flex;
+    align-items: baseline;
+    gap: var(--stratum-space-1);
+    font-size: var(--stratum-text-xs);
+    font-weight: var(--stratum-weight-medium);
+    color: var(--stratum-text-secondary);
+  }
+
+  /* The asterisk is decorative; the accessible name carries "(required)" as
+   * real text, because a bare `*` is announced as "star" or skipped entirely. */
+  .stratum-protocol-picker__required {
+    color: var(--stratum-danger);
+    line-height: 1;
+  }
+
+  /* This was a raw platform checkbox, kept on the argument that "a restyled
+   * checkbox has to reimplement indeterminate state, forced-colors and every
+   * platform focus convention, and gets at least one of them wrong". That
+   * argument would hold if it had to be reimplemented — but the library already
+   * ships `<Checkbox>`, which handles all three, so the only thing the native
+   * control bought here was an OS-shaped box with an OS check glyph and a
+   * hardcoded 15px size, sitting among fields that all look like Stratum.
+   * It now renders `<Checkbox>`; only the row metrics stay local. */
+  .stratum-protocol-picker__checkbox {
+    min-height: 26px;
+  }
+
+  @media (forced-colors: active) {
+    .stratum-protocol-picker__fields {
+      border-color: ButtonBorder;
+      background: Canvas;
+    }
+    .stratum-protocol-picker__required {
+      color: CanvasText;
+    }
+    .stratum-protocol-picker__icon {
+      color: CanvasText;
+    }
+  }
+}

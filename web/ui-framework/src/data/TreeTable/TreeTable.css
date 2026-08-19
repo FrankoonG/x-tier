@@ -1,0 +1,161 @@
+/* ---------------------------------------------------------------------------
+ * TreeTable — hierarchy drawn into the first column.
+ *
+ * Layers on top of Table.css, which supplies every shared class.
+ *
+ * THE CONTINUATION LINE PROBLEM
+ * -----------------------------
+ * Box-drawing characters tile perfectly in a terminal because a terminal's
+ * line height IS the em box. A table row is taller than that — it has vertical
+ * padding — so a column of `│` glyphs renders as a dashed line with a gap on
+ * every row, which reads as noise rather than structure.
+ *
+ * The fix keeps both properties. The character stays in the DOM, so selecting
+ * and copying rows still yields valid ASCII art, but for CONTINUATION slots it
+ * is painted transparent and the visible line is a hairline that spans the
+ * full cell box — including the padding — so consecutive rows meet exactly.
+ * Branch characters (`├` `└`) are rendered as glyphs, because their shape is
+ * the whole point and they only ever appear once per row.
+ * ------------------------------------------------------------------------- */
+@layer stratum.components {
+  .stratum-tree-table {
+    --stratum-tree-indent: 20px;
+    --_guide-color: var(--stratum-text-subtle);
+  }
+
+  .stratum-tree-table__tree-cell {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-1);
+    min-inline-size: 0;
+  }
+
+  .stratum-tree-table__guides {
+    display: flex;
+    align-items: stretch;
+    align-self: stretch;
+    flex: 0 0 auto;
+  }
+
+  .stratum-tree-table__guide {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    inline-size: var(--stratum-tree-indent);
+
+    /* Stretch to the flex line, then grow back OVER the cell's vertical
+     * padding with negative margins, so the rail reaches the row edges. */
+    align-self: stretch;
+    margin-block: calc(-1 * var(--_pad-block));
+
+    color: var(--_guide-color);
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-xs);
+    line-height: var(--stratum-leading-none);
+    white-space: pre;
+    user-select: none;
+  }
+
+  /* ------------------------------------------------------------------------
+   * guides="lines" (default)
+   *
+   * Every character is painted transparent and the connectors are drawn as
+   * hairlines instead. The glyphs stay in the DOM, so selecting rows and
+   * copying still yields `│  ├─ name` — the terminal artefact survives, but
+   * the rendering is continuous instead of dashed.
+   * --------------------------------------------------------------------- */
+  .stratum-tree-table[data-guides='lines'] .stratum-tree-table__guide {
+    color: transparent;
+  }
+
+  /* Rail: full height, so it meets the row above and the row below. */
+  .stratum-tree-table[data-guides='lines'] .stratum-tree-table__guide[data-rail]::before {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 50%;
+    inline-size: 1px;
+    translate: -50% 0;
+    background: var(--_guide-color);
+    opacity: 0.5;
+  }
+
+  /* Branch, vertical arm: down from the top to the row's middle. A row with
+   * siblings after it carries the line all the way through — that is the whole
+   * difference between `├` and `└`. */
+  .stratum-tree-table[data-guides='lines'] .stratum-tree-table__guide[data-branch]::before {
+    content: '';
+    position: absolute;
+    inset-block-start: 0;
+    inset-block-end: 50%;
+    inset-inline-start: 50%;
+    inline-size: 1px;
+    translate: -50% 0;
+    background: var(--_guide-color);
+    opacity: 0.5;
+  }
+  .stratum-tree-table[data-guides='lines']
+    .stratum-tree-table__guide[data-branch][data-continues]::before {
+    inset-block-end: 0;
+  }
+
+  /* Branch, horizontal arm: out to the trailing edge of the slot. */
+  .stratum-tree-table[data-guides='lines'] .stratum-tree-table__guide[data-branch]::after {
+    content: '';
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline: 50% 0;
+    block-size: 1px;
+    background: var(--_guide-color);
+    opacity: 0.5;
+  }
+
+  /* ------------------------------------------------------------------------
+   * guides="ascii" — the characters themselves.
+   *
+   * The FIRST character of the branch glyph is centred on the same axis as the
+   * rails above it. Anchoring the first character rather than centring the
+   * whole string keeps `├─` and a one-character override like `+` aligned.
+   * --------------------------------------------------------------------- */
+  .stratum-tree-table[data-guides='ascii'] .stratum-tree-table__guide[data-branch] {
+    justify-content: start;
+    padding-inline-start: calc(50% - 0.5ch);
+    overflow: visible;
+  }
+
+  .stratum-tree-table__twisty {
+    margin-inline-end: calc(-1 * var(--stratum-space-1));
+  }
+
+  .stratum-tree-table__label {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Depth is also carried by weight: a root row in a deep tree should be
+   * findable without counting indents. */
+  .stratum-tree-table .stratum-table__row[data-level='0'] .stratum-tree-table__label {
+    font-weight: var(--stratum-weight-medium);
+  }
+
+  @media (forced-colors: active) {
+    /* Author colours are discarded here, so the hairlines are restated in a
+     * system colour and the transparent glyphs are left transparent — letting
+     * the OS repaint them would double-draw every connector. */
+    .stratum-tree-table[data-guides='lines'] .stratum-tree-table__guide {
+      forced-color-adjust: none;
+      color: transparent;
+    }
+    .stratum-tree-table__guide::before,
+    .stratum-tree-table__guide::after {
+      background: GrayText;
+      opacity: 1;
+    }
+    .stratum-tree-table[data-guides='ascii'] .stratum-tree-table__guide {
+      color: GrayText;
+    }
+  }
+}

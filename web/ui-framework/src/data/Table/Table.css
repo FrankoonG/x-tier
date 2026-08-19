@@ -1,0 +1,564 @@
+/* ---------------------------------------------------------------------------
+ * The table family's shared stylesheet.
+ *
+ * Table, DataTable and TreeTable all render the same cell, header, checkbox
+ * and skeleton, so those classes are defined once here and every table in the
+ * family imports this file.
+ *
+ * TWO STRUCTURAL DECISIONS WORTH KNOWING
+ * --------------------------------------
+ * 1. `border-collapse: separate`. Collapsed borders are dropped by every
+ *    engine when a cell becomes `position: sticky`, so a pinned header loses
+ *    its underline exactly when it needs one most. Separate borders survive.
+ *
+ * 2. Row tint lives in a custom property (`--_row-bg`) rather than directly in
+ *    `background`. A pinned cell must be OPAQUE or the scrolling content shows
+ *    through it, but it must also show the row's zebra/hover/selected tint. It
+ *    gets both by painting the tint as a gradient image over an opaque
+ *    background colour, which composites correctly even when the tint is
+ *    semi-transparent — as the dark-theme selection colour is.
+ *
+ * NO TRANSITIONS ON ROWS. Hover feedback is instant. In a table of ten
+ * thousand rows a transition is a per-frame cost paid during exactly the
+ * interaction — scrolling — where the frame budget is already spent, and an
+ * immediate hover response reads as *more* responsive, not less.
+ * ------------------------------------------------------------------------- */
+@layer stratum.components {
+  .stratum-table {
+    /* Retheming hooks. A consumer can flatten the header onto a coloured panel
+     * with `--_head-bg: transparent` and never touch a selector. */
+    --_head-bg: var(--stratum-surface);
+    --_pinned-bg: var(--stratum-surface);
+
+    inline-size: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: var(--stratum-text-sm);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+    text-align: start;
+  }
+
+  /* -- Density -------------------------------------------------------------
+   * Only the padding changes. Font size stays put: shrinking type to gain
+   * density trades legibility for rows, and an operator reading a fault code
+   * at 2am needs the type. */
+  .stratum-table[data-density='compact'] {
+    --_pad-block: var(--stratum-space-1);
+    --_pad-inline: var(--stratum-space-4);
+  }
+  .stratum-table[data-density='default'] {
+    --_pad-block: var(--stratum-space-3);
+    --_pad-inline: var(--stratum-space-6);
+  }
+  .stratum-table[data-density='comfortable'] {
+    --_pad-block: var(--stratum-space-5);
+    --_pad-inline: var(--stratum-space-6);
+  }
+
+  .stratum-table[data-layout='fixed'] {
+    table-layout: fixed;
+  }
+
+  .stratum-table[data-bordered] {
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+  }
+
+  /* -- Caption -------------------------------------------------------------- */
+  .stratum-table__caption {
+    caption-side: top;
+    padding-block-end: var(--stratum-space-4);
+    color: var(--stratum-text-secondary);
+    font-size: var(--stratum-text-xs);
+    text-align: start;
+  }
+
+  /* -- Header --------------------------------------------------------------- */
+  .stratum-table__header-cell {
+    position: relative;
+    padding-block: var(--_pad-block);
+    padding-inline: var(--_pad-inline);
+    background: var(--_head-bg);
+    border-block-end: 1px solid var(--stratum-border);
+    color: var(--stratum-text-subtle);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: start;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  .stratum-table__header-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stratum-table[data-sticky-header] .stratum-table__header-cell {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--stratum-z-sticky);
+  }
+
+  /* -- Rows ----------------------------------------------------------------- */
+  .stratum-table__row {
+    --_row-bg: transparent;
+    background: var(--_row-bg);
+  }
+
+  .stratum-table[data-zebra] .stratum-table__body .stratum-table__row[data-row-index]:nth-child(even) {
+    --_row-bg: var(--stratum-surface-sunken);
+  }
+
+  /* Hover affordance only where a row actually does something. */
+  .stratum-table[data-interactive] .stratum-table__body .stratum-table__row[data-row-index] {
+    cursor: pointer;
+  }
+  .stratum-table[data-interactive] .stratum-table__body .stratum-table__row[data-row-index]:hover {
+    --_row-bg: var(--stratum-surface-hover);
+  }
+
+  .stratum-table__row[data-selected] {
+    --_row-bg: var(--stratum-selected-bg);
+  }
+  .stratum-table[data-interactive] .stratum-table__body .stratum-table__row[data-selected]:hover {
+    --_row-bg: var(--stratum-selected-bg-hover);
+  }
+
+  /* Selection is not carried by colour alone: the row checkbox is the primary
+   * signal and this rail is the second, for scanning a long selection. */
+  .stratum-table__row[data-selected] .stratum-table__cell:first-child {
+    box-shadow: inset 2px 0 0 0 var(--stratum-selected-border);
+  }
+
+  /* The row is the focus target, and the ring must not be clipped by the
+   * scroll container the consumer wraps us in — hence the inset offset. */
+  .stratum-table__row:focus-visible {
+    outline: var(--stratum-focus-ring-width) solid var(--stratum-focus-ring);
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+
+  /* -- Cells ---------------------------------------------------------------- */
+  .stratum-table__cell {
+    position: relative;
+    padding-block: var(--_pad-block);
+    padding-inline: var(--_pad-inline);
+    border-block-end: 1px solid var(--stratum-divider);
+    vertical-align: middle;
+    text-align: start;
+  }
+
+  .stratum-table[data-bordered] .stratum-table__cell:not(:last-child),
+  .stratum-table[data-bordered] .stratum-table__header-cell:not(:last-child) {
+    border-inline-end: 1px solid var(--stratum-divider);
+  }
+
+  .stratum-table__cell[data-align='center'],
+  .stratum-table__header-cell[data-align='center'] {
+    text-align: center;
+  }
+
+  /* End-aligned columns are numeric in practice, and a live-updating figure
+   * with proportional digits jitters horizontally on every poll. */
+  .stratum-table__cell[data-align='end'],
+  .stratum-table__header-cell[data-align='end'] {
+    text-align: end;
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  /* -- Pinned columns -------------------------------------------------------
+   * Offsets arrive from JS as `--_sticky-offset`; CSS cannot sum the widths of
+   * the columns before it. */
+  .stratum-table__cell[data-sticky],
+  .stratum-table__header-cell[data-sticky] {
+    position: sticky;
+    z-index: var(--stratum-z-raised);
+  }
+  .stratum-table__cell[data-sticky='start'],
+  .stratum-table__header-cell[data-sticky='start'] {
+    inset-inline-start: var(--_sticky-offset, 0);
+  }
+  .stratum-table__cell[data-sticky='end'],
+  .stratum-table__header-cell[data-sticky='end'] {
+    inset-inline-end: var(--_sticky-offset, 0);
+  }
+
+  /* Opaque base + tint layered on top. See the file header. */
+  .stratum-table__cell[data-sticky] {
+    background-color: var(--_pinned-bg);
+    background-image: linear-gradient(var(--_row-bg), var(--_row-bg));
+  }
+
+  /* A pinned header cell has to out-stack both the header and the pinned
+   * column, or it slides under one of them. */
+  .stratum-table[data-sticky-header] .stratum-table__header-cell[data-sticky] {
+    z-index: calc(var(--stratum-z-sticky) + 1);
+  }
+
+  /* The seam. Only on the last pinned column, so a run of three reads as one
+   * pinned block rather than three stripes. */
+  .stratum-table__cell[data-sticky-edge]::after,
+  .stratum-table__header-cell[data-sticky-edge]::after {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    inline-size: 1px;
+    background: var(--stratum-border);
+  }
+  .stratum-table__cell[data-sticky='start'][data-sticky-edge]::after,
+  .stratum-table__header-cell[data-sticky='start'][data-sticky-edge]::after {
+    inset-inline-end: 0;
+  }
+  .stratum-table__cell[data-sticky='end'][data-sticky-edge]::after,
+  .stratum-table__header-cell[data-sticky='end'][data-sticky-edge]::after {
+    inset-inline-start: 0;
+  }
+
+  /* -- Selection column -----------------------------------------------------
+   * Zero padding on the cell and all of it on the label, so the ENTIRE cell —
+   * padding included — activates the checkbox. A 14px box inside a 36px cell
+   * otherwise throws away a quarter of the clicks aimed at it. */
+  .stratum-table__select-cell {
+    inline-size: var(--stratum-table-select-w);
+    padding: 0;
+  }
+
+  /* Absolutely positioned rather than `block-size: 100%`: a percentage height
+   * inside a table cell resolves against the CELL's content box, not the row,
+   * so on any row made taller by another cell the label stopped short and the
+   * top and bottom strips of the cell went dead. Measured, not assumed —
+   * `elementFromPoint` at the cell corners returned the `<td>`. */
+  .stratum-table__select-hit {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  /* WCAG 2.2 SC 2.5.8. The painted box is 14px and the cell is 36px wide, so
+   * width is never the problem — but at `compact` density the row is about
+   * 22px tall and the pointer target loses on HEIGHT. This transparent outset
+   * belongs to the label, so a click on it still activates the checkbox, and
+   * it floors the target at 24px without moving a single pixel of paint. */
+  .stratum-table__select-hit::after {
+    content: '';
+    position: absolute;
+    inset-inline-start: 50%;
+    inset-block-start: 50%;
+    translate: -50% -50%;
+    inline-size: max(100%, var(--stratum-target-min));
+    block-size: max(100%, var(--stratum-target-min));
+  }
+
+  /* WCAG 2.2 SC 2.5.8 wants a 24x24 pointer target, but a dense table cannot
+   * spare a 24px-looking control on every row.
+   *
+   * A transparent `::after` outset — the usual trick — does NOT work here: a
+   * native checkbox is a replaced element and most engines do not render its
+   * pseudo-elements. So the element itself is 24x24 (a real target, which is
+   * what hit-testing and axe both measure) and the visible 14px box is drawn
+   * inside it with `appearance: none`.
+   *
+   * Drawing it also removes the platform inconsistency of `accent-color`,
+   * which renders at different sizes and corner radii per OS — not something a
+   * design system should leave to chance. */
+  /* SC 2.5.8 has a second half that the outset above does not satisfy: even a
+   * 24x24 target fails when a neighbouring target's centre sits closer than
+   * 24px. Row checkboxes stack vertically, so the spacing IS the row height,
+   * and at `compact` density the row lands around 20px.
+   *
+   * A `min-block-size` on the cell or on the label cannot fix it — the label
+   * is `position: absolute; inset: 0`, so it takes the row's height rather
+   * than setting it, and `min-height` on a `<td>` is not reliably honoured.
+   * The only lever that actually moves the row is the cell padding.
+   *
+   * So: raise the compact padding to the point where the row clears 24px, and
+   * only when the table actually has a selection column. A compact table
+   * without checkboxes has no stacked targets and stays fully dense. */
+  .stratum-table[data-density='compact']:has(.stratum-table__select-cell) {
+    --_pad-block: var(--stratum-space-2);
+  }
+
+  .stratum-table__checkbox {
+    --_box: 14px;
+    --_target: 24px;
+
+    appearance: none;
+    -webkit-appearance: none;
+    display: grid;
+    place-content: center;
+    inline-size: var(--_target);
+    block-size: var(--_target);
+    /* Collapse the extra target back out of the horizontal layout so the
+     * column keeps its width. Vertical margin is left alone — the cell floor
+     * above is what guarantees the 24px spacing. */
+    margin-inline: calc((var(--_target) - var(--_box)) / -2);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
+  /* Box and glyph share one grid cell so the mark sits centred on the box
+   * without either being positioned. */
+  .stratum-table__checkbox::before,
+  .stratum-table__checkbox::after {
+    grid-area: 1 / 1;
+    inline-size: var(--_box);
+    block-size: var(--_box);
+  }
+
+  .stratum-table__checkbox::before {
+    content: '';
+    border: 1px solid var(--stratum-border-strong);
+    border-radius: var(--stratum-radius-xs);
+    background: var(--stratum-surface);
+    transition: var(--stratum-transition-control);
+  }
+
+  /* The tick and the dash are a real MASK, painted with the on-solid token.
+   *
+   * They used to be `background-image` data URIs with `stroke='%23fff'` baked
+   * in, under a comment claiming they were masks that inherit the on-solid
+   * colour. They were not: an SVG loaded as an image is a separate document,
+   * so neither `currentColor` nor any custom property can reach inside it and
+   * the white was permanent. That looked right only because the shipped accent
+   * happens to be dark — retune `--stratum-accent` to a light hue and the tick
+   * would have vanished while `--stratum-accent-on-solid` flipped to dark.
+   *
+   * As a mask only the alpha channel is read, so the colour inside the data
+   * URI is arbitrary; it is opaque black purely because something has to be
+   * there. The paint comes from `background`. */
+  .stratum-table__checkbox::after {
+    content: '';
+    background: var(--stratum-accent-on-solid);
+    -webkit-mask: var(--_mark) center / contain no-repeat;
+    mask: var(--_mark) center / contain no-repeat;
+    opacity: 0;
+    transition: opacity var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+  .stratum-table__checkbox:checked::after,
+  .stratum-table__checkbox:indeterminate::after {
+    opacity: 1;
+  }
+
+  .stratum-table__checkbox:hover::before {
+    border-color: var(--stratum-accent);
+  }
+
+  .stratum-table__checkbox:checked::before,
+  .stratum-table__checkbox:indeterminate::before {
+    background: var(--stratum-accent);
+    border-color: var(--stratum-accent);
+  }
+
+  .stratum-table__checkbox:checked {
+    --_mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.3 2.3 4.7-4.8' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  .stratum-table__checkbox:indeterminate {
+    --_mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 6h6' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round'/%3E%3C/svg%3E");
+  }
+
+  .stratum-table__checkbox:disabled {
+    cursor: not-allowed;
+  }
+  .stratum-table__checkbox:disabled::before {
+    background: var(--stratum-surface-disabled);
+    border-color: var(--stratum-border);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-table__checkbox::before {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+    .stratum-table__checkbox:checked::before,
+    .stratum-table__checkbox:indeterminate::before {
+      background-color: Highlight;
+      border-color: Highlight;
+      forced-color-adjust: none;
+    }
+    /* The glyph is a masked background, so it is subject to the same forced
+     * colour substitution as the box behind it. Pinning it to HighlightText —
+     * the system's guaranteed-contrasting partner for Highlight — is what keeps
+     * the tick visible once the OS has repainted the box. */
+    .stratum-table__checkbox::after {
+      background: HighlightText;
+      forced-color-adjust: none;
+    }
+  }
+
+  /* -- Sort affordance (DataTable) ------------------------------------------ */
+  .stratum-table__sort-button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-2);
+    inline-size: 100%;
+    min-inline-size: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    text-align: inherit;
+    background: none;
+    border: 0;
+    border-radius: var(--stratum-radius-xs);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-table__sort-button:hover {
+    color: var(--stratum-text);
+  }
+  .stratum-table__sort-button:focus-visible {
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+
+  .stratum-table__sort-glyph {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-1);
+    flex-shrink: 0;
+    /* Unsorted columns keep their glyph reserved but quiet, so the header
+     * width never changes when a sort is applied. */
+    opacity: 0.35;
+  }
+  .stratum-table__sort-glyph[data-direction='asc'],
+  .stratum-table__sort-glyph[data-direction='desc'] {
+    opacity: 1;
+    color: var(--stratum-accent-fg);
+  }
+  .stratum-table__sort-button:hover .stratum-table__sort-glyph {
+    opacity: 1;
+  }
+
+  .stratum-table__sort-order {
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    line-height: 1;
+  }
+
+  /* -- Disclosure ------------------------------------------------------------ */
+  .stratum-table__disclosure {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    inline-size: 18px;
+    block-size: 18px;
+    padding: 0;
+    color: var(--stratum-text-muted);
+    background: none;
+    border: 0;
+    border-radius: var(--stratum-radius-xs);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+
+  /* WCAG 2.2 SC 2.5.8. An 18px twisty is a comfortable GLYPH and an
+   * uncomfortable TARGET. The outset is transparent and centred, so the button
+   * accepts a pointer over the full 24px while the triangle, its hover tint and
+   * its focus ring all stay at 18px — growing the button itself would push the
+   * tree label sideways on every row. */
+  .stratum-table__disclosure::after {
+    content: '';
+    position: absolute;
+    inset-inline-start: 50%;
+    inset-block-start: 50%;
+    translate: -50% -50%;
+    inline-size: max(100%, var(--stratum-target-min));
+    block-size: max(100%, var(--stratum-target-min));
+  }
+  .stratum-table__disclosure:hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-active);
+  }
+  .stratum-table__disclosure:focus-visible {
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+  .stratum-table__disclosure[data-hidden] {
+    visibility: hidden;
+  }
+
+  .stratum-table__disclosure-glyph {
+    display: inline-flex;
+    transition: rotate var(--stratum-duration-xs) var(--stratum-ease-out);
+  }
+  .stratum-table__disclosure-glyph[data-expanded] {
+    rotate: 90deg;
+  }
+
+  /* -- Empty ---------------------------------------------------------------- */
+  .stratum-table__empty {
+    padding-block: var(--stratum-space-16);
+    color: var(--stratum-text-muted);
+    text-align: center;
+  }
+
+  /* -- Skeleton -------------------------------------------------------------
+   * The sheen sweeps in one direction in both themes because the sheen token
+   * is always the lighter of the pair. Duration is derived from the motion
+   * scale rather than being a magic number, so reduced motion still governs
+   * it — and then removes it entirely below. */
+  .stratum-table__skeleton {
+    display: block;
+    block-size: 0.7em;
+    border-radius: var(--stratum-radius-xs);
+    background-color: var(--stratum-skeleton-base);
+    background-image: linear-gradient(
+      90deg,
+      var(--stratum-skeleton-base) 25%,
+      var(--stratum-skeleton-sheen) 37%,
+      var(--stratum-skeleton-base) 63%
+    );
+    background-size: 400% 100%;
+    animation: stratum-shimmer calc(var(--stratum-duration-2xl) * 3) var(--stratum-ease-linear)
+      infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stratum-table__skeleton {
+      animation: none;
+      background-image: none;
+    }
+    .stratum-table__disclosure-glyph {
+      transition: none;
+    }
+  }
+
+  /* -- Forced colours -------------------------------------------------------
+   * Fills and shadows are discarded by the OS, so every boundary that carries
+   * meaning here is restated as a real border. */
+  @media (forced-colors: active) {
+    .stratum-table__header-cell,
+    .stratum-table__cell[data-sticky] {
+      background: Canvas;
+    }
+    .stratum-table__cell,
+    .stratum-table__header-cell {
+      border-block-end-color: CanvasText;
+    }
+    .stratum-table__cell[data-sticky-edge]::after,
+    .stratum-table__header-cell[data-sticky-edge]::after {
+      background: CanvasText;
+    }
+    .stratum-table__row[data-selected] .stratum-table__cell {
+      border-block-end-color: Highlight;
+    }
+    .stratum-table__row[data-selected] .stratum-table__cell:first-child {
+      box-shadow: none;
+      border-inline-start: 2px solid Highlight;
+    }
+    .stratum-table__skeleton {
+      border: 1px solid GrayText;
+    }
+  }
+}

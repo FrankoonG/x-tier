@@ -1,0 +1,108 @@
+/* ---------------------------------------------------------------------------
+ * RESET
+ *
+ * Scoped into `stratum.reset`, the lowest layer, so consuming applications
+ * override anything here with plain unlayered CSS.
+ * ------------------------------------------------------------------------- */
+@layer stratum.reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  * {
+    margin: 0;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    tab-size: 4;
+  }
+
+  body {
+    min-height: 100dvh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Media defaults to block so it never sits on the text baseline. */
+  img, picture, video, canvas, svg {
+    display: block;
+    max-width: 100%;
+  }
+
+  svg {
+    flex-shrink: 0;
+  }
+  /* Icons inherit text colour by default. This is also what makes them
+   * survive dark-mode extensions — `currentColor` is substituted reliably
+   * where `var()` inside SVG paint is not.
+   *
+   * `:not([fill])` is load-bearing. A CSS declaration always beats a
+   * presentation attribute, so the previous unconditional rule silently
+   * overrode every `fill="none"` written on an <svg> root — and any stroked
+   * subpath with three or more points then rendered as a dark FILLED polygon,
+   * because the open area between its points inherited `currentColor`.
+   * Two-point strokes have zero area, which is why most icons looked fine and
+   * the bug hid for so long; chevrons and stroke-drawn marks did not. Scoping
+   * the default to svgs that declare no fill of their own keeps the icon
+   * behaviour and returns `fill="none"` to the author who wrote it. */
+  svg:not([fill]) {
+    fill: currentColor;
+  }
+
+  /* Form controls do not inherit typography by default in any engine. */
+  input, button, textarea, select {
+    font: inherit;
+    color: inherit;
+    letter-spacing: inherit;
+  }
+
+  button {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  /* Long identifiers — node IDs, base64 keys, hostnames — must not blow out a
+   * table cell. This is the single most common layout break in a network
+   * panel. */
+  p, h1, h2, h3, h4, h5, h6 {
+    overflow-wrap: break-word;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  ul, ol {
+    list-style: none;
+    padding: 0;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  table {
+    border-collapse: collapse;
+    border-spacing: 0;
+  }
+
+  /* Remove the default ring everywhere, then reinstate it for keyboard users
+   * only in base.css. Doing this in two steps — rather than `outline: none` at
+   * the component level — means a component that forgets to style focus still
+   * inherits a visible one. */
+  :focus {
+    outline: none;
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+}

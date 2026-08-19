@@ -1,0 +1,138 @@
+@layer stratum.components {
+  .stratum-reachability-badge {
+    /* Per-instance retheming contract.
+     *
+     * NOTE the absence of any status role in the defaults. Neither quality is
+     * a health verdict, so neither may borrow success, warning or danger. */
+    --_fg: var(--stratum-text-secondary);
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border);
+    --_border-style: solid;
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    max-width: 100%;
+    font-size: var(--_fs);
+    line-height: var(--stratum-leading-none);
+    white-space: nowrap;
+    color: var(--_fg);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-reachability-badge[data-size='sm'] {
+    --_py: 1px;
+    --_px: var(--stratum-space-3);
+    --_fs: var(--stratum-text-2xs);
+  }
+  .stratum-reachability-badge[data-size='md'] {
+    --_py: var(--stratum-space-1);
+    --_px: var(--stratum-space-4);
+    --_fs: var(--stratum-text-xs);
+  }
+
+  .stratum-reachability-badge[data-variant='badge'] {
+    padding: var(--_py) var(--_px);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-style: var(--_border-style);
+    border-radius: var(--stratum-radius-sm);
+  }
+
+  .stratum-reachability-badge[data-icon-only] {
+    gap: 0;
+  }
+
+  .stratum-reachability-badge__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 1.2em;
+  }
+
+  .stratum-reachability-badge__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: var(--stratum-weight-medium);
+  }
+
+  .stratum-reachability-badge__detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--stratum-font-mono);
+    font-size: var(--stratum-text-2xs);
+    font-variant-numeric: var(--stratum-numeric);
+    font-weight: var(--stratum-weight-normal);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- Quality --------------------------------------------------------------
+   * Two hues at the SAME severity temperature: neutral for direct,
+   * informational for mediated. The topology is carried by the icon; colour
+   * only helps you tell two chips apart in a list. */
+  .stratum-reachability-badge[data-quality='direct'] {
+    --_fg: var(--stratum-text);
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border-strong);
+  }
+
+  .stratum-reachability-badge[data-quality='mediated'] {
+    --_fg: var(--stratum-info-fg);
+    --_bg: var(--stratum-info-subtle);
+    --_border: var(--stratum-info-border);
+  }
+
+  .stratum-reachability-badge[data-quality='unknown'] {
+    --_fg: var(--stratum-unknown-fg);
+    --_bg: var(--stratum-unknown-subtle);
+    --_border: var(--stratum-unknown-border);
+  }
+
+  /* A KNOWN transport whose directness was never measured. The mode is a solid
+   * fact, so its name is rendered at full strength; only the icon reports that
+   * the path is undetermined. Dimming the whole chip here would quietly
+   * downgrade something we do know on the strength of something we do not. */
+  .stratum-reachability-badge[data-quality='unknown'][data-resolved] {
+    --_fg: var(--stratum-text-secondary);
+    --_bg: var(--stratum-surface-sunken);
+    --_border: var(--stratum-border);
+  }
+
+  /* -- Resolution -----------------------------------------------------------
+   * Independent of quality. Only a completely absent mode gets the dashed,
+   * italic unobserved treatment; a named transport whose directness was not
+   * measured keeps full-strength text and merely shows the undetermined-path
+   * icon. Two unknowns, two channels, never collapsed into one. */
+  .stratum-reachability-badge:not([data-resolved]) {
+    --_bg: transparent;
+    --_border-style: dashed;
+  }
+  .stratum-reachability-badge:not([data-resolved]) .stratum-reachability-badge__label {
+    font-weight: var(--stratum-weight-normal);
+    font-style: italic;
+  }
+
+  /* Colour is discarded here, so the icon topology and the border style are
+   * the whole signal — which is why they were built to differ. */
+  @media (forced-colors: active) {
+    .stratum-reachability-badge {
+      color: CanvasText;
+    }
+    .stratum-reachability-badge[data-variant='badge'] {
+      background: Canvas;
+      border-color: CanvasText;
+    }
+    .stratum-reachability-badge[data-quality='unknown'],
+    .stratum-reachability-badge:not([data-resolved]) {
+      color: GrayText;
+    }
+    .stratum-reachability-badge:not([data-resolved])[data-variant='badge'] {
+      border-color: GrayText;
+      border-style: dashed;
+    }
+    .stratum-reachability-badge__detail {
+      color: GrayText;
+    }
+  }
+}

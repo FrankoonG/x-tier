@@ -1,0 +1,88 @@
+@layer stratum.components {
+  .stratum-form-grid {
+    --_cols: 2;
+
+    display: grid;
+    gap: var(--_row-gap) var(--_gap);
+    min-width: 0;
+
+    /* Establishes a query container for descendants — FormActions stacking,
+     * anything a consumer writes. The grid cannot query itself, which is why
+     * its own track count is intrinsic rather than breakpoint-driven. */
+    container-type: inline-size;
+    container-name: stratum-form;
+
+    /* Reads as: never narrower than --_min, never wider than one of --_cols
+     * equal columns, and never wider than the container itself.
+     *
+     *   min(100%, …)  a container narrower than one column collapses to one
+     *                 full-width track instead of overflowing.
+     *   max(--_min, …) below the width where --_cols columns each stay at
+     *                 least --_min wide, a column is dropped.
+     *   (100% - gaps) / --_cols
+     *                 the exact width of one column at the declared count, so
+     *                 the grid never exceeds it however wide the container is.
+     *
+     * auto-FILL rather than auto-fit: a form with one field in a two-column
+     * grid should leave the second column empty, not stretch the field across
+     * the whole row. */
+    grid-template-columns: repeat(
+      auto-fill,
+      minmax(
+        min(
+          100%,
+          max(var(--_min), (100% - (var(--_cols) - 1) * var(--_gap)) / var(--_cols))
+        ),
+        1fr
+      )
+    );
+  }
+
+  /* Belt and braces for a span wider than the columns on screen: any implicit
+   * track it forces is pinned to zero width, so the worst case is one dead gap
+   * rather than a grid pushed past its container. It is also what lets the
+   * track measurement in FormGrid.tsx tell an implicit track from a real one. */
+  .stratum-form-grid {
+    grid-auto-columns: 0;
+  }
+
+  .stratum-form-grid[data-columns='1'] { --_cols: 1; }
+  .stratum-form-grid[data-columns='2'] { --_cols: 2; }
+  .stratum-form-grid[data-columns='3'] { --_cols: 3; }
+
+  /* No declared ceiling: fit as many --_min columns as the container allows. */
+  .stratum-form-grid[data-columns='auto'] {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--_min)), 1fr));
+  }
+
+  /* Rows sit one step further apart than columns. A form scans vertically, so
+   * the extra separation is what keeps a label attached to its own control
+   * rather than to the one above it. */
+  .stratum-form-grid[data-gap='none'] {
+    --_gap: var(--stratum-space-0);
+    --_row-gap: var(--stratum-space-0);
+  }
+  .stratum-form-grid[data-gap='sm'] {
+    --_gap: var(--stratum-space-6);
+    --_row-gap: var(--stratum-space-8);
+  }
+  .stratum-form-grid[data-gap='md'] {
+    --_gap: var(--stratum-space-8);
+    --_row-gap: var(--stratum-space-12);
+  }
+  .stratum-form-grid[data-gap='lg'] {
+    --_gap: var(--stratum-space-12);
+    --_row-gap: var(--stratum-space-16);
+  }
+
+  .stratum-form-grid__item {
+    min-width: 0;
+    grid-column: span var(--_span, 1);
+  }
+
+  /* `1 / -1` is safe with auto-fill because auto-filled tracks belong to the
+   * explicit grid, so -1 is the last line that exists at the current width. */
+  .stratum-form-grid__item[data-span='full'] {
+    grid-column: 1 / -1;
+  }
+}

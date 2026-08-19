@@ -1,0 +1,114 @@
+@layer stratum.components {
+  .stratum-range-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+  }
+
+  .stratum-range-list__row {
+    align-items: flex-start;
+  }
+  .stratum-range-list__row .stratum-row-list__reorder,
+  .stratum-range-list__row .stratum-row-list__actions,
+  .stratum-range-list__row .stratum-row-list__index {
+    margin-block-start: var(--stratum-space-1);
+  }
+
+  /* An overlap is not an error by default, so it gets the warning edge and
+   * keeps the field at its normal treatment — the value is well formed. */
+  .stratum-range-list__row[data-overlap] {
+    border-color: var(--stratum-warning-border);
+  }
+  .stratum-range-list__row[data-invalid] {
+    border-color: var(--stratum-danger-border);
+  }
+
+  /* Bounds are compared glyph by glyph, so the field is monospace with tabular
+   * figures — 8000-8100 and 8000-8010 must not look alike at a glance. */
+  .stratum-range-list__input {
+    font-family: var(--stratum-font-mono);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+
+  .stratum-range-list__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--stratum-space-2) var(--stratum-space-6);
+  }
+
+  .stratum-range-list__total {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--stratum-space-2) var(--stratum-space-4);
+    margin: 0;
+    font-size: var(--stratum-text-2xs);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-range-list__total-value {
+    color: var(--stratum-text-secondary);
+    font-variant-numeric: var(--stratum-numeric);
+  }
+  /* Uncountable is not zero. The italic sans face carries that on its own, so
+   * the reader does not have to notice a colour difference to see it. */
+  .stratum-range-list__total-value[data-unobserved] {
+    font-style: italic;
+    color: var(--stratum-text-muted);
+  }
+
+  /* The comparison scope. Two identical ranges may or may not conflict, and the
+   * operator cannot tell which without knowing what they are compared within. */
+  .stratum-range-list__scope::before {
+    content: '·';
+    margin-inline-end: var(--stratum-space-2);
+  }
+
+  .stratum-range-list__excluded {
+    color: var(--stratum-warning-fg);
+  }
+
+  .stratum-range-list__merge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    font-size: var(--stratum-text-2xs);
+  }
+
+  .stratum-range-list__merge-hint {
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-range-list__merge-button {
+    min-height: var(--stratum-target-min);
+    padding-inline: var(--stratum-space-4);
+    color: var(--stratum-accent-fg);
+    background: transparent;
+    border: 1px solid var(--stratum-accent-border);
+    border-radius: var(--stratum-radius-sm);
+    font-size: var(--stratum-text-2xs);
+    font-weight: var(--stratum-weight-medium);
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-range-list__merge-button:hover {
+    background: var(--stratum-accent-subtle);
+    border-color: var(--stratum-accent);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-range-list__row[data-invalid] {
+      border-width: 2px;
+      border-style: double;
+    }
+    .stratum-range-list__row[data-overlap] {
+      border-style: dashed;
+    }
+    .stratum-range-list__merge-button {
+      color: ButtonText;
+      border-color: ButtonBorder;
+    }
+  }
+}

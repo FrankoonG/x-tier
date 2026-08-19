@@ -1,0 +1,196 @@
+@layer stratum.components {
+  .stratum-card {
+    /* The styling contract. Rethemeing one card means setting these, not
+     * out-specifying the selectors below. */
+    --_bg: var(--stratum-surface-elevated);
+    --_border: var(--stratum-border);
+    --_shadow: var(--stratum-shadow-sm);
+    --_radius: var(--stratum-radius-lg);
+
+    position: relative;
+    display: block;
+    min-inline-size: 0;
+
+    color: var(--stratum-text);
+    background: var(--_bg);
+    border: 1px solid var(--_border);
+    border-radius: var(--_radius);
+    box-shadow: var(--_shadow);
+  }
+
+  /* -- Padding scale --------------------------------------------------------
+   * Declared on the root so every section inherits one value, and re-declared
+   * per section so a table body can drop to zero without the header moving. */
+  .stratum-card[data-padding='none'] { --_pad: var(--stratum-space-0); }
+  .stratum-card[data-padding='xs']   { --_pad: var(--stratum-space-4); }
+  .stratum-card[data-padding='sm']   { --_pad: var(--stratum-space-6); }
+  .stratum-card[data-padding='md']   { --_pad: var(--stratum-space-8); }
+  .stratum-card[data-padding='lg']   { --_pad: var(--stratum-space-12); }
+
+  /* -- Variants ------------------------------------------------------------- */
+  .stratum-card[data-variant='outlined'] {
+    --_bg: var(--stratum-surface);
+    --_shadow: none;
+  }
+
+  .stratum-card[data-variant='ghost'] {
+    --_bg: transparent;
+    --_border: transparent;
+    --_shadow: none;
+  }
+
+  /* -- Fill -----------------------------------------------------------------
+   * The scroll lives on the body, never on the card: an outline on a control
+   * in the header must not be clipped by the scroll box. `min-block-size: 0`
+   * on both is what lets a flex child actually shrink instead of overflowing. */
+  .stratum-card[data-fill] {
+    display: flex;
+    flex-direction: column;
+    block-size: 100%;
+    min-block-size: 0;
+    overflow: hidden;
+  }
+  .stratum-card[data-fill] > .stratum-card__body {
+    flex: 1 1 auto;
+    min-block-size: 0;
+  }
+  .stratum-card[data-fill] > .stratum-card__header,
+  .stratum-card[data-fill] > .stratum-card__footer {
+    flex: 0 0 auto;
+  }
+
+  /* -- Header ---------------------------------------------------------------- */
+  .stratum-card__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--stratum-space-8);
+    padding: var(--_pad);
+  }
+
+  .stratum-card__header[data-divider] {
+    border-block-end: 1px solid var(--stratum-divider);
+  }
+
+  .stratum-card__header-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-inline-size: 0;
+  }
+
+  .stratum-card__title {
+    font-size: var(--stratum-text-md);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-tight);
+    color: var(--stratum-text);
+  }
+
+  .stratum-card__description {
+    font-size: var(--stratum-text-xs);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text-muted);
+  }
+
+  .stratum-card__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    flex: 0 0 auto;
+  }
+
+  /* -- Body ------------------------------------------------------------------ */
+  .stratum-card__body {
+    padding: var(--_pad);
+    min-inline-size: 0;
+  }
+
+  /* A scrolling body hands its padding to the scroll content, so the last row
+   * keeps its breathing room at the bottom of the scroll instead of the
+   * padding sitting outside the clip and vanishing. */
+  .stratum-card__body[data-scroll] {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    padding: 0;
+  }
+
+  .stratum-card__body[data-scroll] > .stratum-card__scroll {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    /* Cards sit on the elevated surface, so the edge fade has to match it. */
+    --_fade-color: var(--stratum-surface-elevated);
+  }
+
+  .stratum-card[data-variant='outlined'] > .stratum-card__body > .stratum-card__scroll,
+  .stratum-card[data-variant='ghost'] > .stratum-card__body > .stratum-card__scroll {
+    --_fade-color: var(--stratum-surface);
+  }
+
+  /* Child combinators the whole way down, so this reaches the card's OWN scroll
+   * area and nothing else. With a descendant combinator it also matched every
+   * nested ScrollArea — a Snippet inside a scrolling card body — where `--_pad`
+   * then resolved against whichever ancestor happened to declare it and stacked
+   * a second padding on top of the nested component's own.
+   * ScrollArea renders root > __viewport > __content as direct children. */
+  .stratum-card__body[data-scroll]
+    > .stratum-card__scroll
+    > .stratum-scroll-area__viewport
+    > .stratum-scroll-area__content {
+    padding: var(--_pad);
+  }
+
+  /* -- Footer ---------------------------------------------------------------- */
+  .stratum-card__footer {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    padding: var(--_pad);
+  }
+
+  .stratum-card__footer[data-divider] {
+    border-block-start: 1px solid var(--stratum-divider);
+  }
+
+  .stratum-card__footer[data-align='start']   { justify-content: flex-start; }
+  .stratum-card__footer[data-align='center']  { justify-content: center; }
+  .stratum-card__footer[data-align='end']     { justify-content: flex-end; }
+  .stratum-card__footer[data-align='between'] { justify-content: space-between; }
+
+  /* -- Per-section padding override ------------------------------------------
+   * Set on the section itself so it beats the value inherited from the root. */
+  .stratum-card__header[data-padding='none'],
+  .stratum-card__body[data-padding='none'],
+  .stratum-card__footer[data-padding='none'] { --_pad: var(--stratum-space-0); }
+
+  .stratum-card__header[data-padding='xs'],
+  .stratum-card__body[data-padding='xs'],
+  .stratum-card__footer[data-padding='xs'] { --_pad: var(--stratum-space-4); }
+
+  .stratum-card__header[data-padding='sm'],
+  .stratum-card__body[data-padding='sm'],
+  .stratum-card__footer[data-padding='sm'] { --_pad: var(--stratum-space-6); }
+
+  .stratum-card__header[data-padding='md'],
+  .stratum-card__body[data-padding='md'],
+  .stratum-card__footer[data-padding='md'] { --_pad: var(--stratum-space-8); }
+
+  .stratum-card__header[data-padding='lg'],
+  .stratum-card__body[data-padding='lg'],
+  .stratum-card__footer[data-padding='lg'] { --_pad: var(--stratum-space-12); }
+
+  /* Forced colours: the elevated variant's boundary is carried by a shadow,
+   * which the OS discards. The border below is what keeps the card's edge
+   * visible; the ghost variant deliberately keeps none, because it has no
+   * visible edge in normal rendering either. */
+  @media (forced-colors: active) {
+    .stratum-card[data-variant='elevated'],
+    .stratum-card[data-variant='outlined'] {
+      border-color: CanvasText;
+    }
+    .stratum-card__header[data-divider],
+    .stratum-card__footer[data-divider] {
+      border-color: CanvasText;
+    }
+  }
+}

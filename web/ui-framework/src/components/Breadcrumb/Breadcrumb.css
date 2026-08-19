@@ -1,0 +1,214 @@
+@layer stratum.components {
+  .stratum-breadcrumb {
+    --_fs: var(--stratum-text-sm);
+    --_gap: var(--stratum-space-2);
+    --_px: var(--stratum-space-3);
+    --_h: 24px;
+
+    display: block;
+    min-width: 0;
+    font-size: var(--_fs);
+  }
+
+  .stratum-breadcrumb[data-size='sm'] {
+    --_fs: var(--stratum-text-xs);
+    --_gap: var(--stratum-space-1);
+    --_px: var(--stratum-space-2);
+    --_h: 20px;
+  }
+
+  .stratum-breadcrumb__list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--_gap);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .stratum-breadcrumb__item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--_gap);
+    min-width: 0;
+  }
+
+  .stratum-breadcrumb__separator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--stratum-text-subtle);
+    font-size: 0.9em;
+  }
+  .stratum-breadcrumb__separator > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  .stratum-breadcrumb__link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    max-width: 22ch;
+    height: var(--_h);
+    padding-inline: var(--_px);
+    font: inherit;
+    color: var(--stratum-text-muted);
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    text-decoration: none;
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+
+  /* Keyed off the modifier classes rather than off `a`/`button`, so a consumer
+   * rendering a router link through `item.render` keeps the affordance. */
+  .stratum-breadcrumb__link:not(.stratum-breadcrumb__link--current):not(
+      .stratum-breadcrumb__link--static
+    ):hover {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+
+  /* The current page is text, not a link, so it must not offer link
+   * affordances — no pointer, no hover fill, no tab stop. */
+  .stratum-breadcrumb__link--current,
+  .stratum-breadcrumb__link--static {
+    color: var(--stratum-text);
+    font-weight: var(--stratum-weight-medium);
+    cursor: default;
+  }
+
+  .stratum-breadcrumb__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stratum-breadcrumb__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 1.1em;
+    color: var(--stratum-text-subtle);
+  }
+  .stratum-breadcrumb__icon > svg {
+    width: 1em;
+    height: 1em;
+  }
+
+  /* -- Overflow trigger ------------------------------------------------------ */
+  .stratum-breadcrumb__overflow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--_h);
+    height: var(--_h);
+    padding: 0;
+    color: var(--stratum-text-muted);
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-breadcrumb__overflow:hover,
+  .stratum-breadcrumb__overflow[aria-expanded='true'] {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-active);
+  }
+  .stratum-breadcrumb__overflow > svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* -- Overflow menu --------------------------------------------------------- */
+  .stratum-breadcrumb__menu {
+    z-index: var(--stratum-z-popover);
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-px);
+    min-width: 160px;
+    max-width: 320px;
+    max-height: var(--_max-h, 320px);
+    overflow-y: auto;
+    padding: var(--stratum-space-2);
+    background: var(--stratum-surface-elevated);
+    border: 1px solid var(--stratum-border);
+    border-radius: var(--stratum-radius-md);
+    box-shadow: var(--stratum-shadow-lg);
+
+    opacity: 1;
+    translate: 0 0;
+    transition: var(--stratum-transition-popover-enter);
+  }
+
+  @starting-style {
+    .stratum-breadcrumb__menu[data-state='entering'] {
+      opacity: 0;
+      translate: 0 calc(-1 * var(--stratum-lift-sm));
+    }
+  }
+
+  .stratum-breadcrumb__menu[data-state='exiting'] {
+    opacity: 0;
+    translate: 0 calc(-1 * var(--stratum-lift-sm));
+    transition: var(--stratum-transition-popover-exit);
+    /* usePresence keeps the menu mounted for the whole exit transition, so
+     * without this a click aimed at the page underneath — or a second click on
+     * the item that just closed the menu — still lands on a crumb and
+     * navigates. `pointer-events` rather than `inert`, for the reason spelled
+     * out on `.stratum-popover[data-state='exiting']`. */
+    pointer-events: none;
+  }
+
+  .stratum-breadcrumb__menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--stratum-space-3);
+    width: 100%;
+    padding: var(--stratum-space-3) var(--stratum-space-4);
+    font: inherit;
+    font-size: var(--stratum-text-sm);
+    text-align: start;
+    text-decoration: none;
+    color: var(--stratum-text-secondary);
+    background: transparent;
+    border: 0;
+    border-radius: var(--stratum-radius-sm);
+    cursor: pointer;
+    transition: var(--stratum-transition-control);
+  }
+  .stratum-breadcrumb__menu-item:hover,
+  .stratum-breadcrumb__menu-item:focus-visible {
+    color: var(--stratum-text);
+    background: var(--stratum-surface-hover);
+  }
+  /* The menu is a scroll container, so an outset ring would be clipped. */
+  .stratum-breadcrumb__menu-item:focus-visible {
+    outline-offset: calc(-1 * var(--stratum-focus-ring-width));
+  }
+
+  @media (forced-colors: active) {
+    .stratum-breadcrumb__link {
+      color: LinkText;
+    }
+    .stratum-breadcrumb__link--current,
+    .stratum-breadcrumb__link--static {
+      color: CanvasText;
+    }
+    .stratum-breadcrumb__menu {
+      border-color: CanvasText;
+    }
+    .stratum-breadcrumb__menu-item:hover,
+    .stratum-breadcrumb__menu-item:focus-visible {
+      color: HighlightText;
+      background: Highlight;
+    }
+  }
+}

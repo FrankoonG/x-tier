@@ -1,0 +1,16 @@
+/* ---------------------------------------------------------------------------
+ * The hiding itself lives on `.stratum-visually-hidden` in styles/base.css,
+ * where it is also available as a bare utility class. This file adds only what
+ * the component contributes on top of it.
+ *
+ * `focusable` (the skip-link pattern) needs no rule here. base.css hides the
+ * element unless the element ITSELF is focused, which never fires for a skip
+ * link — focus lands on the `<a>` inside, not on the wrapper — so the base
+ * selector carries a `:not([data-focusable]:focus-within)` exclusion instead.
+ * Suppressing the hiding at the selector is what makes the reveal complete: an
+ * override rule in this layer could only restore the properties it explicitly
+ * named, and anything it missed (`padding` and `border` did get missed) would
+ * stay forced on the revealed link, leaving it with no hit area beyond its own
+ * glyphs. With the base rule simply not matching, the consumer's padding,
+ * border and every other declaration apply untouched.
+ * ------------------------------------------------------------------------- */

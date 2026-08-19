@@ -1,0 +1,327 @@
+/* ---------------------------------------------------------------------------
+ * MOTION TOKENS
+ *
+ * The motion language is inherited from hy2scale, whose animation was the best
+ * thing about it. What changes is the mechanism, not the feel.
+ *
+ * WHAT IS INHERITED (values, verbatim)
+ * ------------------------------------
+ *   - Signature curve `cubic-bezier(0.16, 1, 0.3, 1)` — a hard expo-out. It
+ *     covers ~80% of its distance in the first third of its duration, which
+ *     is why hy2scale's modals felt immediate despite running 470ms.
+ *   - The 470ms modal / 270ms opacity split, and every other place where
+ *     OPACITY IS DELIBERATELY FASTER THAN TRANSFORM. This is the single
+ *     highest-value detail in the original: the element is fully visible while
+ *     still settling, so it reads as "arrived" long before it stops moving.
+ *     Reversing it (slow fade, fast move) feels sluggish at identical
+ *     durations. Encoded here as explicit -enter/-exit token pairs so it
+ *     cannot be lost by accident.
+ *   - The spring feel of `stiffness: 300, damping: 30`, reproduced exactly as
+ *     a CSS `linear()` easing sampled from the real damped-oscillator
+ *     solution rather than eyeballed.
+ *
+ * WHAT CHANGES (mechanism)
+ * ------------------------
+ * hy2scale drove all of this through framer-motion. That cost 29-42 KB gzip
+ * and forced three workarounds that are visible in its source:
+ *   - Modal.tsx:38-48  a 500ms setTimeout plus direct DOM mutation, to work
+ *                      around AnimatePresence capturing the tree at exit.
+ *   - Modal.tsx:132    `count.current++` during render — unsafe under React's
+ *                      concurrent double-invoke.
+ *   - TreeTable.tsx:114 AnimatePresence wrapping <tbody>, whose only direct
+ *                      child is the always-present tbody, so row exit
+ *                      animations never actually ran.
+ * None of those problems exist in CSS, because CSS has no concept of an exit
+ * snapshot: `@starting-style` and `transition-behavior: allow-discrete`
+ * (Baseline since 2024-08) animate elements in and out of the DOM natively.
+ * The library's `useReducedMotion()` is also non-reactive — it snapshots at
+ * mount — which is a real defect in a panel left open for hours. A media
+ * query has no such problem.
+ *
+ * REDUCED MOTION: REDUCE, DO NOT REMOVE
+ * -------------------------------------
+ * Blanket `animation: none` is the wrong reading of the preference. It
+ * destroys the state-change feedback that dense operator UIs depend on, and
+ * users who set it for vestibular reasons object to large TRANSLATION and
+ * SCALE, not to a 120ms fade. So three independent multipliers are exposed:
+ *   --stratum-motion-scale     durations         1 -> 0.5
+ *   --stratum-motion-distance  translate amounts 1 -> 0
+ *   --stratum-motion-zoom      scale amounts     1 -> 0
+ * Fades survive at half duration; movement stops entirely. Components must
+ * multiply their translate/scale values by these rather than hardcoding.
+ * ------------------------------------------------------------------------- */
+@layer stratum.tokens {
+  :root {
+    /* -- Multipliers (see header) ------------------------------------------ */
+    --stratum-motion-scale: 1;
+    --stratum-motion-distance: 1;
+    --stratum-motion-zoom: 1;
+
+    /* -- Durations ----------------------------------------------------------
+     * Ceiling is 470ms. The design brief's rule — ordinary interactions under
+     * 300ms, complex transitions under 500ms — is a hard bound, not a target.
+     */
+    --stratum-duration-0:    0ms;
+    --stratum-duration-2xs:  calc(80ms  * var(--stratum-motion-scale));
+    --stratum-duration-xs:   calc(120ms * var(--stratum-motion-scale));
+    --stratum-duration-sm:   calc(150ms * var(--stratum-motion-scale));
+    --stratum-duration-md:   calc(200ms * var(--stratum-motion-scale));
+    --stratum-duration-lg:   calc(250ms * var(--stratum-motion-scale));
+    --stratum-duration-xl:   calc(320ms * var(--stratum-motion-scale));
+    --stratum-duration-2xl:  calc(470ms * var(--stratum-motion-scale));
+
+    /* Spring settle times, matched to the linear() curves below. */
+    --stratum-duration-spring:        calc(480ms * var(--stratum-motion-scale));
+    --stratum-duration-spring-snappy: calc(363ms * var(--stratum-motion-scale));
+    --stratum-duration-spring-gentle: calc(577ms * var(--stratum-motion-scale));
+    /* Release of a direct-manipulation gesture. See --stratum-ease-settle. */
+    --stratum-duration-settle:        calc(420ms * var(--stratum-motion-scale));
+
+    /* -- Easing -------------------------------------------------------------- */
+
+    /* The signature. Everything that enters uses this unless it has a reason
+     * not to. Inherited unchanged from hy2scale. */
+    --stratum-ease-signature: cubic-bezier(0.16, 1, 0.3, 1);
+
+    /* Standard set. `in` for things leaving (accelerate away), `out` for
+     * things arriving (decelerate in), `in-out` for things moving between two
+     * on-screen states. */
+    --stratum-ease-linear:  linear;
+    --stratum-ease-in:      cubic-bezier(0.4, 0, 1, 1);
+    --stratum-ease-out:     cubic-bezier(0, 0, 0.2, 1);
+    --stratum-ease-in-out:  cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Emphasised — a longer tail, for transitions that carry meaning rather
+     * than just acknowledging input. */
+    --stratum-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+
+    /* Springs, sampled from the exact damped-oscillator solution
+     *   x(t) = 1 - e^(-zw0 t)(cos(wd t) + (zw0/wd) sin(wd t))
+     * so the overshoot is real physics, not a hand-tuned approximation.
+     * Pair each with its matching --stratum-duration-spring* value. */
+
+    /* stiffness 300, damping 30 — hy2scale's PageTransition / Modal body. */
+    --stratum-ease-spring: linear(
+      0, 0.0425, 0.1415, 0.2652, 0.3935, 0.5145, 0.6218, 0.7129, 0.7876,
+      0.8471, 0.8932, 0.928, 0.9536, 0.9719, 0.9846, 0.9932, 0.9986, 1.0018,
+      1.0035, 1.0042, 1.0043, 1.004, 1.0035, 1.003, 1.0024, 1.0019, 1.0015
+    );
+
+    /* stiffness 500, damping 35 — hy2scale's table rows. Tighter, with a
+     * visible ~1.9% overshoot. */
+    --stratum-ease-spring-snappy: linear(
+      0, 0.0413, 0.14, 0.2663, 0.3999, 0.5278, 0.6423, 0.7399, 0.8197,
+      0.8824, 0.9299, 0.9644, 0.9883, 1.0038, 1.013, 1.0177, 1.0192, 1.0187,
+      1.0169, 1.0146, 1.012, 1.0095, 1.0072, 1.0053, 1.0037, 1.0024, 1.0015
+    );
+
+    /* stiffness 210, damping 24 — for large surfaces where the snappier
+     * springs read as nervous. */
+    --stratum-ease-spring-gentle: linear(
+      0, 0.0433, 0.1447, 0.2723, 0.405, 0.5303, 0.6411, 0.7347, 0.8108,
+      0.8705, 0.9158, 0.9491, 0.9727, 0.9887, 0.999, 1.0052, 1.0084, 1.0096,
+      1.0095, 1.0087, 1.0076, 1.0063, 1.005, 1.0039, 1.0029, 1.0021, 1.0015
+    );
+
+    /* Damping ratio 0.55 — the release of a direct-manipulation gesture, where
+     * the rebound has to be SEEN rather than merely be correct.
+     *
+     * The three springs above are all near-critically damped: the snappiest of
+     * them peaks at 1.0192, so it returns 1.9% of the travel as overshoot. That
+     * is right for a panel resizing, where a visible bounce would look unserious
+     * — but a dropped row's leftover distance is only a few pixels, and 1.9% of
+     * a few pixels is less than one. Measured on an 11.5px drop: 0.22px of
+     * rebound, i.e. none, which is why a settle that was working still read as
+     * "the animation was removed".
+     *
+     * This one peaks at 1.1253 — 12.5% — crossing its target at ~162ms and
+     * peaking at ~210ms. On the same 11.5px drop that is a 1.4px overshoot over
+     * two frames: small, but on the right side of the perceptual floor, which
+     * the others were not. Same physics, same sampling, lower damping. */
+    --stratum-ease-settle: linear(
+      0, 0.0352, 0.1256, 0.2506, 0.3926, 0.5377, 0.6752, 0.7981, 0.9019,
+      0.9848, 1.0468, 1.0892, 1.1144, 1.1253, 1.1249, 1.1163, 1.1021, 1.0849,
+      1.0666, 1.0486, 1.0322, 1.0179, 1.0063, 0.9973, 0.9908, 0.9867, 1
+    );
+
+    /* -- Paired enter/exit recipes ------------------------------------------
+     * The opacity-faster-than-transform rule, made structural. Use the -enter
+     * pair on the open state and the -exit pair on @starting-style / the
+     * closed state.
+     */
+
+    /* Overlays: dialog, drawer. 470/270 — hy2scale Modal, verbatim.
+     *
+     * EXIT IS SYMMETRIC WITH ENTER, AND THAT IS DELIBERATE.
+     * framer-motion applies one `transition` prop to `animate` AND `exit`
+     * alike, so hy2scale's modal left on exactly the curve and durations it
+     * arrived on. An earlier revision of this file invented a shorter
+     * `ease-in` exit instead, which was wrong twice over: `ease-in` starts
+     * almost stationary, so the panel barely moved for the first third of its
+     * travel, and a 150ms opacity leg made it fully transparent while still
+     * near full size — you never saw it collapse, only a slow fade of a
+     * motionless box. The signature curve does the opposite: ~80% of the
+     * distance in the first third, so the panel reads as gone in ~160ms even
+     * though the animation runs 470ms. That is what makes the long duration
+     * feel snappy rather than sluggish.
+     */
+    --stratum-transition-overlay-enter:
+      transform var(--stratum-duration-2xl) var(--stratum-ease-signature),
+      opacity   var(--stratum-duration-lg)  var(--stratum-ease-out);
+    --stratum-transition-overlay-exit:
+      transform var(--stratum-duration-2xl) var(--stratum-ease-signature),
+      opacity   var(--stratum-duration-lg)  var(--stratum-ease-out);
+
+    /* Popovers: tooltip, menu, select. 250/150 — hy2scale Tooltip, verbatim.
+     * Symmetric for the same reason as the overlay pair above. */
+    --stratum-transition-popover-enter:
+      transform var(--stratum-duration-lg) var(--stratum-ease-signature),
+      opacity   var(--stratum-duration-sm) var(--stratum-ease-out);
+    --stratum-transition-popover-exit:
+      transform var(--stratum-duration-lg) var(--stratum-ease-signature),
+      opacity   var(--stratum-duration-sm) var(--stratum-ease-out);
+
+    /* Control feedback: hover, press, focus. Fast enough to feel like the
+     * control itself rather than an animation of it. */
+    --stratum-transition-control:
+      background-color var(--stratum-duration-2xs) var(--stratum-ease-out),
+      border-color     var(--stratum-duration-2xs) var(--stratum-ease-out),
+      color            var(--stratum-duration-2xs) var(--stratum-ease-out),
+      box-shadow       var(--stratum-duration-2xs) var(--stratum-ease-out);
+
+    /* Focus ring only. Never transition `outline-offset` alone — it reads as
+     * a wobble on keyboard traversal. */
+    --stratum-transition-focus:
+      outline-color var(--stratum-duration-2xs) var(--stratum-ease-out);
+
+    /* Size changes driven by measurement (accordion, modal body). */
+    --stratum-transition-size:
+      height    var(--stratum-duration-spring) var(--stratum-ease-spring),
+      max-height var(--stratum-duration-spring) var(--stratum-ease-spring);
+
+    /* -- Movement amounts ---------------------------------------------------
+     * Multiplied by --stratum-motion-distance / -zoom so reduced-motion
+     * collapses them to zero while durations merely halve.
+     */
+    --stratum-lift-xs:  calc(2px  * var(--stratum-motion-distance));
+    --stratum-lift-sm:  calc(4px  * var(--stratum-motion-distance));
+    --stratum-lift-md:  calc(8px  * var(--stratum-motion-distance));
+    --stratum-lift-lg:  calc(16px * var(--stratum-motion-distance));
+    --stratum-slide:    calc(20px * var(--stratum-motion-distance));
+
+    /* Scale origins. 0.96 for popovers; 0.15 is hy2scale's dramatic modal
+     * zoom, preserved because the origin-tracking makes it read as the dialog
+     * growing out of the button that opened it. */
+    --stratum-zoom-subtle: calc(1 - 0.04 * var(--stratum-motion-zoom));
+    --stratum-zoom-pop:    calc(1 - 0.40 * var(--stratum-motion-zoom));
+    --stratum-zoom-modal:  calc(1 - 0.85 * var(--stratum-motion-zoom));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --stratum-motion-scale: 0.5;
+      --stratum-motion-distance: 0;
+      --stratum-motion-zoom: 0;
+    }
+  }
+
+  /* Anomaly signalling. Per the design brief: the normal state stays calm and
+   * only the abnormal state is conspicuous. These are the ONLY looping
+   * animations the framework ships, and both stop entirely under reduced
+   * motion, since a perpetual pulse is exactly what that preference is for. */
+  @keyframes stratum-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+  @keyframes stratum-pulse-ring {
+    0%   { transform: scale(1);   opacity: 0.55; }
+    70%  { transform: scale(2.2); opacity: 0; }
+    100% { transform: scale(2.2); opacity: 0; }
+  }
+  @keyframes stratum-spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes stratum-shimmer {
+    from { background-position: 200% 0; }
+    to   { background-position: -200% 0; }
+  }
+  /* Edge flow on the topology graph. Communicates direction of traffic, so it
+   * runs only on links that are actually carrying data.
+   *
+   * ONE DASH PERIOD PER CYCLE — this is the whole contract.
+   *
+   * The offset travelled must equal exactly one `stroke-dasharray` period
+   * (dash + gap), for two reasons. It makes the loop seamless: after one cycle
+   * every dash has advanced into the position its neighbour just left, so the
+   * restart is invisible. And it makes the duration MEAN something — the
+   * animation-duration is the time for one dash step, which is the only
+   * quantity a caller can reason about.
+   *
+   * An earlier revision hardcoded `-1000` against a 20-unit dash period, so
+   * each cycle marched 50 periods. The busiest edge ran at roughly 40 dash
+   * steps per second: fast enough to strobe, and the reviewer read it as
+   * refresh-rate dependent because a 240Hz display resolves that motion while
+   * a 60Hz one aliases it into a stutter. It was never rate dependent — CSS
+   * animations are driven by time — it was simply 50x too fast.
+   *
+   * INVARIANT: `--stratum-flow-step` must equal the sum of the dash pattern in
+   * use. Change one and you must change the other, or the loop develops a
+   * visible jump on every restart.
+   *
+   * WHY THE KEYFRAME ANIMATES A NUMBER AND NOT `stroke-dashoffset` DIRECTLY.
+   *
+   * The obvious spelling is `to { stroke-dashoffset: calc(-1 * var(--stratum-flow-step)) }`.
+   * It is also silently broken. An unregistered custom property is a
+   * substitution value: it is not resolved until used, so at keyframe-
+   * interpolation time the engine has an untyped token stream rather than a
+   * length, cannot interpolate it, and falls back to DISCRETE animation. The
+   * property then flips from `0` to `-20` at the halfway point and back — and
+   * because that jump is exactly one dash period, every dash lands where its
+   * neighbour was and the line looks completely, perfectly frozen. The
+   * animation reports `playState: running` the whole time, which is what makes
+   * this so hard to see. Measured: 2 distinct computed values over 22 samples,
+   * against 22 for a literal keyframe.
+   *
+   * Registering `--stratum-flow-step` with `@property` does NOT fix it — tested,
+   * still 2 values — because the substitution still happens inside the keyframe.
+   *
+   * So the keyframe animates a registered `<number>` between two literals, which
+   * interpolates, and the consumer derives the real offset from it. That keeps
+   * `--stratum-flow-step` a live knob: a consumer can set a 36-unit period with
+   * `stroke-dasharray: 12 24` and the motion stays smooth. */
+  @property --stratum-flow-pos {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0;
+  }
+  @keyframes stratum-flow {
+    /* Unitless, matching the unitless `stroke-dasharray` — both are SVG user
+     * units, so they stay in step under any viewBox scale. One whole period. */
+    to { --stratum-flow-pos: -1; }
+  }
+
+  /* Path draw. Consumers set --stratum-path-len per edge; the total draw time
+   * across a whole multi-hop path stays constant regardless of hop count,
+   * which is how hy2scale made a 5-hop path feel as responsive as a 1-hop.
+   *
+   * Same substitution trap as the flow keyframe above, and it was there too:
+   * `from { stroke-dashoffset: var(--stratum-path-len, 1000) }` made the draw
+   * discrete, so a path snapped into existence at the midpoint instead of
+   * drawing. Driven by a registered number for the same reason. */
+  @property --stratum-draw-pos {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0;
+  }
+  @keyframes stratum-draw {
+    from { --stratum-draw-pos: 1; }
+    to   { --stratum-draw-pos: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --stratum-anim-pulse: none;
+      --stratum-anim-flow: none;
+    }
+  }
+}

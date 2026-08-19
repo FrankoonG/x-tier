@@ -1,0 +1,39 @@
+@layer stratum.components {
+  .stratum-address-input {
+    min-width: 0;
+  }
+
+  /* An address is compared glyph by glyph, so it inherits the shared mono
+   * treatment from `.stratum-net-input` and additionally opts out of the
+   * ligature substitution some mono faces apply to `::` — a rendered `∷` is
+   * not something an operator can copy back into a config file. */
+  .stratum-address-input__control .stratum-net-input {
+    font-variant-ligatures: none;
+    letter-spacing: 0.01em;
+  }
+
+  /* The detected shape. Sits between the value and the validity mark so the
+   * eye reads value → interpretation → verdict in one pass. */
+  .stratum-address-input__kind {
+    text-transform: none;
+  }
+
+  /* A CIDR block whose host bits are set is valid input describing something
+   * other than what it looks like (`10.1.2.3/24` is the `10.1.2.0/24` network).
+   * That is a warning, never an error — refusing it would block a legitimate
+   * way of writing "this host, in this prefix". */
+  .stratum-address-input[data-validity='warning'] .stratum-address-input__kind {
+    border-color: var(--stratum-warning-border);
+    color: var(--stratum-warning-fg);
+    background: var(--stratum-warning-subtle);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-address-input[data-validity='warning'] .stratum-address-input__kind {
+      border-style: dashed;
+      border-color: CanvasText;
+      background: Canvas;
+      color: CanvasText;
+    }
+  }
+}

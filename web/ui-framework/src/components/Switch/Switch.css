@@ -1,0 +1,206 @@
+@layer stratum.components {
+  .stratum-switch {
+    /* Geometry. The travel is derived rather than hardcoded, so retheming the
+     * track width automatically keeps the thumb inside it. */
+    --_track-w: 34px;
+    --_track-h: 20px;
+    --_thumb: 14px;
+    --_pad: 2px;
+    /* Track border width. The travel below subtracts it, so a thicker border
+     * (the invalid state) shortens the travel instead of overshooting it. */
+    --_track-bw: 1px;
+    --_font: var(--stratum-text-sm);
+
+    --_track-bg: var(--stratum-border);
+    --_track-border: var(--stratum-border-strong);
+    --_thumb-bg: var(--stratum-surface);
+    --_dir: 1;
+
+    display: inline-flex;
+    align-items: center;
+    gap: var(--stratum-space-4);
+    min-width: 0;
+    font-size: var(--_font);
+    line-height: var(--stratum-leading-snug);
+    color: var(--stratum-text);
+  }
+
+  /* Physical direction of the thumb's travel follows writing direction. */
+  .stratum-switch:dir(rtl) {
+    --_dir: -1;
+  }
+
+  .stratum-switch[data-label-placement='start'] {
+    flex-direction: row-reverse;
+  }
+
+  .stratum-switch[data-block] {
+    align-items: flex-start;
+  }
+
+  /* -- Size ---------------------------------------------------------------- */
+  .stratum-switch[data-size='sm'] {
+    --_track-w: 28px;
+    --_track-h: 16px;
+    --_thumb: 12px;
+    --_font: var(--stratum-text-xs);
+  }
+  .stratum-switch[data-size='md'] {
+    --_track-w: 34px;
+    --_track-h: 20px;
+    --_thumb: 14px;
+    --_font: var(--stratum-text-sm);
+  }
+
+  /* -- Control ------------------------------------------------------------- */
+  .stratum-switch__control {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    /* The button box is grown to a 24px minimum target (SC 2.5.8) while the
+     * painted track keeps its own smaller size. */
+    min-height: 24px;
+    padding-block: var(--stratum-space-1);
+    border-radius: var(--stratum-radius-full);
+    cursor: pointer;
+  }
+
+  .stratum-switch__track {
+    position: relative;
+    display: block;
+    width: var(--_track-w);
+    height: var(--_track-h);
+    background: var(--_track-bg);
+    border: var(--_track-bw) solid var(--_track-border);
+    border-radius: var(--stratum-radius-full);
+    transition: var(--stratum-transition-control);
+  }
+
+  .stratum-switch__thumb {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-start: var(--_pad);
+    width: var(--_thumb);
+    height: var(--_thumb);
+    background: var(--_thumb-bg);
+    border-radius: var(--stratum-radius-full);
+    box-shadow: var(--stratum-shadow-sm);
+    /* Travel is (track − thumb − both paddings − both borders). The border term
+     * has to follow --_track-bw: with border-box sizing an invalid switch has a
+     * 2px border, so a hardcoded 2px here overshoots by 2px and drives the thumb
+     * into the track's inline-end edge. */
+    --_travel: calc(var(--_track-w) - var(--_thumb) - 2 * var(--_pad) - 2 * var(--_track-bw));
+    translate: 0 -50%;
+    transition:
+      translate var(--stratum-duration-sm) var(--stratum-ease-signature),
+      background-color var(--stratum-duration-2xs) var(--stratum-ease-out);
+  }
+
+  .stratum-switch[data-state='checked'] .stratum-switch__thumb {
+    /* NOT multiplied by --stratum-motion-distance: this offset encodes state,
+     * not decoration. Reduced motion halves the duration instead. */
+    translate: calc(var(--_travel) * var(--_dir)) -50%;
+  }
+
+  .stratum-switch[data-state='checked'] {
+    --_track-bg: var(--stratum-accent);
+    --_track-border: var(--stratum-accent);
+    --_thumb-bg: var(--stratum-accent-on-solid);
+  }
+
+  .stratum-switch:not([data-disabled]) .stratum-switch__control:hover .stratum-switch__track {
+    border-color: var(--stratum-accent);
+  }
+  .stratum-switch[data-state='checked']:not([data-disabled])
+    .stratum-switch__control:hover
+    .stratum-switch__track {
+    background: var(--stratum-accent-hover);
+    border-color: var(--stratum-accent-hover);
+  }
+
+  /* -- Text ---------------------------------------------------------------- */
+  .stratum-switch__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--stratum-space-1);
+    min-width: 0;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .stratum-switch__description {
+    font-size: var(--stratum-text-xs);
+    color: var(--stratum-text-muted);
+  }
+
+  /* -- States -------------------------------------------------------------- */
+  /* Invalid is doubled up as a ring rather than expressed by hue alone. */
+  .stratum-switch[data-invalid] {
+    --_track-border: var(--stratum-danger);
+    --_track-bw: 2px;
+  }
+  .stratum-switch[data-invalid][data-state='checked'] {
+    --_track-bg: var(--stratum-danger);
+  }
+
+  .stratum-switch[data-disabled] {
+    --_track-bg: var(--stratum-surface-disabled);
+    --_track-border: var(--stratum-border);
+    --_thumb-bg: var(--stratum-text-disabled);
+    color: var(--stratum-text-disabled);
+  }
+  .stratum-switch[data-disabled][data-state='checked'] {
+    --_track-bg: var(--stratum-text-disabled);
+    --_track-border: var(--stratum-text-disabled);
+    --_thumb-bg: var(--stratum-surface);
+  }
+  .stratum-switch[data-disabled] .stratum-switch__control,
+  .stratum-switch[data-disabled] .stratum-switch__text {
+    cursor: not-allowed;
+  }
+  .stratum-switch[data-disabled] .stratum-switch__thumb {
+    box-shadow: none;
+  }
+  /* The label inherits `--stratum-text-disabled` from the root above — it names
+   * a genuinely disabled control, which WCAG 1.4.3 exempts. The description
+   * does not: it is ordinary content, and on a disabled switch it is the only
+   * place the real state can be stated ("remote state unobserved"). Painting
+   * it at 2.52:1 hid exactly the sentence the operator needed. `text-subtle`
+   * stays a step quieter than the enabled `text-muted` and still clears
+   * 4.5:1 — 5.06:1 in light, 5.08:1 in dark. */
+  .stratum-switch[data-disabled] .stratum-switch__description {
+    color: var(--stratum-text-subtle);
+  }
+
+  /* Forced colours drop the fill, so on/off has to survive on border and thumb
+   * colour alone — hence a solid thumb painted in a system colour. */
+  @media (forced-colors: active) {
+    .stratum-switch__track {
+      background: ButtonFace;
+      border-color: ButtonBorder;
+    }
+    .stratum-switch__thumb {
+      background: ButtonText;
+    }
+    .stratum-switch[data-state='checked'] .stratum-switch__track {
+      background: Highlight;
+      border-color: Highlight;
+    }
+    .stratum-switch[data-state='checked'] .stratum-switch__thumb {
+      background: HighlightText;
+    }
+    .stratum-switch[data-disabled] {
+      color: GrayText;
+    }
+    .stratum-switch[data-disabled] .stratum-switch__track {
+      background: ButtonFace;
+      border-color: GrayText;
+    }
+    .stratum-switch[data-disabled] .stratum-switch__thumb {
+      background: GrayText;
+    }
+    .stratum-switch[data-disabled] .stratum-switch__description {
+      color: GrayText;
+    }
+  }
+}
