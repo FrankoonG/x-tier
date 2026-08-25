@@ -2,9 +2,11 @@ package xraycarrier
 
 import (
 	"context"
+	"errors"
 	"net"
+	"sync"
 
-	rendrxray "github.com/FrankoonG/rendr/xray"
+	"github.com/FrankoonG/x-tier/internal/xrayrt"
 	"github.com/xtls/xray-core/app/dispatcher"
 	"github.com/xtls/xray-core/app/proxyman"
 	"github.com/xtls/xray-core/common/serial"
@@ -20,6 +22,12 @@ import (
 
 type Dialer struct {
 	inst *core.Instance
+	dial xrayrt.StreamDialer
+
+	mu        sync.RWMutex
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func NewFreedomDialer() (*Dialer, error) {
@@ -31,6 +39,7 @@ func NewFreedomDialer() (*Dialer, error) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
+				Tag: "legacy-freedom",
 				ProxySettings: serial.ToTypedMessage(&freedom.Config{
 					FinalRules: []*freedom.FinalRuleConfig{{Action: freedom.RuleAction_Allow}},
 				}),
@@ -45,15 +54,33 @@ func NewFreedomDialer() (*Dialer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Dialer{inst: inst}, nil
+	return &Dialer{inst: inst, dial: xrayrt.NewXrayStreamDialer(inst)}, nil
 }
 
 func (d *Dialer) Dial(ctx context.Context, addr string) (net.Conn, error) {
-	return rendrxray.XrayInstanceAsStreamFactory(d.inst)(ctx, addr)
+	if d == nil {
+		return nil, errors.New("xraycarrier: nil dialer")
+	}
+	d.mu.RLock()
+	closed := d.closed
+	d.mu.RUnlock()
+	if closed {
+		return nil, xrayrt.ErrClosed
+	}
+	return d.dial(ctx, "legacy-freedom", "tcp", addr)
 }
 
-func (d *Dialer) Close() {
-	if d != nil && d.inst != nil {
-		d.inst.Close()
+func (d *Dialer) Close() error {
+	if d == nil {
+		return nil
 	}
+	d.closeOnce.Do(func() {
+		d.mu.Lock()
+		d.closed = true
+		d.mu.Unlock()
+		if d.inst != nil {
+			d.closeErr = d.inst.Close()
+		}
+	})
+	return d.closeErr
 }

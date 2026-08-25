@@ -32,6 +32,9 @@ const (
 	CarrierPunchedDirect CarrierKind = "punched_direct"
 )
 
+// CarrierKind is retained for the May 2026 relay prototype. New route code
+// must describe edge reachability and transit execution independently.
+
 type EndpointKind string
 
 const (
@@ -39,6 +42,24 @@ const (
 	EndpointRendrPacket EndpointKind = "rendr_packet"
 	EndpointEgress      EndpointKind = "egress"
 )
+
+type SessionKind string
+
+const (
+	SessionKindStream SessionKind = "stream"
+	SessionKindPacket SessionKind = "packet"
+)
+
+func (k EndpointKind) SessionKind() (SessionKind, bool) {
+	switch k {
+	case EndpointRendrStream, EndpointEgress:
+		return SessionKindStream, true
+	case EndpointRendrPacket:
+		return SessionKindPacket, true
+	default:
+		return "", false
+	}
+}
 
 type Strategy string
 
@@ -50,30 +71,30 @@ const (
 )
 
 type Node struct {
-	ID            NodeID
-	DisplayName   string
-	RendrCapable  bool
-	InstanceID    string
-	Disabled      bool
-	DisabledCause string
+	ID            NodeID `json:"id"`
+	DisplayName   string `json:"display_name,omitempty"`
+	RendrCapable  bool   `json:"rendr_capable"`
+	InstanceID    string `json:"runtime_instance_id,omitempty"`
+	Disabled      bool   `json:"disabled,omitempty"`
+	DisabledCause string `json:"disabled_cause,omitempty"`
 }
 
 type Edge struct {
-	From          NodeID
-	To            NodeID
-	PeerName      string
-	Direction     Direction
-	XrayProfileID string
-	GatewayAddr   string
-	NestedEnabled bool
-	Enabled       bool
-	DisabledCause string
+	From          NodeID    `json:"from"`
+	To            NodeID    `json:"to"`
+	PeerName      string    `json:"peer_name,omitempty"`
+	Direction     Direction `json:"direction"`
+	XrayProfileID string    `json:"xray_profile_id,omitempty"`
+	GatewayAddr   string    `json:"gateway_addr,omitempty"`
+	NestedEnabled bool      `json:"nested_enabled"`
+	Enabled       bool      `json:"enabled"`
+	DisabledCause string    `json:"disabled_cause,omitempty"`
 }
 
 type Topology struct {
-	Local NodeID
-	Nodes map[NodeID]Node
-	Edges []Edge
+	Local NodeID          `json:"local"`
+	Nodes map[NodeID]Node `json:"nodes"`
+	Edges []Edge          `json:"edges"`
 }
 
 func (t *Topology) AddNode(n Node) {
@@ -124,26 +145,27 @@ func reverseDialEdge(e Edge) Edge {
 }
 
 type RouteIntent struct {
-	Paths        []string
-	Strategy     Strategy
-	EndpointKind EndpointKind
-	PrimaryPath  string
+	Paths        []string     `json:"paths"`
+	Strategy     Strategy     `json:"strategy"`
+	EndpointKind EndpointKind `json:"endpoint_kind"`
+	PrimaryPath  string       `json:"primary_path,omitempty"`
 }
 
 type ResolvedPath struct {
-	ID                         string
-	Expression                 string
-	Hops                       []NodeID
-	FinalPeer                  NodeID
-	RendrTerminal              NodeID
-	ExpectedTerminalInstanceID string
-	CarrierKind                CarrierKind
-	CarrierEntry               NodeID
-	EndpointKind               EndpointKind
-	LeafTransport              string
-	Dialable                   bool
-	DisabledReason             string
-	Edges                      []Edge
+	ID                         string       `json:"id"`
+	Expression                 string       `json:"expression"`
+	Hops                       []NodeID     `json:"hops"`
+	FinalPeer                  NodeID       `json:"final_peer"`
+	RendrTerminal              NodeID       `json:"rendr_terminal"`
+	ExpectedTerminalInstanceID string       `json:"expected_terminal_runtime_instance_id,omitempty"`
+	CarrierKind                CarrierKind  `json:"legacy_carrier_kind,omitempty"`
+	CarrierEntry               NodeID       `json:"legacy_carrier_entry,omitempty"`
+	EndpointKind               EndpointKind `json:"endpoint_kind"`
+	SessionKind                SessionKind  `json:"session_kind"`
+	LeafTransport              string       `json:"leaf_transport"`
+	Dialable                   bool         `json:"legacy_dialable"`
+	DisabledReason             string       `json:"disabled_reason,omitempty"`
+	Edges                      []Edge       `json:"edges"`
 }
 
 func (p ResolvedPath) Name() string {
@@ -171,17 +193,39 @@ const (
 	TargetSelector TargetKind = "selector"
 	TargetRace     TargetKind = "race"
 	TargetBond     TargetKind = "bond"
+	TargetPeak     TargetKind = "peak"
 )
 
+// RouteLeafDescriptor is the immutable end-to-end lane handed to a runtime
+// adapter. LogicalPath retains the complete hop and edge realization.
+type RouteLeafDescriptor struct {
+	ID                        string       `json:"id"`
+	Generation                uint64       `json:"generation"`
+	LogicalPathID             string       `json:"logical_path_id"`
+	LogicalPath               ResolvedPath `json:"logical_path"`
+	TerminalNodeID            NodeID       `json:"terminal_node_id"`
+	ExpectedRuntimeInstanceID string       `json:"expected_runtime_instance_id,omitempty"`
+	SessionKind               SessionKind  `json:"session_kind"`
+	EdgeConstraintRefs        []string     `json:"edge_constraint_refs,omitempty"`
+	TransitConstraintRefs     []string     `json:"transit_constraint_refs,omitempty"`
+	AuthPolicyRevision        uint64       `json:"auth_policy_revision,omitempty"`
+}
+
+func (d RouteLeafDescriptor) Name() string {
+	return d.LogicalPath.Name()
+}
+
 type TargetSummary struct {
-	Name     string
-	Kind     TargetKind
-	Children []TargetSummary
-	Path     *ResolvedPath
+	Name       string               `json:"name"`
+	Kind       TargetKind           `json:"kind"`
+	Children   []TargetSummary      `json:"children,omitempty"`
+	Descriptor *RouteLeafDescriptor `json:"descriptor,omitempty"`
 }
 
 type CompiledRoute struct {
-	Intent        RouteIntent
-	ResolvedPaths []ResolvedPath
-	Target        TargetSummary
+	Intent        RouteIntent           `json:"intent"`
+	ResolvedPaths []ResolvedPath        `json:"resolved_paths"`
+	Leaves        []RouteLeafDescriptor `json:"leaves"`
+	SessionKind   SessionKind           `json:"session_kind"`
+	Target        TargetSummary         `json:"target"`
 }

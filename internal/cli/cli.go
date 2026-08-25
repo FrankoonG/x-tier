@@ -1,34 +1,62 @@
 package cli
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
+	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/localview"
+	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/settings"
+	"github.com/FrankoonG/x-tier/internal/webbridge"
+	"github.com/FrankoonG/x-tier/internal/xrayconfig"
 )
 
 type globals struct {
-	configPath string
-	control    string
-	offline    bool
-	json       bool
-	dryRun     bool
-	revision   int64
+	configPath   string
+	control      string
+	offline      bool
+	json         bool
+	dryRun       bool
+	revision     int64
+	daemon       bool
+	ownershipKey string
+	ctx          context.Context
+}
+
+type ExecutionResult struct {
+	ExitCode int
+	Applied  bool
+	Outcome  controlapi.MutationOutcome
 }
 
 type commandError struct {
 	code string
 	err  error
+}
+
+type appliedCommandError struct {
+	err error
+}
+
+func (e appliedCommandError) Error() string { return e.err.Error() }
+func (e appliedCommandError) Unwrap() error { return e.err }
+
+func loadConfig(g globals) (configstore.Config, error) {
+	if g.daemon {
+		return configstore.LoadExisting(g.configPath)
+	}
+	return configstore.Load(g.configPath)
 }
 
 func (e commandError) Error() string {
@@ -39,25 +67,138 @@ func (e commandError) Error() string {
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	return run(context.Background(), args, stdout, stderr, false, "").ExitCode
+}
+
+// RunDaemon executes a command inside the long-running daemon. It is kept
+// separate from Run so an offline CLI can never become a second config writer.
+func RunDaemon(args []string, stdout, stderr io.Writer) int {
+	return RunDaemonContext(context.Background(), args, stdout, stderr).ExitCode
+}
+
+func RunDaemonContext(ctx context.Context, args []string, stdout, stderr io.Writer) ExecutionResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return run(ctx, args, stdout, stderr, true, "")
+}
+
+// RunOwnedDaemon executes inside xtierd against its pinned config path. The
+// canonical key names the lifetime config ownership already held by xtierd.
+func RunOwnedDaemon(args []string, ownershipKey string, stdout, stderr io.Writer) int {
+	return RunOwnedDaemonContext(context.Background(), args, ownershipKey, stdout, stderr).ExitCode
+}
+
+func RunOwnedDaemonContext(ctx context.Context, args []string, ownershipKey string, stdout, stderr io.Writer) ExecutionResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return run(ctx, args, stdout, stderr, true, ownershipKey)
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, daemon bool, ownershipKey string) ExecutionResult {
 	g, rest, err := parseGlobals(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 2
+		return ExecutionResult{ExitCode: 2}
 	}
 	if len(rest) == 0 {
 		fmt.Fprintln(stderr, "command is required")
-		return 2
+		return ExecutionResult{ExitCode: 2}
 	}
-	if !g.offline {
-		return runViaDaemon(g, rest, stdout, stderr)
+	g.daemon = daemon
+	g.ownershipKey = ownershipKey
+	g.ctx = ctx
+	if isWebCredentialShow(rest) {
+		if daemon {
+			return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
+				"web.credential_local_only",
+				fmt.Errorf("the Web credential can only be read by a local xtierctl process"),
+			})}
+		}
+		return ExecutionResult{ExitCode: runWebCredentialShow(g, stdout, stderr)}
+	}
+	if isDaemonStatus(rest) {
+		if daemon || g.offline {
+			return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
+				"daemon.status_requires_control",
+				fmt.Errorf("daemon status requires the live control API"),
+			})}
+		}
+		return ExecutionResult{ExitCode: runDaemonStatus(g, stdout, stderr)}
+	}
+	if !daemon && !g.offline {
+		return ExecutionResult{ExitCode: runViaDaemon(g, rest, stdout, stderr)}
+	}
+	if !daemon && commandMutates(rest) && !g.dryRun {
+		return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
+			"cli.offline_read_only",
+			fmt.Errorf("configuration changes must be executed by xtierd"),
+		})}
+	}
+	mutates := daemon && commandMutates(rest) && !g.dryRun
+	if mutates && g.revision < 0 {
+		return ExecutionResult{
+			ExitCode: writeCommandError(g, stdout, stderr, commandError{
+				"config.revision_required",
+				fmt.Errorf("mutating daemon commands require an expected revision"),
+			}),
+			Outcome: controlapi.MutationOutcomeNotApplied,
+		}
+	}
+	if mutates {
+		if err := ctx.Err(); err != nil {
+			return ExecutionResult{
+				ExitCode: writeCommandError(g, stdout, stderr, publicerr.Wrap("control.mutation_timeout", err)),
+				Outcome:  controlapi.MutationOutcomeNotApplied,
+			}
+		}
 	}
 	if err := dispatch(g, rest, stdout); err != nil {
-		if g.json {
-			_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error_code": errorCode(err), "message": err.Error()})
-		} else {
-			fmt.Fprintln(stderr, err)
+		result := ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, err)}
+		if mutates {
+			result.Applied, result.Outcome = mutationErrorOutcome(err)
 		}
-		return 1
+		return result
+	}
+	result := ExecutionResult{}
+	if mutates {
+		result.Applied = true
+		result.Outcome = controlapi.MutationOutcomeApplied
+	}
+	return result
+}
+
+func isWebCredentialShow(args []string) bool {
+	return len(args) == 3 && args[0] == "web" && args[1] == "credential" && args[2] == "show"
+}
+
+func runWebCredentialShow(g globals, stdout, stderr io.Writer) int {
+	configPath, err := configstore.CanonicalPath(g.configPath)
+	if err != nil {
+		return writeCommandError(g, stdout, stderr, commandError{
+			"web.credential_unavailable",
+			fmt.Errorf("Web credential is unavailable"),
+		})
+	}
+	path := webbridge.CredentialPath(configPath)
+	credential, err := controlapi.ReadToken(path)
+	if err != nil {
+		return writeCommandError(g, stdout, stderr, commandError{
+			"web.credential_unavailable",
+			fmt.Errorf("Web credential is unavailable"),
+		})
+	}
+	if g.json {
+		err = json.NewEncoder(stdout).Encode(map[string]any{
+			"ok": true, "username": webbridge.BasicUsername,
+			"credential": credential, "credential_path": path,
+		})
+	} else {
+		_, err = fmt.Fprintf(stdout, "username=%s\ncredential=%s\n", webbridge.BasicUsername, credential)
+	}
+	if err != nil {
+		return writeCommandError(g, stdout, stderr, err)
 	}
 	return 0
 }
@@ -85,19 +226,44 @@ func parseGlobals(args []string) (globals, []string, error) {
 }
 
 func runViaDaemon(g globals, args []string, stdout, stderr io.Writer) int {
-	resp, err := controlapi.Execute(g.control, controlapi.Request{
-		Args:     args,
-		JSON:     g.json,
-		DryRun:   g.dryRun,
-		Revision: g.revision,
-	})
+	requestID, err := controlapi.NewRequestID()
 	if err != nil {
+		return writeCommandError(g, stdout, stderr, err)
+	}
+	resp, err := controlapi.Execute(g.control, controlapi.TokenPath(g.configPath), controlapi.Request{
+		Args:      args,
+		JSON:      g.json,
+		DryRun:    g.dryRun,
+		Revision:  g.revision,
+		RequestID: requestID,
+	})
+	mutates := commandMutates(args) && !g.dryRun
+	if err != nil {
+		if mutates {
+			if controlapi.CommandMayHaveApplied(err) {
+				return writeIndeterminateMutation(g, stdout, stderr, requestID, err)
+			}
+			return writeRejectedMutation(g, stdout, stderr, requestID, err)
+		}
+		message := sanitizeErrorMessage(err.Error())
 		if g.json {
-			_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error_code": errorCode(err), "message": err.Error()})
+			_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error_code": errorCode(err), "message": message})
 		} else {
-			fmt.Fprintln(stderr, err)
+			fmt.Fprintln(stderr, message)
 		}
 		return 1
+	}
+	if mutates {
+		if resp.Outcome == "" {
+			return writeIndeterminateMutation(
+				g,
+				stdout,
+				stderr,
+				requestID,
+				errors.New("daemon mutation response did not include an outcome"),
+			)
+		}
+		return writeDaemonMutationResponse(g, stdout, stderr, requestID, resp)
 	}
 	if resp.Stdout != "" {
 		_, _ = io.WriteString(stdout, resp.Stdout)
@@ -108,6 +274,119 @@ func runViaDaemon(g globals, args []string, stdout, stderr io.Writer) int {
 	return resp.ExitCode
 }
 
+func writeDaemonMutationResponse(g globals, stdout, stderr io.Writer, requestID string, resp controlapi.Response) int {
+	exitCode := resp.ExitCode
+	switch resp.Outcome {
+	case controlapi.MutationOutcomeApplied:
+		exitCode = 0
+	case controlapi.MutationOutcomeIndeterminate:
+		exitCode = controlapi.IndeterminateExitCode
+	}
+	if g.json {
+		payload := map[string]any{}
+		if err := json.Unmarshal([]byte(resp.Stdout), &payload); err != nil || payload == nil {
+			payload = map[string]any{
+				"ok":         false,
+				"error_code": "control.command_response_invalid",
+				"message":    "daemon mutation response payload was invalid",
+			}
+			if exitCode == 0 && resp.Outcome != controlapi.MutationOutcomeApplied {
+				exitCode = 1
+			}
+		}
+		payload["applied"] = resp.Applied
+		payload["outcome"] = resp.Outcome
+		payload["request_id"] = requestID
+		_ = json.NewEncoder(stdout).Encode(payload)
+		return exitCode
+	}
+	if resp.Stdout != "" {
+		_, _ = io.WriteString(stdout, resp.Stdout)
+	}
+	if resp.Stderr != "" {
+		_, _ = io.WriteString(stderr, resp.Stderr)
+	}
+	_, _ = fmt.Fprintf(stderr, "applied=%t outcome=%s request_id=%s\n", resp.Applied, resp.Outcome, requestID)
+	return exitCode
+}
+
+func writeIndeterminateMutation(g globals, stdout, stderr io.Writer, requestID string, err error) int {
+	message := sanitizeErrorMessage(err.Error())
+	if g.json {
+		_ = json.NewEncoder(stdout).Encode(map[string]any{
+			"ok":         false,
+			"error_code": "control.mutation_outcome_indeterminate",
+			"message":    message,
+			"applied":    false,
+			"outcome":    controlapi.MutationOutcomeIndeterminate,
+			"request_id": requestID,
+		})
+	} else {
+		fmt.Fprintf(
+			stderr,
+			"%s: outcome=%s request_id=%s\n",
+			message,
+			controlapi.MutationOutcomeIndeterminate,
+			requestID,
+		)
+	}
+	return controlapi.IndeterminateExitCode
+}
+
+func writeRejectedMutation(g globals, stdout, stderr io.Writer, requestID string, err error) int {
+	message := sanitizeErrorMessage(err.Error())
+	if g.json {
+		_ = json.NewEncoder(stdout).Encode(map[string]any{
+			"ok":         false,
+			"error_code": "control.mutation_rejected",
+			"message":    message,
+			"applied":    false,
+			"outcome":    controlapi.MutationOutcomeNotApplied,
+			"request_id": requestID,
+		})
+	} else {
+		fmt.Fprintf(
+			stderr,
+			"%s: applied=false outcome=%s request_id=%s\n",
+			message,
+			controlapi.MutationOutcomeNotApplied,
+			requestID,
+		)
+	}
+	return 1
+}
+
+func runDaemonStatus(g globals, stdout, stderr io.Writer) int {
+	status, err := controlapi.GetStatus(g.control, controlapi.TokenPath(g.configPath))
+	if err != nil {
+		return writeCommandError(g, stdout, stderr, err)
+	}
+	if err := writeOutput(g, stdout, map[string]any{"ok": true, "daemon": status}); err != nil {
+		return writeCommandError(g, stdout, stderr, err)
+	}
+	return 0
+}
+
+func writeCommandError(g globals, stdout, stderr io.Writer, err error) int {
+	message := sanitizeErrorMessage(err.Error())
+	if g.json {
+		_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error_code": errorCode(err), "message": message})
+	} else {
+		fmt.Fprintln(stderr, message)
+	}
+	return 1
+}
+
+func sanitizeErrorMessage(message string) string {
+	lower := strings.ToLower(message)
+	for _, marker := range []string{"seed", "private", "secret", "password", "passphrase", "token", "credential", "cookie", "psk"} {
+		if strings.Contains(lower, marker) {
+			return "sensitive error details were redacted"
+		}
+	}
+	return message
+}
+
 func dispatch(g globals, args []string, out io.Writer) error {
 	switch args[0] {
 	case "local":
@@ -116,7 +395,7 @@ func dispatch(g globals, args []string, out io.Writer) error {
 		return dispatchPath(g, args[1:], out)
 	case "config":
 		if len(args) > 1 && args[1] == "validate" {
-			cfg, err := configstore.Load(g.configPath)
+			cfg, err := loadConfig(g)
 			if err != nil {
 				return err
 			}
@@ -137,6 +416,8 @@ func dispatchLocal(g globals, args []string, out io.Writer) error {
 		return localIdentity(g, args[1:], out)
 	case "settings":
 		return localSettings(g, args[1:], out)
+	case "config":
+		return localConfig(args[1:])
 	case "inbound":
 		return localInbound(g, args[1:], out)
 	case "peers":
@@ -148,29 +429,48 @@ func dispatchLocal(g globals, args []string, out io.Writer) error {
 	case "topology":
 		return localTopology(g, args[1:], out)
 	case "reload":
-		cfg, err := configstore.Load(g.configPath)
-		if err != nil {
-			return err
-		}
-		return writeOutput(g, out, map[string]any{"ok": true, "revision": cfg.Revision, "reloaded": false, "reason": "service control is not implemented in local CLI MVP"})
+		return commandError{"service.reload_requires_control", fmt.Errorf("runtime reconciliation requires the live daemon control API")}
 	}
 	return commandError{"cli.unknown_command", fmt.Errorf("local %s", strings.Join(args, " "))}
 }
 
+func localConfig(args []string) error {
+	if len(args) == 1 && args[0] == "restore-last-good" {
+		return commandError{
+			"config.restore_requires_control",
+			fmt.Errorf("last-known-good restore requires the live daemon control API"),
+		}
+	}
+	if len(args) == 0 {
+		return commandError{"cli.command_required", fmt.Errorf("config subcommand is required")}
+	}
+	return commandError{"cli.unknown_command", fmt.Errorf("config %s", strings.Join(args, " "))}
+}
+
 func localStatus(g globals, out io.Writer) error {
-	cfg, err := configstore.Load(g.configPath)
+	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
 	}
 	topo := localview.TopologyFromConfig(cfg)
 	relations := route.PeerRelations(topo)
 	local := relations[route.NodeID(cfg.Node.NodeID)]
+	identityStatus, err := identityState(cfg, identitySeedPath(g.configPath))
+	if err != nil {
+		return err
+	}
 	return writeOutput(g, out, map[string]any{
-		"ok":                true,
-		"revision":          cfg.Revision,
-		"node":              cfg.Node,
-		"settings":          cfg.System,
-		"rendr_instance_id": cfg.Node.RendrInstanceID,
+		"ok":            true,
+		"revision":      cfg.Revision,
+		"status_source": "config_only",
+		"identity":      identityStatus,
+		"node":          configNodeView(cfg.Node),
+		"display_name":  cfg.Node.DisplayName,
+		"settings":      cfg.System,
+		"runtime": map[string]any{
+			"available": false,
+			"source":    "config_only",
+		},
 		"peer_counts": map[string]int{
 			"inbound":       len(local.Inbound),
 			"outbound":      len(local.Outbound),
@@ -186,35 +486,83 @@ func localIdentity(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "show":
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
-		return writeOutput(g, out, map[string]any{"ok": true, "revision": cfg.Revision, "node": cfg.Node})
+		state, err := identityState(cfg, identitySeedPath(g.configPath))
+		if err != nil {
+			return err
+		}
+		return writeOutput(g, out, map[string]any{
+			"ok":       true,
+			"revision": cfg.Revision,
+			"identity": state,
+			"node":     configNodeView(cfg.Node),
+		})
 	case "init":
 		fs := flag.NewFlagSet("identity init", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		name := fs.String("name", "", "display name")
-		role := fs.String("role", "thin", "role")
+		if flagPresent(args[1:], "role") {
+			return commandError{"identity.role_removed", fmt.Errorf("--role is no longer supported; node role is legacy read-only metadata")}
+		}
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
-			if cfg.Node.NodeID != "" {
-				return nil, commandError{"identity.exists", fmt.Errorf("node_id is already initialized")}
-			}
-			id, err := randomID()
+			seedPath := identitySeedPath(g.configPath)
+			observed, backing, err := inspectIdentity(*cfg, seedPath)
 			if err != nil {
 				return nil, err
 			}
-			cfg.Node.NodeID = id
-			cfg.Node.DisplayName = *name
-			if cfg.Node.DisplayName == "" {
-				cfg.Node.DisplayName = id
+
+			id := backing
+			created := false
+			switch observed.State {
+			case identityStateUninitialized:
+				if g.dryRun {
+					proposed := configNodeView(cfg.Node)
+					proposed.DisplayName = *name
+					proposed.RendrCapable = true
+					return map[string]any{
+						"identity":             observed,
+						"node":                 proposed,
+						"would_create_backing": true,
+					}, nil
+				}
+				id, err = identity.Create(seedPath)
+				created = err == nil
+			case identityStateRecoverable:
+				// A previous attempt may have persisted the seed before its config CAS
+				// completed. Reusing it preserves the node identity on retry.
+			case identityStateBacked:
+				return nil, commandError{"identity.exists", fmt.Errorf("node identity is already initialized and backed")}
+			case identityStateLegacyUnbacked:
+				return nil, commandError{"identity.legacy_unbacked", fmt.Errorf("configured identity has no cryptographic backing")}
+			case identityStateBackingMissing:
+				return nil, commandError{"identity.backing_missing", fmt.Errorf("configured v2 identity is missing its seed backing")}
+			case identityStateMismatch:
+				return nil, commandError{"identity.config_mismatch", fmt.Errorf("configured identity does not match cryptographic backing")}
 			}
-			cfg.Node.Role = *role
+			if err != nil {
+				return nil, err
+			}
+			public := id.Public()
+			cfg.Node.NodeID = public.NodeID.String()
+			cfg.Node.PublicKey = public.PublicKey
+			if *name != "" {
+				cfg.Node.DisplayName = *name
+			} else if cfg.Node.DisplayName == "" {
+				cfg.Node.DisplayName = public.NodeID.String()
+			}
 			cfg.Node.RendrCapable = true
-			return map[string]any{"node": cfg.Node}, nil
+			return map[string]any{
+				"identity":  identityViewFromPublic(identityStateBacked, public),
+				"node":      configNodeView(cfg.Node),
+				"created":   created,
+				"recovered": !created,
+			}, nil
 		})
 	case "rename":
 		if len(args) < 2 {
@@ -223,10 +571,96 @@ func localIdentity(g globals, args []string, out io.Writer) error {
 		name := args[1]
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
 			cfg.Node.DisplayName = name
-			return map[string]any{"node": cfg.Node}, nil
+			return map[string]any{"node": configNodeView(cfg.Node)}, nil
 		})
 	}
 	return commandError{"cli.unknown_command", fmt.Errorf("identity %s", strings.Join(args, " "))}
+}
+
+func identitySeedPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "keystore", "node-seed.v1.json")
+}
+
+const (
+	identityStateUninitialized  = "uninitialized"
+	identityStateBacked         = "backed"
+	identityStateRecoverable    = "recoverable"
+	identityStateLegacyUnbacked = "legacy_unbacked"
+	identityStateBackingMissing = "backing_missing"
+	identityStateMismatch       = "mismatch"
+)
+
+type identityView struct {
+	State                 string `json:"state"`
+	Version               int    `json:"version,omitempty"`
+	Algorithm             string `json:"algorithm,omitempty"`
+	NodeID                string `json:"node_id,omitempty"`
+	PublicKey             string `json:"public_key,omitempty"`
+	BackingNodeID         string `json:"backing_node_id,omitempty"`
+	BackingPublicKey      string `json:"backing_public_key,omitempty"`
+	OSACLReleaseQualified bool   `json:"os_acl_release_qualified"`
+}
+
+func identityState(cfg configstore.Config, seedPath string) (identityView, error) {
+	state, _, err := inspectIdentity(cfg, seedPath)
+	return state, err
+}
+
+func inspectIdentity(cfg configstore.Config, seedPath string) (identityView, *identity.Identity, error) {
+	id, err := identity.Load(seedPath)
+	if errors.Is(err, os.ErrNotExist) {
+		configured, classifyErr := identity.ClassifyConfiguredIdentity(cfg.Node.NodeID, cfg.Node.PublicKey)
+		if classifyErr != nil {
+			return identityView{}, nil, classifyErr
+		}
+		state := identityStateUninitialized
+		switch configured {
+		case identity.ConfiguredIdentityLegacy:
+			state = identityStateLegacyUnbacked
+		case identity.ConfiguredIdentityV2:
+			state = identityStateBackingMissing
+		}
+		return identityView{
+			State:     state,
+			NodeID:    cfg.Node.NodeID,
+			PublicKey: cfg.Node.PublicKey,
+		}, nil, nil
+	}
+	if err != nil {
+		return identityView{}, nil, err
+	}
+	public := id.Public()
+	state := identityStateBacked
+	if cfg.Node.NodeID == "" && cfg.Node.PublicKey == "" {
+		state = identityStateRecoverable
+	} else if cfg.Node.NodeID != public.NodeID.String() || cfg.Node.PublicKey != public.PublicKey {
+		return identityView{
+			State:                 identityStateMismatch,
+			NodeID:                cfg.Node.NodeID,
+			PublicKey:             cfg.Node.PublicKey,
+			BackingNodeID:         public.NodeID.String(),
+			BackingPublicKey:      public.PublicKey,
+			OSACLReleaseQualified: true,
+		}, id, nil
+	}
+	return identityViewFromPublic(state, public), id, nil
+}
+
+func identityViewFromPublic(state string, public identity.PublicIdentity) identityView {
+	return identityView{
+		State:                 state,
+		Version:               public.Version,
+		Algorithm:             public.Algorithm,
+		NodeID:                public.NodeID.String(),
+		PublicKey:             public.PublicKey,
+		OSACLReleaseQualified: true,
+	}
+}
+
+func configNodeView(node configstore.NodeConfig) configstore.NodeConfig {
+	// rendr_instance_id is runtime observation, never config-backed CLI status.
+	node.RendrInstanceID = ""
+	return node
 }
 
 func localSettings(g globals, args []string, out io.Writer) error {
@@ -235,13 +669,13 @@ func localSettings(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "show":
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
 		return writeOutput(g, out, map[string]any{"ok": true, "revision": cfg.Revision, "settings": cfg.System})
 	case "validate":
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -263,6 +697,9 @@ func localSettings(g globals, args []string, out io.Writer) error {
 		}
 		visited := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+		if len(visited) == 0 {
+			return commandError{"settings.patch_empty", fmt.Errorf("at least one setting is required")}
+		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
 			if visited["log-level"] {
 				cfg.System.LogLevel = *logLevel
@@ -294,7 +731,7 @@ func localInbound(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "list":
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -308,22 +745,43 @@ func localInbound(g globals, args []string, out io.Writer) error {
 		fs.SetOutput(io.Discard)
 		listen := fs.String("listen", "", "")
 		profile := fs.String("profile", "", "")
+		purpose := fs.String("purpose", "", "")
+		exitPeer := fs.String("exit-peer", "", "")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
+		}
+		visited := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+		if kind == "node-vless" && visited["profile"] {
+			return commandError{"config.inbound_profile_forbidden", fmt.Errorf("node-vless credentials are configured on inbound peers")}
 		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
 			i := inboundIndex(cfg.NodeInbound, kind)
 			in := configstore.InboundConfig{Kind: kind, Enabled: true}
+			switch kind {
+			case "socks":
+				in.Purpose = "user"
+			case "node-vless":
+				in.Purpose = "node"
+			}
 			if i >= 0 {
 				in = cfg.NodeInbound[i]
 			}
-			if *listen != "" {
+			if kind == "node-vless" {
+				in.XrayProfileID = ""
+			}
+			if visited["listen"] {
 				in.Listen = *listen
 			}
-			if *profile != "" {
+			if visited["profile"] {
 				in.XrayProfileID = *profile
 			}
-			in.Enabled = true
+			if visited["purpose"] {
+				in.Purpose = *purpose
+			}
+			if visited["exit-peer"] {
+				in.ExitPeer = *exitPeer
+			}
 			if i >= 0 {
 				cfg.NodeInbound[i] = in
 			} else {
@@ -359,7 +817,7 @@ func localInbound(g globals, args []string, out io.Writer) error {
 }
 
 func localPeers(g globals, out io.Writer) error {
-	cfg, err := configstore.Load(g.configPath)
+	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
 	}
@@ -381,13 +839,19 @@ func localPeer(g globals, args []string, out io.Writer) error {
 		name := args[1]
 		fs := flag.NewFlagSet("peer add", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
-		nodeID := fs.String("node-id", name, "")
+		nodeID := fs.String("node-id", "", "")
 		addr := fs.String("addr", "", "")
 		direction := fs.String("direction", string(route.DirectionOutbound), "")
 		profile := fs.String("profile", "", "")
 		nested := fs.Bool("nested", false, "")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
+		}
+		if *nodeID == "" {
+			return commandError{"cli.argument_required", fmt.Errorf("--node-id is required")}
+		}
+		if route.Direction(*direction).CanDialOutbound() && *profile == "" {
+			return commandError{"cli.argument_required", fmt.Errorf("--profile is required for an outbound peer")}
 		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
 			if _, _, ok := configstore.FindPeer(cfg.Peers, name); ok {
@@ -404,7 +868,6 @@ func localPeer(g globals, args []string, out io.Writer) error {
 				NestedEnabled: *nested,
 				Enabled:       true,
 				RendrCapable:  true,
-				InstanceID:    "inst-" + *nodeID,
 			}
 			cfg.Peers = append(cfg.Peers, p)
 			return map[string]any{"peer": p}, nil
@@ -493,7 +956,7 @@ func localPeerTrust(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "list":
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -526,7 +989,7 @@ func localPeerTrust(g globals, args []string, out io.Writer) error {
 		if len(args) < 2 {
 			return commandError{"cli.argument_required", fmt.Errorf("trusted peer is required")}
 		}
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -541,7 +1004,7 @@ func localXray(g globals, args []string, out io.Writer) error {
 		return commandError{"cli.command_required", fmt.Errorf("xray subcommand is required")}
 	}
 	if args[0] == "profiles" {
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -559,33 +1022,57 @@ func localXray(g globals, args []string, out io.Writer) error {
 		fs := flag.NewFlagSet("xray profile add", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		kind := fs.String("kind", "", "")
-		serverName := fs.String("server-name", "", "")
-		publicKey := fs.String("public-key", "", "")
-		shortID := fs.String("short-id", "", "")
-		sni := fs.String("sni", "", "")
+		fs.String("server-name", "", "")
+		fs.String("public-key", "", "")
+		fs.String("short-id", "", "")
+		fs.String("sni", "", "")
+		credentialFile := fs.String("credential-file", "", "")
+		username := fs.String("username", "", "")
+		transport := fs.String("transport", "tcp", "")
+		security := fs.String("security", "none", "")
+		allowInsecure := fs.Bool("allow-insecure-plaintext", false, "")
 		if err := fs.Parse(args[3:]); err != nil {
 			return err
 		}
-		options := map[string]string{}
-		if *serverName != "" {
-			options["server_name"] = *serverName
+		visited := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+		profile := configstore.XrayProfile{ID: id, Kind: *kind}
+		switch *kind {
+		case "vless":
+			if option := firstVisited(visited, "server-name", "public-key", "short-id", "sni", "username"); option != "" {
+				return commandError{"config.profile_option_unavailable", fmt.Errorf("--%s is unavailable for VLESS profiles", option)}
+			}
+			credential, err := readCredentialFile(*credentialFile)
+			if err != nil {
+				return commandError{"config.credential_file_invalid", err}
+			}
+			profile.VLESS = &configstore.VLESSProfile{
+				UUID: credential, Transport: *transport, Security: *security, AllowInsecurePlaintext: *allowInsecure,
+			}
+		case "socks":
+			if option := firstVisited(visited, "server-name", "public-key", "short-id", "sni", "transport", "security", "allow-insecure-plaintext"); option != "" {
+				return commandError{"config.profile_option_unavailable", fmt.Errorf("--%s is unavailable for SOCKS profiles", option)}
+			}
+			var password string
+			if *username != "" || *credentialFile != "" {
+				var err error
+				password, err = readCredentialFile(*credentialFile)
+				if err != nil {
+					return commandError{"config.credential_file_invalid", err}
+				}
+			}
+			profile.SOCKS = &configstore.SOCKSProfile{Username: *username, Password: password}
 		}
-		if *publicKey != "" {
-			options["public_key"] = *publicKey
-		}
-		if *shortID != "" {
-			options["short_id"] = *shortID
-		}
-		if *sni != "" {
-			options["sni"] = *sni
+		if err := xrayconfig.CompileProfile(profile); err != nil {
+			return commandError{"config.profile_invalid", err}
 		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
-			p := configstore.XrayProfile{ID: id, Kind: *kind, Options: options}
+			p := profile
 			cfg.XrayProfiles[id] = p
 			return map[string]any{"xray_profile": p}, nil
 		})
 	case "validate":
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -594,8 +1081,18 @@ func localXray(g globals, args []string, out io.Writer) error {
 			id = args[2]
 		}
 		if id != "" {
-			if _, ok := cfg.XrayProfiles[id]; !ok {
+			profile, ok := cfg.XrayProfiles[id]
+			if !ok {
 				return commandError{"config.profile_unknown", fmt.Errorf("%s", id)}
+			}
+			if err := xrayconfig.CompileProfile(profile); err != nil {
+				return commandError{"config.profile_invalid", err}
+			}
+		} else {
+			for _, profile := range cfg.XrayProfiles {
+				if err := xrayconfig.CompileProfile(profile); err != nil {
+					return commandError{"config.profile_invalid", fmt.Errorf("%s: %w", profile.ID, err)}
+				}
 			}
 		}
 		return writeOutput(g, out, map[string]any{"ok": true, "revision": cfg.Revision, "profile": id})
@@ -616,7 +1113,7 @@ func localXray(g globals, args []string, out io.Writer) error {
 }
 
 func localTopology(g globals, args []string, out io.Writer) error {
-	cfg, err := configstore.Load(g.configPath)
+	cfg, err := loadConfig(g)
 	if err != nil {
 		return err
 	}
@@ -641,7 +1138,7 @@ func dispatchPath(g globals, args []string, out io.Writer) error {
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
-		cfg, err := configstore.Load(g.configPath)
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -651,15 +1148,20 @@ func dispatchPath(g globals, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return writeOutput(g, out, map[string]any{"ok": true, "revision": cfg.Revision, "compiled": compiled.CompiledRoute})
+		return writeOutput(g, out, map[string]any{"ok": true, "revision": cfg.Revision, "compiled": compiled})
 	}
 	return commandError{"cli.unknown_command", fmt.Errorf("path %s", strings.Join(args, " "))}
 }
 
 func mutate(g globals, out io.Writer, fn func(*configstore.Config) (any, error)) error {
-	var response any
-	err := configstore.WithLock(g.configPath, func() error {
-		cfg, err := configstore.Load(g.configPath)
+	if !g.daemon && !g.dryRun {
+		return commandError{"cli.offline_read_only", fmt.Errorf("configuration changes must be executed by xtierd")}
+	}
+	if !g.dryRun && g.revision < 0 {
+		return commandError{"config.revision_required", fmt.Errorf("mutating daemon commands require an expected revision")}
+	}
+	if g.dryRun {
+		cfg, err := loadConfig(g)
 		if err != nil {
 			return err
 		}
@@ -671,37 +1173,167 @@ func mutate(g globals, out io.Writer, fn func(*configstore.Config) (any, error))
 		if err != nil {
 			return err
 		}
+		cfg.Revision = before
 		if err := configstore.Validate(cfg); err != nil {
 			return err
 		}
-		if !g.dryRun {
-			cfg.Revision++
-			if err := configstore.Save(g.configPath, cfg); err != nil {
-				return err
+		return writeOutput(g, out, mutationResponse(true, before, before, payload))
+	}
+	if g.ctx != nil {
+		if err := g.ctx.Err(); err != nil {
+			return publicerr.Wrap("control.mutation_timeout", err)
+		}
+	}
+
+	var payload any
+	update := configstore.UpdateCAS
+	if g.ownershipKey != "" {
+		update = func(path string, revision int64, mutation func(*configstore.Config) error) (configstore.UpdateResult, error) {
+			return configstore.UpdatePinnedCAS(path, g.ownershipKey, revision, mutation)
+		}
+	}
+	result, err := update(g.configPath, g.revision, func(cfg *configstore.Config) error {
+		if g.ctx != nil {
+			if err := g.ctx.Err(); err != nil {
+				return publicerr.Wrap("control.mutation_timeout", err)
 			}
 		}
-		after := cfg.Revision
-		if g.dryRun {
-			after = before
+		var err error
+		payload, err = fn(cfg)
+		if err != nil {
+			return err
 		}
-		response = map[string]any{"ok": true, "changed": true, "dry_run": g.dryRun, "before_revision": before, "after_revision": after, "result": payload}
+		if g.ctx != nil {
+			if err := g.ctx.Err(); err != nil {
+				return publicerr.Wrap("control.mutation_timeout", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	return writeOutput(g, out, response)
+	if err := writeOutput(g, out, mutationResponse(false, result.BeforeRevision, result.AfterRevision, payload)); err != nil {
+		return appliedCommandError{err: err}
+	}
+	return nil
+}
+
+func mutationErrorOutcome(err error) (bool, controlapi.MutationOutcome) {
+	var applied appliedCommandError
+	if errors.As(err, &applied) || configstore.CommitVisible(err) {
+		return true, controlapi.MutationOutcomeApplied
+	}
+	if errors.Is(err, configstore.ErrCommitOutcomeUnknown) {
+		return false, controlapi.MutationOutcomeIndeterminate
+	}
+	return false, controlapi.MutationOutcomeNotApplied
+}
+
+func mutationResponse(dryRun bool, before, after int64, payload any) map[string]any {
+	return map[string]any{
+		"ok":              true,
+		"changed":         true,
+		"dry_run":         dryRun,
+		"before_revision": before,
+		"after_revision":  after,
+		"result":          payload,
+	}
 }
 
 func writeOutput(g globals, out io.Writer, v any) error {
+	safe, err := sanitizeOutput(v)
+	if err != nil {
+		return err
+	}
 	if g.json {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(v)
+		return enc.Encode(safe)
 	}
-	b, _ := json.MarshalIndent(v, "", "  ")
-	_, err := fmt.Fprintln(out, string(b))
+	b, err := json.MarshalIndent(safe, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, string(b))
 	return err
+}
+
+func sanitizeOutput(v any) (any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var safe any
+	if err := decoder.Decode(&safe); err != nil {
+		return nil, err
+	}
+	redactSensitiveOutput(safe)
+	return safe, nil
+}
+
+func redactSensitiveOutput(v any) {
+	switch value := v.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if sensitiveOutputKey(key) || sensitiveOptionMapKey(key) {
+				value[key] = "[REDACTED]"
+				continue
+			}
+			redactSensitiveOutput(child)
+		}
+	case []any:
+		for _, child := range value {
+			redactSensitiveOutput(child)
+		}
+	}
+}
+
+func sensitiveOptionMapKey(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+	if normalized != "options" && normalized != "headers" && normalized != "metadata" {
+		return false
+	}
+	// Free-form maps cannot be redacted reliably by inspecting keys alone: a
+	// credential may be named id, token, uuid, key, or an adapter-specific name.
+	return true
+}
+
+func sensitiveOutputKey(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+	// This walker also visits maps keyed by user-defined IDs. Broad substring
+	// matching would turn an ID such as "private-link" into a redacted scalar
+	// and corrupt the response shape. Free-form maps are handled wholesale by
+	// sensitiveOptionMapKey; structured fields must be named explicitly here.
+	switch normalized {
+	case "seed", "node_seed", "nodeseed", "seed_material",
+		"private_key", "privatekey", "secret", "shared_secret",
+		"password", "passphrase", "credential", "credentials",
+		"credential_value", "credential_file", "uuid", "psk",
+		"pre_shared_key", "token", "access_token", "refresh_token", "cookie":
+		return true
+	}
+	return false
+}
+
+func readCredentialFile(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("credential file is required")
+	}
+	content, err := configstore.ReadProtectedFile(path, 4096)
+	if err != nil {
+		return "", err
+	}
+	if len(content) == 0 {
+		return "", fmt.Errorf("credential file must contain between 1 and 4096 bytes")
+	}
+	credential := strings.TrimSpace(string(content))
+	if credential == "" || strings.ContainsAny(credential, "\r\n\x00") {
+		return "", fmt.Errorf("credential file must contain exactly one non-empty line")
+	}
+	return credential, nil
 }
 
 func errorCode(err error) string {
@@ -713,14 +1345,7 @@ func errorCode(err error) string {
 	if asRouteError(err, &re) {
 		return re.Code
 	}
-	msg := err.Error()
-	if i := strings.Index(msg, ":"); i > 0 {
-		token := msg[:i]
-		if strings.Contains(token, ".") {
-			return token
-		}
-	}
-	return "error"
+	return publicerr.Code(err, "operation.failed")
 }
 
 func asCommandError(err error, target *commandError) bool {
@@ -761,6 +1386,24 @@ func flagValue(args []string, name string) string {
 	return ""
 }
 
+func flagPresent(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--"+name || strings.HasPrefix(arg, "--"+name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func firstVisited(visited map[string]bool, names ...string) string {
+	for _, name := range names {
+		if visited[name] {
+			return name
+		}
+	}
+	return ""
+}
+
 func splitCSV(s string) []string {
 	parts := strings.Split(s, ",")
 	out := make([]string, 0, len(parts))
@@ -771,6 +1414,49 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func commandMutates(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] != "local" || len(args) < 2 {
+		return false
+	}
+	if args[1] == "reload" {
+		return true
+	}
+	if len(args) < 3 {
+		return false
+	}
+	subsystem, action := args[1], args[2]
+	switch subsystem {
+	case "identity":
+		return action == "init" || action == "rename"
+	case "settings":
+		return action == "set"
+	case "config":
+		return action == "restore-last-good"
+	case "inbound":
+		return action == "set" || action == "enable" || action == "disable"
+	case "peer":
+		if action == "trust" && len(args) >= 4 {
+			return args[3] == "set" || args[3] == "revoke"
+		}
+		return action == "add" || action == "set" || action == "enable" || action == "disable" || action == "remove"
+	case "xray":
+		return len(args) >= 4 && args[2] == "profile" && (args[3] == "add" || args[3] == "remove")
+	default:
+		return false
+	}
+}
+
+// CommandMutates is used by the daemon control boundary to decide whether a
+// request needs idempotency tracking. Authorization remains inside dispatch.
+func CommandMutates(args []string) bool { return commandMutates(args) }
+
+func isDaemonStatus(args []string) bool {
+	return len(args) == 2 && args[0] == "daemon" && args[1] == "status"
 }
 
 var allowedTrustScopes = map[string]bool{
@@ -797,30 +1483,5 @@ func validateTrustScope(scopes []string) error {
 }
 
 func profileInUse(cfg configstore.Config, id string) bool {
-	for _, in := range cfg.NodeInbound {
-		if in.XrayProfileID == id {
-			return true
-		}
-	}
-	var walk func([]configstore.PeerConfig) bool
-	walk = func(peers []configstore.PeerConfig) bool {
-		for _, p := range peers {
-			if p.XrayProfileID == id {
-				return true
-			}
-			if walk(p.Children) {
-				return true
-			}
-		}
-		return false
-	}
-	return walk(cfg.Peers)
-}
-
-func randomID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return "node-" + hex.EncodeToString(b[:]), nil
+	return configstore.LocalProfileInUse(cfg, id)
 }

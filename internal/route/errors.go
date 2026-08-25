@@ -15,6 +15,8 @@ func (e *CompileError) Error() string {
 	return fmt.Sprintf("%s: %s: %s", e.Code, e.Path, e.Details)
 }
 
+func (e *CompileError) PublicErrorCode() string { return e.Code }
+
 func errf(code, path, format string, args ...any) error {
 	return &CompileError{Code: code, Path: path, Details: fmt.Sprintf(format, args...)}
 }

@@ -1,6 +1,26 @@
 package settings
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+type codedSettingsError struct {
+	code string
+	err  error
+}
+
+func (e codedSettingsError) Error() string           { return e.err.Error() }
+func (e codedSettingsError) Unwrap() error           { return e.err }
+func (e codedSettingsError) PublicErrorCode() string { return e.code }
+
+func settingsErrorf(format string, args ...any) error {
+	code, _, _ := strings.Cut(format, ":")
+	if !strings.HasPrefix(code, "settings.") {
+		panic("settings: invalid coded error format")
+	}
+	return codedSettingsError{code: code, err: fmt.Errorf(format, args...)}
+}
 
 const (
 	DefaultLogLevel         = "info"
@@ -67,22 +87,22 @@ func ApplyDefaults(c Config) Config {
 func Validate(c Config) error {
 	c = ApplyDefaults(c)
 	if c.LogLevel != "debug" && c.LogLevel != "info" && c.LogLevel != "warn" && c.LogLevel != "error" {
-		return fmt.Errorf("settings.invalid_log_level: %s", c.LogLevel)
+		return settingsErrorf("settings.invalid_log_level: %s", c.LogLevel)
 	}
 	if c.MaxNestedDepth < 1 || c.MaxNestedDepth > HardMaxNestedDepth {
-		return fmt.Errorf("settings.max_nested_depth_out_of_range: %d", c.MaxNestedDepth)
+		return settingsErrorf("settings.max_nested_depth_out_of_range: %d", c.MaxNestedDepth)
 	}
 	if c.MaxResponseNodes < 1 || c.MaxResponseNodes > HardMaxResponseNodes {
-		return fmt.Errorf("settings.max_response_nodes_out_of_range: %d", c.MaxResponseNodes)
+		return settingsErrorf("settings.max_response_nodes_out_of_range: %d", c.MaxResponseNodes)
 	}
 	if c.MaxResponseBytes < 1 || c.MaxResponseBytes > HardMaxResponseBytes {
-		return fmt.Errorf("settings.max_response_bytes_out_of_range: %d", c.MaxResponseBytes)
+		return settingsErrorf("settings.max_response_bytes_out_of_range: %d", c.MaxResponseBytes)
 	}
 	if c.MaxCacheEntries < 1 || c.MaxCacheEntries > HardMaxCacheEntries {
-		return fmt.Errorf("settings.max_cache_entries_out_of_range: %d", c.MaxCacheEntries)
+		return settingsErrorf("settings.max_cache_entries_out_of_range: %d", c.MaxCacheEntries)
 	}
 	if c.MaxFetchFanOut < 1 || c.MaxFetchFanOut > HardMaxFetchFanOut {
-		return fmt.Errorf("settings.max_fetch_fan_out_out_of_range: %d", c.MaxFetchFanOut)
+		return settingsErrorf("settings.max_fetch_fan_out_out_of_range: %d", c.MaxFetchFanOut)
 	}
 	return nil
 }

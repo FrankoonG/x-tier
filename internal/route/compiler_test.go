@@ -178,7 +178,154 @@ func TestBondRejectsTerminalInstanceMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected bond mismatch to be rejected")
 	}
-	assertCompileCode(t, err, "route.bond_final_mismatch")
+	assertCompileCode(t, err, "route.terminal_mismatch")
+}
+
+func TestAllStrategiesRequireSameTerminal(t *testing.T) {
+	for _, strategy := range []Strategy{StrategySelector, StrategyRace, StrategyBond, StrategyPeak} {
+		t.Run(string(strategy), func(t *testing.T) {
+			topo := baseTopology()
+			addOutbound(&topo, "A", "B", true)
+			addOutbound(&topo, "A", "C", true)
+
+			_, err := Compile(topo, RouteIntent{
+				Paths:        []string{"B", "C"},
+				Strategy:     strategy,
+				EndpointKind: EndpointRendrStream,
+			})
+			if err == nil {
+				t.Fatal("expected terminal mismatch to be rejected")
+			}
+			assertCompileCode(t, err, "route.terminal_mismatch")
+		})
+	}
+}
+
+func TestAllStrategiesRequireSameKnownRuntimeInstance(t *testing.T) {
+	for _, strategy := range []Strategy{StrategySelector, StrategyRace, StrategyBond, StrategyPeak} {
+		t.Run(string(strategy), func(t *testing.T) {
+			paths := []ResolvedPath{
+				{Expression: "direct-D", RendrTerminal: "D", SessionKind: SessionKindStream, ExpectedTerminalInstanceID: "runtime-1"},
+				{Expression: "relay-D", RendrTerminal: "D", SessionKind: SessionKindStream, ExpectedTerminalInstanceID: "runtime-2"},
+			}
+			err := validateStrategy(strategy, paths)
+			if err == nil {
+				t.Fatal("expected runtime instance mismatch to be rejected")
+			}
+			assertCompileCode(t, err, "route.instance_mismatch")
+		})
+	}
+}
+
+func TestUnknownRuntimeInstanceCanShareKnownRuntime(t *testing.T) {
+	paths := []ResolvedPath{
+		{Expression: "unknown-D", RendrTerminal: "D", SessionKind: SessionKindStream},
+		{Expression: "known-D", RendrTerminal: "D", SessionKind: SessionKindStream, ExpectedTerminalInstanceID: "runtime-1"},
+	}
+	if err := validateStrategy(StrategySelector, paths); err != nil {
+		t.Fatalf("validate unknown and known runtime: %v", err)
+	}
+}
+
+func TestStrategiesDoNotMixStreamAndPacketSessions(t *testing.T) {
+	for _, strategy := range []Strategy{StrategySelector, StrategyRace, StrategyBond, StrategyPeak} {
+		t.Run(string(strategy), func(t *testing.T) {
+			paths := []ResolvedPath{
+				{Expression: "stream-D", RendrTerminal: "D", SessionKind: SessionKindStream, ExpectedTerminalInstanceID: "runtime-D"},
+				{Expression: "packet-D", RendrTerminal: "D", SessionKind: SessionKindPacket, ExpectedTerminalInstanceID: "runtime-D"},
+			}
+			err := validateStrategy(strategy, paths)
+			if err == nil {
+				t.Fatal("expected stream/packet mismatch to be rejected")
+			}
+			assertCompileCode(t, err, "route.session_kind_mismatch")
+		})
+	}
+}
+
+func TestEndpointKindsMapToExplicitSessionKinds(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint EndpointKind
+		want     SessionKind
+	}{
+		{endpoint: EndpointRendrStream, want: SessionKindStream},
+		{endpoint: EndpointRendrPacket, want: SessionKindPacket},
+		{endpoint: EndpointEgress, want: SessionKindStream},
+	} {
+		got, ok := tc.endpoint.SessionKind()
+		if !ok || got != tc.want {
+			t.Fatalf("%s session kind = %s, %t; want %s, true", tc.endpoint, got, ok, tc.want)
+		}
+	}
+	if _, ok := EndpointKind("unknown").SessionKind(); ok {
+		t.Fatal("unknown endpoint unexpectedly has a session kind")
+	}
+}
+
+func TestResolveRejectsUnknownEndpointKind(t *testing.T) {
+	topo := baseTopology()
+	addOutbound(&topo, "A", "B", true)
+	_, err := ResolvePath(topo, "B", EndpointKind("unknown"))
+	if err == nil {
+		t.Fatal("expected unknown endpoint kind to be rejected")
+	}
+	assertCompileCode(t, err, "route.endpoint_unknown")
+}
+
+func TestAllStrategiesAllowCompleteLeavesForSameSession(t *testing.T) {
+	for _, strategy := range []Strategy{StrategySelector, StrategyRace, StrategyBond, StrategyPeak} {
+		t.Run(string(strategy), func(t *testing.T) {
+			topo := baseTopology()
+			addOutbound(&topo, "A", "D", true)
+			addOutbound(&topo, "A", "B", true)
+			addOutbound(&topo, "B", "D", true)
+
+			compiled, err := Compile(topo, RouteIntent{
+				Paths:        []string{"D", "B/D"},
+				Strategy:     strategy,
+				EndpointKind: EndpointRendrPacket,
+			})
+			if err != nil {
+				t.Fatalf("compile same-session leaves: %v", err)
+			}
+			if compiled.SessionKind != SessionKindPacket || len(compiled.Leaves) != 2 {
+				t.Fatalf("compiled route = %+v", compiled)
+			}
+		})
+	}
+}
+
+func TestCompilePreservesCompleteEndToEndLeafDescriptor(t *testing.T) {
+	topo := baseTopology()
+	addOutbound(&topo, "A", "B", true)
+	addOutbound(&topo, "B", "D", true)
+
+	compiled, err := Compile(topo, RouteIntent{
+		Paths:        []string{"B/D"},
+		Strategy:     StrategyPeak,
+		EndpointKind: EndpointRendrPacket,
+	})
+	if err != nil {
+		t.Fatalf("compile packet leaf: %v", err)
+	}
+	if compiled.SessionKind != SessionKindPacket || compiled.Target.Kind != TargetPeak {
+		t.Fatalf("compiled session/target = %s/%s, want packet/peak", compiled.SessionKind, compiled.Target.Kind)
+	}
+	if len(compiled.Leaves) != 1 || compiled.Target.Children[0].Descriptor == nil {
+		t.Fatalf("missing leaf descriptor: %+v", compiled)
+	}
+	leaf := compiled.Leaves[0]
+	if leaf.TerminalNodeID != "D" || leaf.ExpectedRuntimeInstanceID != "inst-D" || leaf.SessionKind != SessionKindPacket {
+		t.Fatalf("unexpected leaf identity: %+v", leaf)
+	}
+	if got := leaf.LogicalPath; got.Expression != "B/D" || got.CarrierEntry != "B" || got.CarrierKind != CarrierRelayChain || len(got.Hops) != 3 || len(got.Edges) != 2 {
+		t.Fatalf("incomplete logical path descriptor: %+v", got)
+	}
+
+	compiled.ResolvedPaths[0].Hops[1] = "changed"
+	if leaf.LogicalPath.Hops[1] != "B" {
+		t.Fatal("leaf descriptor aliases mutable resolved path hops")
+	}
 }
 
 func TestC001LineTopologyCompiles(t *testing.T) {

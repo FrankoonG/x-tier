@@ -37,6 +37,10 @@ func ResolvePath(t Topology, expr string, endpoint EndpointKind) (ResolvedPath, 
 	if len(parts) == 0 {
 		return ResolvedPath{}, errf("path.empty", expr, "path expression is empty")
 	}
+	sessionKind, ok := endpoint.SessionKind()
+	if !ok {
+		return ResolvedPath{}, errf("route.endpoint_unknown", expr, "unknown endpoint kind %q", endpoint)
+	}
 	hops := make([]NodeID, 0, len(parts)+1)
 	hops = append(hops, t.Local)
 	for _, part := range parts {
@@ -113,6 +117,7 @@ func ResolvePath(t Topology, expr string, endpoint EndpointKind) (ResolvedPath, 
 		CarrierKind:                carrier,
 		CarrierEntry:               hops[1],
 		EndpointKind:               endpoint,
+		SessionKind:                sessionKind,
 		LeafTransport:              leafTransport,
 		Dialable:                   true,
 		Edges:                      edges,

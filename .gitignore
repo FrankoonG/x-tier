@@ -1,5 +1,14 @@
-docs/
-test/
+/docs/
+/test/
 AGENTS.md
 CLAUDE.md
 build/
+test-results/
+xtier.json
+xtier.json.*
+*.last-good
+*.control-token
+*.web-token
+*.daemon.lock
+*.bak.*
+keystore/
