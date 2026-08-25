@@ -7,10 +7,20 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strconv"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
+
+func stableIdentityKey(parent *os.File, leaf string) (string, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(parent.Fd()), &stat); err != nil {
+		return "", err
+	}
+	return strconv.FormatUint(uint64(stat.Dev), 16) + ":" +
+		strconv.FormatUint(stat.Ino, 16) + ":" + leaf, nil
+}
 
 func normalizedConfigName(_ *os.Root, name string) (string, error) {
 	return name, nil
@@ -58,6 +68,14 @@ func secureRootDirectory(root *os.Root, diagnosticPath string, created bool) err
 		return fmt.Errorf("%w: %s mode is %04o, want 0700", ErrInsecureState, diagnosticPath, mode)
 	}
 	return nil
+}
+
+func secureLegacyIdentityRootDirectory(root *os.Root, diagnosticPath string) error {
+	return secureRootDirectory(root, diagnosticPath, false)
+}
+
+func openLegacyIdentityRootFile(root *os.Root, name string) (*os.File, error) {
+	return openSecureRootFile(root, name, os.O_RDONLY, 0)
 }
 
 func openSecureRootFile(root *os.Root, name string, flag int, perm fs.FileMode) (*os.File, error) {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/FrankoonG/x-tier/internal/configstore"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
 
 func TestDaemonStableLeaseSurvivesLockRenameAndParentRebind(t *testing.T) {
@@ -30,7 +31,11 @@ func TestDaemonStableLeaseSurvivesLockRenameAndParentRebind(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	if err := os.Rename(path+".daemon.lock", path+".daemon.lock.renamed"); err != nil {
+	lockPath, err := first.stateStore.DiagnosticPath(statestore.DaemonLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(lockPath, lockPath+".renamed"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(live, old); err != nil {

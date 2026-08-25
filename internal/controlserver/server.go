@@ -21,6 +21,7 @@ import (
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
 
 const (
@@ -42,6 +43,7 @@ type Server struct {
 	configPath   string
 	ownershipKey string
 	tokenPath    string
+	stateStore   *statestore.Store
 	authEpoch    string
 	status       StatusProvider
 
@@ -72,16 +74,17 @@ type Server struct {
 	commands           sync.WaitGroup
 	execute            func(context.Context, []string, io.Writer, io.Writer) cli.ExecutionResult
 
-	shutdownOnce   sync.Once
-	serveDone      chan struct{}
-	closedDone     chan struct{}
-	serveErrMu     sync.Mutex
-	serveErr       error
-	shutdownErr    error
-	shutdownWait   time.Duration
-	mutationWait   time.Duration
-	restoreConfig  func(int64, bool) (configstore.UpdateResult, error)
-	createIdentity domainIdentityCreator
+	shutdownOnce        sync.Once
+	serveDone           chan struct{}
+	closedDone          chan struct{}
+	serveErrMu          sync.Mutex
+	serveErr            error
+	shutdownErr         error
+	shutdownWait        time.Duration
+	mutationWait        time.Duration
+	restoreConfig       func(int64, bool) (configstore.UpdateResult, error)
+	createIdentity      domainIdentityCreator
+	createStoreIdentity domainStoreIdentityCreator
 }
 
 type cachedResponse struct {
@@ -105,7 +108,7 @@ type RuntimeReloader interface {
 }
 
 func Start(ctx context.Context, addr, configPath string, providers ...StatusProvider) (*Server, error) {
-	return start(ctx, addr, configPath, "", providers...)
+	return start(ctx, addr, configPath, "", nil, providers...)
 }
 
 // StartOwned serves a daemon whose configPath is pinned to a directory handle
@@ -114,10 +117,23 @@ func StartOwned(ctx context.Context, addr, configPath, ownershipKey string, prov
 	if ownershipKey == "" {
 		return nil, fmt.Errorf("control.ownership_key_required")
 	}
-	return start(ctx, addr, configPath, ownershipKey, providers...)
+	return start(ctx, addr, configPath, ownershipKey, nil, providers...)
 }
 
-func start(ctx context.Context, addr, configPath, ownershipKey string, providers ...StatusProvider) (*Server, error) {
+// StartOwnedStore serves a daemon using the object-bound state store already
+// held by its lifetime lease. The caller retains ownership of store and must
+// close the server before closing it.
+func StartOwnedStore(ctx context.Context, addr string, store *statestore.Store, ownershipKey string, providers ...StatusProvider) (*Server, error) {
+	if store == nil {
+		return nil, fmt.Errorf("control.state_store_required")
+	}
+	if ownershipKey == "" {
+		return nil, fmt.Errorf("control.ownership_key_required")
+	}
+	return start(ctx, addr, store.ConfigPath(), ownershipKey, store, providers...)
+}
+
+func start(ctx context.Context, addr, configPath, ownershipKey string, store *statestore.Store, providers ...StatusProvider) (*Server, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("control.context_nil")
 	}
@@ -145,8 +161,14 @@ func start(ctx context.Context, addr, configPath, ownershipKey string, providers
 		return nil, fmt.Errorf("control.non_loopback_forbidden: %s", addr)
 	}
 	tokenPath := controlapi.TokenPath(configPath)
-	if _, err := controlapi.CreateToken(tokenPath); err != nil {
-		return nil, fmt.Errorf("control.token_create: %w", err)
+	var tokenErr error
+	if store != nil {
+		_, tokenErr = controlapi.CreateStoreToken(store, statestore.ControlToken)
+	} else {
+		_, tokenErr = controlapi.CreateToken(tokenPath)
+	}
+	if tokenErr != nil {
+		return nil, fmt.Errorf("control.token_create: %w", tokenErr)
 	}
 	ln, err := net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
@@ -158,22 +180,27 @@ func start(ctx context.Context, addr, configPath, ownershipKey string, providers
 		return nil, fmt.Errorf("control.auth_epoch_random_failed")
 	}
 	s := &Server{
-		ctx:            ctx,
-		listener:       ln,
-		configPath:     configPath,
-		ownershipKey:   ownershipKey,
-		tokenPath:      tokenPath,
-		authEpoch:      hex.EncodeToString(epoch[:]),
-		status:         statusProvider,
-		requests:       make(map[string]*cachedResponse),
-		domainRequests: make(map[string]*cachedDomainResponse),
-		usedChallenges: make(map[string]time.Time),
-		challengeMax:   challengeReplayCapacity,
-		challengeTTL:   challengeTTL,
-		now:            time.Now,
-		shutdownWait:   defaultShutdownTimeout,
-		createIdentity: createDomainIdentity,
+		ctx:                 ctx,
+		listener:            ln,
+		configPath:          configPath,
+		ownershipKey:        ownershipKey,
+		tokenPath:           tokenPath,
+		stateStore:          store,
+		authEpoch:           hex.EncodeToString(epoch[:]),
+		status:              statusProvider,
+		requests:            make(map[string]*cachedResponse),
+		domainRequests:      make(map[string]*cachedDomainResponse),
+		usedChallenges:      make(map[string]time.Time),
+		challengeMax:        challengeReplayCapacity,
+		challengeTTL:        challengeTTL,
+		now:                 time.Now,
+		shutdownWait:        defaultShutdownTimeout,
+		createIdentity:      createDomainIdentity,
+		createStoreIdentity: createDomainStoreIdentity,
 		execute: func(ctx context.Context, args []string, stdout, stderr io.Writer) cli.ExecutionResult {
+			if store != nil {
+				return cli.RunOwnedDaemonStoreContext(ctx, args, ownershipKey, store, stdout, stderr)
+			}
 			if ownershipKey != "" {
 				return cli.RunOwnedDaemonContext(ctx, args, ownershipKey, stdout, stderr)
 			}
@@ -612,6 +639,9 @@ func (s *Server) restoreLastKnownGood(revision int64, dryRun bool) (configstore.
 			"last-known-good restore requires daemon-owned config identity",
 		)
 	}
+	if s.stateStore != nil {
+		return configstore.RestoreStoreLastKnownGood(s.stateStore, revision, dryRun)
+	}
 	return configstore.RestorePinnedLastKnownGood(
 		s.configPath,
 		s.ownershipKey,
@@ -888,7 +918,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) issueChallenge() (controlapi.Challenge, error) {
-	token, err := controlapi.ReadToken(s.tokenPath)
+	token, err := s.readControlToken()
 	if err != nil {
 		return controlapi.Challenge{}, fmt.Errorf("control.auth_unavailable: %w", err)
 	}
@@ -914,7 +944,7 @@ func (s *Server) authenticated(maxBody int64, next http.HandlerFunc) http.Handle
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			return
 		}
-		token, err := controlapi.ReadToken(s.tokenPath)
+		token, err := s.readControlToken()
 		if err != nil {
 			http.Error(w, "control.auth_unavailable", http.StatusServiceUnavailable)
 			return
@@ -945,6 +975,13 @@ func (s *Server) authenticated(maxBody int64, next http.HandlerFunc) http.Handle
 		w.WriteHeader(status)
 		_, _ = w.Write(responseBody)
 	}
+}
+
+func (s *Server) readControlToken() (string, error) {
+	if s.stateStore != nil {
+		return controlapi.ReadStoreToken(s.stateStore, statestore.ControlToken)
+	}
+	return controlapi.ReadToken(s.tokenPath)
 }
 
 func (s *Server) claimChallenge(challenge controlapi.Challenge) bool {

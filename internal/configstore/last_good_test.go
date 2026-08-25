@@ -97,6 +97,9 @@ func TestRestorePinnedLastKnownGoodRepairsOnlyInvalidActiveConfig(t *testing.T) 
 func TestSaveLastKnownGoodRejectsSymlinkTarget(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "xtier.json")
+	if err := os.MkdirAll(filepath.Dir(LastKnownGoodPath(configPath)), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	target := filepath.Join(dir, "target")
 	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,6 +122,9 @@ func TestSaveLastKnownGoodRejectsSymlinkTarget(t *testing.T) {
 func TestLoadLastKnownGoodRejectsNewerSchemaWithoutRewriting(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "xtier.json")
 	payload := []byte(`{"schema_version":2,"revision":9,"node":{},"system":{},"future":true}`)
+	if err := os.MkdirAll(filepath.Dir(LastKnownGoodPath(configPath)), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeFileAtomic(LastKnownGoodPath(configPath), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +143,9 @@ func TestLoadLastKnownGoodRejectsNewerSchemaWithoutRewriting(t *testing.T) {
 func TestLoadLastKnownGoodRejectsUnknownUnversionedFieldWithoutRewriting(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "xtier.json")
 	payload := []byte(`{"revision":9,"node":{},"system":{},"future_extension":true}`)
+	if err := os.MkdirAll(filepath.Dir(LastKnownGoodPath(configPath)), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeFileAtomic(LastKnownGoodPath(configPath), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}

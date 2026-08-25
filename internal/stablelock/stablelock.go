@@ -2,6 +2,7 @@ package stablelock
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"sync"
@@ -32,7 +33,24 @@ func AcquirePathIdentity(namespace, namePath, objectPath string) (io.Closer, err
 		_ = nameLease.Close()
 		return nil, err
 	}
-	objectLease, err := acquire(namespace+"-object", key)
+	return acquirePathIdentityKey(namespace, key, nameLease)
+}
+
+// AcquirePathIdentityKey binds the stable external name to an object identity
+// obtained from an already-open filesystem handle.
+func AcquirePathIdentityKey(namespace, namePath, objectKey string) (io.Closer, error) {
+	if objectKey == "" {
+		return nil, fmt.Errorf("stable lock object key is empty")
+	}
+	nameLease, err := acquire(namespace+"-name", filepath.Clean(namePath))
+	if err != nil {
+		return nil, err
+	}
+	return acquirePathIdentityKey(namespace, objectKey, nameLease)
+}
+
+func acquirePathIdentityKey(namespace, objectKey string, nameLease io.Closer) (io.Closer, error) {
+	objectLease, err := acquire(namespace+"-object", objectKey)
 	if err != nil {
 		_ = nameLease.Close()
 		return nil, err

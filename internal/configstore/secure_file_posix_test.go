@@ -92,10 +92,11 @@ func TestLoadRejectsPOSIXWrongOwnerWhenPrivileged(t *testing.T) {
 
 func TestWithLockRejectsPOSIXWideMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path+".lock", []byte("stale\n"), 0o600); err != nil {
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, []byte("stale\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path+".lock", 0o644); err != nil {
+	if err := os.Chmod(lockPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := WithLock(path, func() error { return nil }); !errors.Is(err, ErrInsecureFile) {
@@ -123,10 +124,11 @@ func TestWithLockRejectsPOSIXWrongOwnerWhenPrivileged(t *testing.T) {
 		t.Skip("changing file ownership requires root")
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path+".lock", []byte("stale\n"), 0o600); err != nil {
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, []byte("stale\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chown(path+".lock", 65534, -1); err != nil {
+	if err := os.Chown(lockPath, 65534, -1); err != nil {
 		t.Skipf("chown unavailable: %v", err)
 	}
 	if err := WithLock(path, func() error { return nil }); !errors.Is(err, ErrInsecureFile) {

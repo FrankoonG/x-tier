@@ -67,7 +67,7 @@ func SaveLastKnownGood(configPath string, cfg Config) error {
 	if err := Validate(cfg); err != nil {
 		return configErrorf("config.last_good_validate: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(LastKnownGoodPath(configPath)), 0o700); err != nil {
 		return configErrorf("config.last_good_directory: %w", err)
 	}
 	payload, err := json.MarshalIndent(cfg, "", "  ")
@@ -86,6 +86,10 @@ func LoadLastKnownGood(configPath string) (Config, error) {
 	if err != nil {
 		return Config{}, configErrorf("config.last_good_read: %w", err)
 	}
+	return decodeLastKnownGood(payload)
+}
+
+func decodeLastKnownGood(payload []byte) (Config, error) {
 	schemaVersion, versioned, err := configSchemaFromJSON(payload)
 	if err != nil {
 		return Config{}, configErrorf("config.last_good_decode: %w", err)
@@ -107,4 +111,10 @@ func LoadLastKnownGood(configPath string) (Config, error) {
 		return Config{}, configErrorf("config.last_good_decode: %w", err)
 	}
 	return cfg, nil
+}
+
+// DecodeCheckpointDocument applies the same strict and schema-aware rules as
+// loading a persisted last-known-good object without performing path I/O.
+func DecodeCheckpointDocument(payload []byte) (Config, error) {
+	return decodeLastKnownGood(payload)
 }

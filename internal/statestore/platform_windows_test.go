@@ -85,6 +85,32 @@ func TestWindowsExclusiveCreateOverridesBroadParentDACL(t *testing.T) {
 	assertWindowsExactACL(t, file, false, true)
 }
 
+func TestWindowsRelativeRenameSupportsSingleCharacterTarget(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	directory, err := root.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := createExclusiveInRoot(root, directory, "a", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceInRoot(root, directory, "a", []byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := readFromRoot(root, "a", 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "second" {
+		t.Fatalf("single-character target payload=%q", payload)
+	}
+}
+
 func TestWindowsExistingFileWithBroadDACLIsRejectedWithoutRepair(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "existing")

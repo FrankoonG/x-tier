@@ -39,7 +39,10 @@ const (
 	LastKnownGood
 )
 
-var ErrInsecureState = errors.New("insecure private state")
+var (
+	ErrInsecureState        = errors.New("insecure private state")
+	ErrCommitOutcomeUnknown = errors.New("private state commit outcome unknown")
+)
 
 type Store struct {
 	configPath string
@@ -163,6 +166,15 @@ func (s *Store) ConfigPath() string { return s.configPath }
 func (s *Store) ConfigName() string { return s.configName }
 func (s *Store) ConfigKey() string  { return s.configKey }
 
+// StableIdentityKey identifies the config's parent directory object and leaf
+// using the same handle that backs all Store config operations.
+func (s *Store) StableIdentityKey() (string, error) {
+	if s == nil || s.parentDir == nil {
+		return "", fmt.Errorf("statestore.closed")
+	}
+	return stableIdentityKey(s.parentDir, s.configLeaf)
+}
+
 // DiagnosticPath is for operator output and compatibility tests only. Runtime
 // I/O must use Store methods because this path can be rebound after Open.
 func (s *Store) DiagnosticPath(object Object) (string, error) {
@@ -246,6 +258,13 @@ func (s *Store) OpenLock(object Object) (*os.File, error) {
 		return nil, fmt.Errorf("statestore.lock_open: %w", err)
 	}
 	return file, nil
+}
+
+func (s *Store) SyncConfigParent() error {
+	if s == nil || s.parentDir == nil {
+		return fmt.Errorf("statestore.closed")
+	}
+	return syncDirectory(s.parentDir)
 }
 
 func (s *Store) CreateBackup(data []byte) (string, error) {
@@ -400,7 +419,7 @@ func createExclusiveInRoot(root *os.Root, directory *os.File, name string, data 
 		return err
 	}
 	if err = syncDirectory(directory); err != nil {
-		return fmt.Errorf("statestore.publish_sync: %w", err)
+		return fmt.Errorf("%w: statestore.publish_sync: %v", ErrCommitOutcomeUnknown, err)
 	}
 	return nil
 }
@@ -442,7 +461,7 @@ func replaceInRoot(root *os.Root, directory *os.File, name string, data []byte) 
 		return err
 	}
 	if err = syncDirectory(directory); err != nil {
-		return fmt.Errorf("statestore.replace_sync: %w", err)
+		return fmt.Errorf("%w: statestore.replace_sync: %v", ErrCommitOutcomeUnknown, err)
 	}
 	return nil
 }

@@ -19,6 +19,38 @@ import (
 
 const testLegacyNodeID = "node-0123456789abcdef0123456789abcdef"
 
+func TestDocumentCodecIsStrictAndCanonical(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Revision = 7
+	cfg.Node.DisplayName = "codec"
+	payload, err := EncodeDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) == 0 || payload[len(payload)-1] != '\n' {
+		t.Fatalf("encoded document is not newline terminated: %q", payload)
+	}
+	decoded, err := DecodeDocument(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Revision != 7 || decoded.Node.DisplayName != "codec" {
+		t.Fatalf("decoded document = %+v", decoded)
+	}
+
+	unknown := bytes.Replace(payload, []byte("\n}"), []byte(",\n  \"future\": true\n}"), 1)
+	if bytes.Equal(unknown, payload) {
+		t.Fatal("unknown-field fixture did not modify the document")
+	}
+	if _, err := DecodeDocument(unknown); err == nil || !IsContentError(err) {
+		t.Fatalf("unknown field error=%v, want classified content error", err)
+	}
+	trailing := append(append([]byte(nil), payload...), []byte("{}")...)
+	if _, err := DecodeDocument(trailing); err == nil || !IsContentError(err) {
+		t.Fatalf("trailing JSON error=%v, want classified content error", err)
+	}
+}
+
 func TestLoadExistingRejectsMissingConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 	if _, err := LoadExisting(path); !errors.Is(err, os.ErrNotExist) {
@@ -159,7 +191,8 @@ func TestWithLockRejectsSymlinkWithoutChangingTarget(t *testing.T) {
 	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, path+".lock"); err != nil {
+	lockPath := path + ".lock"
+	if err := os.Symlink(target, lockPath); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	if err := WithLock(path, func() error { return nil }); err == nil {

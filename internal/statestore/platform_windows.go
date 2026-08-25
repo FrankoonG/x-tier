@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -39,6 +40,20 @@ type fileRenameInformation struct {
 	RootDirectory  windows.Handle
 	FileNameLength uint32
 	FileName       [1]uint16
+}
+
+func stableIdentityKey(parent *os.File, leaf string) (string, error) {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(parent.Fd()), &info); err != nil {
+		return "", err
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		return "", fmt.Errorf("statestore parent handle is not a directory")
+	}
+	return strconv.FormatUint(uint64(info.VolumeSerialNumber), 16) + ":" +
+		strconv.FormatUint(uint64(info.FileIndexHigh), 16) + ":" +
+		strconv.FormatUint(uint64(info.FileIndexLow), 16) + ":" +
+		strings.ToLower(leaf), nil
 }
 
 func normalizedConfigName(root *os.Root, name string) (string, error) {
@@ -122,6 +137,56 @@ func secureRootDirectory(root *os.Root, diagnosticPath string, _ bool) error {
 		return err
 	}
 	return validateWindowsDirectoryObject(directory, diagnosticPath)
+}
+
+func secureLegacyIdentityRootDirectory(root *os.Root, diagnosticPath string) error {
+	directory, err := root.OpenFile(".", os.O_RDONLY|int(windows.O_FILE_FLAG_OPEN_REPARSE_POINT), 0)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if err := validateWindowsDirectoryObject(directory, diagnosticPath); err != nil {
+		return err
+	}
+	if err := validateWindowsLegacyIdentityACL(directory, diagnosticPath, true); err != nil {
+		return err
+	}
+	return validateWindowsDirectoryObject(directory, diagnosticPath)
+}
+
+func openLegacyIdentityRootFile(root *os.Root, name string) (*os.File, error) {
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 {
+		return nil, insecureWindowsState(name, "reparse points are not allowed")
+	}
+	file, err := root.OpenFile(name, os.O_RDONLY|int(windows.O_FILE_FLAG_OPEN_REPARSE_POINT), 0)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(failure error) (*os.File, error) {
+		_ = file.Close()
+		return nil, failure
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		return fail(err)
+	}
+	if !os.SameFile(before, opened) {
+		return fail(insecureWindowsState(name, "file changed while opening"))
+	}
+	if err := validateWindowsFileObject(file, name); err != nil {
+		return fail(err)
+	}
+	if err := validateWindowsLegacyIdentityACL(file, name, false); err != nil {
+		return fail(err)
+	}
+	if err := validateWindowsFileObject(file, name); err != nil {
+		return fail(err)
+	}
+	return file, nil
 }
 
 func openSecureRootFile(root *os.Root, name string, flag int, perm fs.FileMode) (*os.File, error) {
@@ -522,6 +587,10 @@ func windowsCaseFold(name string) (string, error) {
 }
 
 func validateWindowsOwnerOnlyACL(file *os.File, path string, directory bool) error {
+	return validateWindowsOwnerOnlyACLPolicy(file, path, directory, true)
+}
+
+func validateWindowsOwnerOnlyACLPolicy(file *os.File, path string, directory, requireCurrentOwner bool) error {
 	descriptor, err := windows.GetSecurityInfo(
 		windows.Handle(file.Fd()),
 		windows.SE_FILE_OBJECT,
@@ -550,8 +619,20 @@ func validateWindowsOwnerOnlyACL(file *os.File, path string, directory bool) err
 	if err != nil {
 		return err
 	}
-	if owner == nil || ownerDefaulted || !owner.Equals(trusted[0]) {
-		return insecureWindowsState(path, "owner is not explicitly the current user")
+	ownerTrusted := false
+	if owner != nil && !ownerDefaulted {
+		for index, trustedSID := range trusted {
+			if trustedSID.Equals(owner) && (!requireCurrentOwner || index == 0) {
+				ownerTrusted = true
+				break
+			}
+		}
+	}
+	if !ownerTrusted {
+		if requireCurrentOwner {
+			return insecureWindowsState(path, "owner is not explicitly the current user")
+		}
+		return insecureWindowsState(path, "owner is not an allowed legacy principal")
 	}
 	dacl, daclDefaulted, err := descriptor.DACL()
 	if err != nil {
@@ -611,6 +692,97 @@ func validateWindowsOwnerOnlyACL(file *os.File, path string, directory bool) err
 	for index, present := range seen {
 		if !present {
 			return insecureWindowsState(path, "DACL omits allowed SID "+trusted[index].String())
+		}
+	}
+	return nil
+}
+
+func validateWindowsLegacyIdentityACL(file *os.File, path string, directory bool) error {
+	descriptor, err := windows.GetSecurityInfo(
+		windows.Handle(file.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return err
+	}
+	if descriptor == nil || !descriptor.IsValid() {
+		return insecureWindowsState(path, "legacy security descriptor is missing or invalid")
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return err
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return insecureWindowsState(path, "legacy DACL inheritance is enabled")
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	if dacl == nil {
+		return insecureWindowsState(path, "legacy DACL is missing")
+	}
+	trusted, err := windowsTrustedSIDs()
+	if err != nil {
+		return err
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	ownerTrusted := false
+	for _, trustedSID := range trusted {
+		if owner != nil && trustedSID.Equals(owner) {
+			ownerTrusted = true
+			break
+		}
+	}
+	if !ownerTrusted {
+		return insecureWindowsState(path, "legacy owner is not an allowed principal")
+	}
+
+	seenEffective := make([]bool, len(trusted))
+	seenInheritedByChildren := make([]bool, len(trusted))
+	for index := uint16(0); index < dacl.AceCount; index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, uint32(index), &ace); err != nil {
+			return err
+		}
+		if ace == nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE ||
+			ace.Header.AceFlags&windows.INHERITED_ACE != 0 {
+			return insecureWindowsState(path, fmt.Sprintf("legacy ACE %d is not an explicit allow ACE", index))
+		}
+		const required = windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE |
+			windows.FILE_GENERIC_EXECUTE | windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER
+		if ace.Mask&windows.GENERIC_ALL == 0 && ace.Mask&required != required {
+			return insecureWindowsState(path, fmt.Sprintf("legacy ACE %d lacks full owner access", index))
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		matched := -1
+		for trustedIndex, trustedSID := range trusted {
+			if trustedSID.Equals(sid) {
+				matched = trustedIndex
+				break
+			}
+		}
+		if matched < 0 {
+			return insecureWindowsState(path, fmt.Sprintf("legacy ACE %d grants an unexpected SID", index))
+		}
+		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 {
+			seenEffective[matched] = true
+		}
+		if ace.Header.AceFlags&(windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE) ==
+			windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE {
+			seenInheritedByChildren[matched] = true
+		}
+	}
+	for index := range trusted {
+		if !seenEffective[index] {
+			return insecureWindowsState(path, "legacy DACL omits effective access for "+trusted[index].String())
+		}
+		if directory && !seenInheritedByChildren[index] {
+			return insecureWindowsState(path, "legacy DACL omits child inheritance for "+trusted[index].String())
 		}
 	}
 	return nil
@@ -692,6 +864,9 @@ func ntRenameRelative(source, directory windows.Handle, target string, replace b
 	name = name[:len(name)-1]
 	var layout fileRenameInformation
 	bufferSize := int(unsafe.Offsetof(layout.FileName)) + len(name)*2
+	if minimum := int(unsafe.Sizeof(layout)); bufferSize < minimum {
+		bufferSize = minimum
+	}
 	buffer := make([]byte, bufferSize)
 	info := (*fileRenameInformation)(unsafe.Pointer(&buffer[0]))
 	info.Flags = windows.FILE_RENAME_POSIX_SEMANTICS

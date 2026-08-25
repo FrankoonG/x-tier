@@ -345,6 +345,26 @@ func decodeConfig(b []byte) (Config, error) {
 	return cfg, nil
 }
 
+// DecodeDocument strictly decodes one complete configuration document. It is
+// the shared boundary for path-backed, object-backed, and migration reads.
+func DecodeDocument(payload []byte) (Config, error) {
+	return decodeConfig(payload)
+}
+
+// EncodeDocument normalizes and validates a configuration before producing
+// its canonical persisted representation.
+func EncodeDocument(cfg Config) ([]byte, error) {
+	normalize(&cfg)
+	if err := Validate(cfg); err != nil {
+		return nil, err
+	}
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(payload, '\n'), nil
+}
+
 func ensureJSONEOF(decoder *json.Decoder) error {
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
@@ -357,18 +377,13 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 }
 
 func Save(path string, cfg Config) error {
-	normalize(&cfg)
-	if err := Validate(cfg); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	b, err := EncodeDocument(cfg)
 	if err != nil {
 		return err
 	}
-	b = append(b, '\n')
 
 	if previous, err := readSecureFile(path); err == nil {
 		if pruneErr := pruneConfigBackups(path, maxConfigBackups-1); pruneErr != nil {

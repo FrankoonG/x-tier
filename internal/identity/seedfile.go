@@ -63,7 +63,7 @@ func CreateSeed(path string) (NodeSeed, error) {
 	if err != nil {
 		return NodeSeed{}, err
 	}
-	encoded, err := marshalSeedEnvelope(seed)
+	encoded, err := MarshalSeedEnvelope(seed)
 	if err != nil {
 		return NodeSeed{}, err
 	}
@@ -106,10 +106,12 @@ func LoadSeed(path string) (NodeSeed, error) {
 	if len(data) > maxSeedEnvelopeSize {
 		return NodeSeed{}, fmt.Errorf("%w: file is too large", ErrInvalidSeedEnvelope)
 	}
-	return unmarshalSeedEnvelope(data)
+	return UnmarshalSeedEnvelope(data)
 }
 
-func marshalSeedEnvelope(seed NodeSeed) ([]byte, error) {
+// MarshalSeedEnvelope encodes a NodeSeed in the only private-storage format
+// accepted by X-Tier. The returned bytes remain secret material.
+func MarshalSeedEnvelope(seed NodeSeed) ([]byte, error) {
 	envelope := struct {
 		Version   int    `json:"version"`
 		Type      string `json:"type"`
@@ -130,7 +132,9 @@ func marshalSeedEnvelope(seed NodeSeed) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-func unmarshalSeedEnvelope(data []byte) (NodeSeed, error) {
+// UnmarshalSeedEnvelope strictly validates and decodes private seed bytes
+// already obtained from a trusted storage object.
+func UnmarshalSeedEnvelope(data []byte) (NodeSeed, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	token, err := decoder.Token()
 	if err != nil || token != json.Delim('{') {

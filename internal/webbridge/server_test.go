@@ -23,7 +23,46 @@ import (
 	"time"
 
 	"github.com/FrankoonG/x-tier/internal/controlapi"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
+
+func TestStoreBackedBridgeAuthenticatesAndProxiesWithoutLegacyPaths(t *testing.T) {
+	upstream := newTestUpstream(t)
+	store, err := statestore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Replace(statestore.ControlToken, []byte(upstream.token+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Replace(statestore.WebToken, []byte(upstream.webToken+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	server, err := Start(context.Background(), Config{
+		Addr: "127.0.0.1:0", ControlAddr: upstream.listener.Addr().String(), StateStore: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	request, err := http.NewRequest(http.MethodGet, "http://"+server.Addr()+controlapi.StatusPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = server.Addr()
+	request.Header.Set("Origin", "http://"+server.Addr())
+	request.SetBasicAuth(BasicUsername, upstream.webToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("store-backed bridge status=%d", response.StatusCode)
+	}
+}
 
 type upstreamRecord struct {
 	method      string

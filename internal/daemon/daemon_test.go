@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -18,13 +19,64 @@ import (
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/dataplane"
+	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/rendradapter"
 	"github.com/FrankoonG/x-tier/internal/route"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/webbridge"
 	"github.com/FrankoonG/x-tier/internal/xrayconfig"
 	"github.com/FrankoonG/x-tier/internal/xrayrt"
 )
+
+func daemonControlToken(d *Daemon) (string, error) {
+	return controlapi.ReadStoreToken(d.stateStore, statestore.ControlToken)
+}
+
+func daemonStatus(d *Daemon) (controlapi.DaemonStatus, error) {
+	token, err := daemonControlToken(d)
+	if err != nil {
+		return controlapi.DaemonStatus{}, err
+	}
+	return controlapi.GetStatusToken(d.Addr(), token)
+}
+
+func daemonExecute(d *Daemon, request controlapi.Request) (controlapi.Response, error) {
+	token, err := daemonControlToken(d)
+	if err != nil {
+		return controlapi.Response{}, err
+	}
+	return controlapi.ExecuteToken(d.Addr(), token, request)
+}
+
+func loadStoreLastKnownGood(configPath string) (cfg configstore.Config, err error) {
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		return configstore.Config{}, err
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		return configstore.Config{}, err
+	}
+	defer func() { err = errors.Join(err, store.Close()) }()
+	return configstore.LoadStoreLastKnownGood(store)
+}
+
+func saveStoreLastKnownGood(t *testing.T, configPath string, cfg configstore.Config) {
+	t.Helper()
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := configstore.SaveStoreLastKnownGood(store, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestControlPlaneEndToEnd(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "xtier.json")
@@ -56,7 +108,7 @@ func TestControlPlaneEndToEnd(t *testing.T) {
 		t.Fatalf("unauthenticated status code=%d", resp.StatusCode)
 	}
 
-	status, err := controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+	status, err := daemonStatus(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,11 +149,11 @@ func TestControlPlaneEndToEnd(t *testing.T) {
 		Revision:  0,
 		RequestID: "40000000000000000000000000000000",
 	}
-	first, err := controlapi.Execute(d.Addr(), controlapi.TokenPath(d.ConfigPath()), request)
+	first, err := daemonExecute(d, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := controlapi.Execute(d.Addr(), controlapi.TokenPath(d.ConfigPath()), request)
+	second, err := daemonExecute(d, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +168,7 @@ func TestControlPlaneEndToEnd(t *testing.T) {
 		t.Fatalf("same-process replay executed again: revision=%d name=%q", after.Revision, after.Node.DisplayName)
 	}
 
-	status, err = controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+	status, err = daemonStatus(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +178,7 @@ func TestControlPlaneEndToEnd(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for status.Reconcile.AppliedRevision != 1 && time.Now().Before(deadline) {
 		time.Sleep(25 * time.Millisecond)
-		status, err = controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+		status, err = daemonStatus(d)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,18 +223,154 @@ func TestStartPersistsInitialDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestRestartAcceptsEvolvedObjectCheckpoint(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	cfg := configstore.DefaultConfig()
+	if err := configstore.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	saveStoreLastKnownGood(t, configPath, cfg)
+	first, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID, err := controlapi.NewRequestID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := daemonExecute(first, controlapi.Request{
+		Args: []string{"local", "identity", "rename", "evolved"}, JSON: true,
+		Revision: 0, RequestID: requestID,
+	})
+	if err != nil || response.ExitCode != 0 {
+		_ = first.Close()
+		t.Fatalf("mutate migrated daemon response=%+v err=%v", response, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	checkpointAdvanced := false
+	for time.Now().Before(deadline) {
+		status, statusErr := first.Status(context.Background())
+		if statusErr != nil {
+			_ = first.Close()
+			t.Fatal(statusErr)
+		}
+		if status.Configuration.LastKnownGoodRevision == 1 {
+			checkpointAdvanced = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !checkpointAdvanced {
+		_ = first.Close()
+		t.Fatal("migrated checkpoint did not advance to revision 1")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("restart after checkpoint evolution: %v", err)
+	}
+	defer second.Close()
+	status, err := second.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Revision != 1 || status.Configuration.LastKnownGoodRevision != 1 {
+		t.Fatalf("restarted status=%+v", status)
+	}
+}
+
 func TestDaemonDoesNotRecreateMissingConfigWhenLastKnownGoodExists(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "xtier.json")
 	cfg := configstore.DefaultConfig()
 	cfg.Revision = 7
-	if err := configstore.SaveLastKnownGood(configPath, cfg); err != nil {
-		t.Fatal(err)
-	}
+	saveStoreLastKnownGood(t, configPath, cfg)
 	if _, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"}); err == nil || !strings.Contains(err.Error(), "config.missing_with_last_good") {
 		t.Fatalf("missing configured file error=%v", err)
 	}
 	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing configured file was recreated: %v", err)
+	}
+}
+
+func TestDaemonRejectsMissingConfigWithAmbiguousLegacyLastKnownGood(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	if err := os.WriteFile(configPath+".last-good", []byte(`{"revision":7}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if d != nil {
+		defer d.Close()
+	}
+	if publicerr.Code(err, "operation.failed") != legacyRecoveryAmbiguousError {
+		t.Fatalf("ambiguous legacy recovery error=%v code=%q", err, publicerr.Code(err, "operation.failed"))
+	}
+	if _, statErr := os.Stat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("missing configured file was recreated: %v", statErr)
+	}
+}
+
+func TestDaemonRejectsInvalidConfigWithAmbiguousLegacyLastKnownGood(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	invalid := []byte(`{"schema_version":`)
+	if err := configstore.Save(configPath, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, invalid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath+".last-good", []byte(`{"revision":7}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if d != nil {
+		defer d.Close()
+	}
+	if publicerr.Code(err, "operation.failed") != legacyRecoveryAmbiguousError {
+		t.Fatalf("ambiguous legacy recovery error=%v code=%q", err, publicerr.Code(err, "operation.failed"))
+	}
+	after, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, invalid) {
+		t.Fatalf("invalid configured content was modified: %q", after)
+	}
+}
+
+func TestDaemonRejectsMissingConfigWithAmbiguousLegacyTimestampBackup(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	backup := configPath + ".bak.20260826T010203.123456789"
+	if err := os.WriteFile(backup, []byte("legacy backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if d != nil {
+		defer d.Close()
+	}
+	if publicerr.Code(err, "operation.failed") != legacyRecoveryAmbiguousError {
+		t.Fatalf("ambiguous legacy backup error=%v code=%q", err, publicerr.Code(err, "operation.failed"))
+	}
+	if _, statErr := os.Stat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("missing configured file was recreated: %v", statErr)
+	}
+}
+
+func TestDaemonAllowsDefaultInitializationBesideNonBackupNeighbor(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	if err := os.WriteFile(configPath+".bak.notes", []byte("neighbor config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := configstore.LoadExisting(configPath); err != nil {
+		t.Fatalf("default config was not initialized: %v", err)
 	}
 }
 
@@ -537,11 +725,11 @@ func TestDaemonServesBuiltWebAppThroughAuthenticatedBridge(t *testing.T) {
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("anonymous web app response=%d", response.StatusCode)
 	}
-	webCredential, err := controlapi.ReadToken(webbridge.CredentialPath(d.ConfigPath()))
+	webCredential, err := controlapi.ReadStoreToken(d.stateStore, statestore.WebToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	controlToken, err := controlapi.ReadToken(controlapi.TokenPath(d.ConfigPath()))
+	controlToken, err := daemonControlToken(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +767,7 @@ func TestDaemonServesBuiltWebAppThroughAuthenticatedBridge(t *testing.T) {
 	if response.StatusCode != http.StatusOK || response.Header.Get("X-XTier-CSRF-Token") == "" {
 		t.Fatalf("browser status response=%d headers=%v", response.StatusCode, response.Header)
 	}
-	status, err := controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+	status, err := daemonStatus(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,8 +786,11 @@ func TestLocalReloadAppliesAndRejectsStaleRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	tokenPath := controlapi.TokenPath(d.ConfigPath())
-	before, err := controlapi.GetStatus(d.Addr(), tokenPath)
+	token, err := daemonControlToken(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := controlapi.GetStatusToken(d.Addr(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,14 +798,14 @@ func TestLocalReloadAppliesAndRejectsStaleRevision(t *testing.T) {
 		Args: []string{"local", "reload"}, JSON: true, Revision: -1,
 		RequestID: "80000000000000000000000000000000",
 	}
-	response, err := controlapi.Execute(d.Addr(), tokenPath, missingRevision)
+	response, err := controlapi.ExecuteToken(d.Addr(), token, missingRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if response.ExitCode == 0 || !strings.Contains(response.Stdout, "config.revision_required") {
 		t.Fatalf("reload without revision response=%+v", response)
 	}
-	unmodified, err := controlapi.GetStatus(d.Addr(), tokenPath)
+	unmodified, err := controlapi.GetStatusToken(d.Addr(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,14 +816,14 @@ func TestLocalReloadAppliesAndRejectsStaleRevision(t *testing.T) {
 		Args: []string{"local", "reload"}, JSON: true, Revision: 0,
 		RequestID: "81000000000000000000000000000000",
 	}
-	response, err = controlapi.Execute(d.Addr(), tokenPath, request)
+	response, err = controlapi.ExecuteToken(d.Addr(), token, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if response.ExitCode != 0 || !strings.Contains(response.Stdout, `"reconciliation_state":"applied"`) {
 		t.Fatalf("reload response=%+v", response)
 	}
-	after, err := controlapi.GetStatus(d.Addr(), tokenPath)
+	after, err := controlapi.GetStatusToken(d.Addr(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,14 +841,14 @@ func TestLocalReloadAppliesAndRejectsStaleRevision(t *testing.T) {
 	}
 	request.Revision = 1
 	request.RequestID = "81500000000000000000000000000000"
-	response, err = controlapi.Execute(d.Addr(), tokenPath, request)
+	response, err = controlapi.ExecuteToken(d.Addr(), token, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if response.ExitCode != 0 || !strings.Contains(response.Stdout, `"reconciliation_state":"applied"`) {
 		t.Fatalf("changed reload response=%+v", response)
 	}
-	changed, err := controlapi.GetStatus(d.Addr(), tokenPath)
+	changed, err := controlapi.GetStatusToken(d.Addr(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,11 +856,11 @@ func TestLocalReloadAppliesAndRejectsStaleRevision(t *testing.T) {
 		t.Fatalf("changed reload did not publish a new generation: before=%+v after=%+v", after.Xray.Current, changed.Xray.Current)
 	}
 	request.RequestID = "81700000000000000000000000000000"
-	response, err = controlapi.Execute(d.Addr(), tokenPath, request)
+	response, err = controlapi.ExecuteToken(d.Addr(), token, request)
 	if err != nil || response.ExitCode != 0 {
 		t.Fatalf("idempotent reload retry response=%+v err=%v", response, err)
 	}
-	retried, err := controlapi.GetStatus(d.Addr(), tokenPath)
+	retried, err := controlapi.GetStatusToken(d.Addr(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +869,7 @@ func TestLocalReloadAppliesAndRejectsStaleRevision(t *testing.T) {
 	}
 	request.Revision = 99
 	request.RequestID = "82000000000000000000000000000000"
-	response, err = controlapi.Execute(d.Addr(), tokenPath, request)
+	response, err = controlapi.ExecuteToken(d.Addr(), token, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -838,7 +1029,22 @@ func TestDaemonLeaseRejectsSymlink(t *testing.T) {
 	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, configPath+".daemon.lock"); err != nil {
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath, err := store.DiagnosticPath(statestore.DaemonLock)
+	if closeErr := store.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, lockPath); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	if _, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"}); err == nil {
@@ -850,6 +1056,80 @@ func TestDaemonLeaseRejectsSymlink(t *testing.T) {
 	}
 	if string(contents) != "original" {
 		t.Fatalf("symlink target was modified: %q", contents)
+	}
+}
+
+func TestSameDirectoryDaemonsUseIndependentPrivateState(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{
+		filepath.Join(dir, "a"),
+		filepath.Join(dir, "a.control-token"),
+		filepath.Join(dir, "a.web-token"),
+		filepath.Join(dir, "a.last-good"),
+		filepath.Join(dir, "a.bak.notes"),
+		filepath.Join(dir, "a.lock"),
+		filepath.Join(dir, "a.daemon.lock"),
+	}
+	for index, path := range paths {
+		cfg := configstore.DefaultConfig()
+		cfg.Node.DisplayName = fmt.Sprintf("neighbor-%d", index)
+		if err := configstore.Save(path, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	daemons := make([]*Daemon, 0, len(paths))
+	tokens := make([]string, 0, len(paths))
+	keys := make(map[string]struct{}, len(paths))
+	privatePaths := make(map[string]struct{})
+	for index, path := range paths {
+		d, err := Start(context.Background(), Options{
+			ConfigPath: path, ControlAddr: "127.0.0.1:0", WebAddr: "127.0.0.1:0",
+		})
+		if err != nil {
+			t.Fatalf("start neighbor %d (%s): %v", index, path, err)
+		}
+		t.Cleanup(func() { _ = d.Close() })
+		daemons = append(daemons, d)
+		key := d.stateStore.ConfigKey()
+		if _, exists := keys[key]; exists {
+			t.Fatalf("same-directory daemons share config key %q", key)
+		}
+		keys[key] = struct{}{}
+		for _, object := range []statestore.Object{
+			statestore.ConfigLock, statestore.DaemonLock, statestore.ControlToken,
+			statestore.WebToken, statestore.IdentitySeed, statestore.LastKnownGood,
+		} {
+			privatePath, err := d.stateStore.DiagnosticPath(object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			privatePath = filepath.Clean(privatePath)
+			if _, exists := privatePaths[privatePath]; exists {
+				t.Fatalf("same-directory daemons share private path %q", privatePath)
+			}
+			privatePaths[privatePath] = struct{}{}
+		}
+		token, err := daemonControlToken(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens = append(tokens, token)
+		loaded, err := configstore.LoadExisting(path)
+		if err != nil || loaded.Node.DisplayName != fmt.Sprintf("neighbor-%d", index) {
+			t.Fatalf("neighbor %d was modified: config=%+v err=%v", index, loaded, err)
+		}
+	}
+	for daemonIndex, d := range daemons {
+		for tokenIndex, token := range tokens {
+			_, err := controlapi.GetStatusToken(d.Addr(), token)
+			if daemonIndex == tokenIndex && err != nil {
+				t.Fatalf("daemon %d rejected its own token: %v", daemonIndex, err)
+			}
+			if daemonIndex != tokenIndex && err == nil {
+				t.Fatalf("daemon %d accepted daemon %d token", daemonIndex, tokenIndex)
+			}
+		}
 	}
 }
 
@@ -959,18 +1239,23 @@ func TestCloseRuntimePlaneBoundsImplementationsThatIgnoreDeadlines(t *testing.T)
 	close(release)
 }
 
-func TestDaemonFinishBoundsBlockedReconcilerAndStillClosesPlane(t *testing.T) {
+func TestDaemonFinishReportsBlockedReconcilerWithoutReleasingOwnedResources(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "xtier.json")
 	cfg := configstore.DefaultConfig()
 	if err := configstore.Save(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	lease, err := acquireInstanceLease(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	plane := &contextIgnoringApplyPlane{
 		entered: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{}),
 	}
 	d := &Daemon{
-		ctx: ctx, cancel: cancel, runtimeConfigPath: configPath, plane: plane,
+		ctx: ctx, cancel: cancel, runtimeConfigPath: lease.ConfigPath(), plane: plane,
+		lease: lease, stateStore: lease.Store(),
 		reconcileDone: make(chan struct{}), done: make(chan struct{}),
 		state: controlapi.DaemonStateDegraded,
 		configuration: controlapi.ConfigurationStatus{
@@ -988,9 +1273,25 @@ func TestDaemonFinishBoundsBlockedReconcilerAndStillClosesPlane(t *testing.T) {
 	go d.finish(nil)
 	select {
 	case <-d.done:
+		t.Fatal("daemon released owned resources while the reconciler was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case <-plane.closed:
+		t.Fatal("runtime plane closed underneath the reconciler")
+	default:
+	}
+	if _, err := configstore.LoadStoreExisting(lease.Store()); err != nil {
+		t.Fatalf("state store closed underneath the reconciler: %v", err)
+	}
+	if _, err := acquireInstanceLease(configPath); err == nil || !strings.Contains(err.Error(), "daemon.already_running") {
+		t.Fatalf("instance lease released underneath the reconciler: %v", err)
+	}
+	close(plane.release)
+	select {
+	case <-d.done:
 	case <-time.After(time.Second):
-		close(plane.release)
-		t.Fatal("daemon finish blocked on the reconciler")
+		t.Fatal("daemon did not finish after the reconciler was released")
 	}
 	if err := d.Wait(); !errors.Is(err, errReconcileShutdownTimedOut) ||
 		!errors.Is(err, xrayrt.ErrShutdownIncomplete) {
@@ -999,14 +1300,105 @@ func TestDaemonFinishBoundsBlockedReconcilerAndStillClosesPlane(t *testing.T) {
 	select {
 	case <-plane.closed:
 	default:
-		t.Fatal("runtime plane was not closed after reconciler timeout")
+		t.Fatal("runtime plane was not closed after the reconciler exited")
 	}
+	second, err := acquireInstanceLease(configPath)
+	if err != nil {
+		t.Fatalf("instance lease not released after shutdown: %v", err)
+	}
+	_ = second.Close()
+}
+
+func TestDaemonFinishWaitsForDirectReloadBeforeReleasingOwnedResources(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	cfg := configstore.DefaultConfig()
+	if err := configstore.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	lease, err := acquireInstanceLease(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane := &contextIgnoringApplyPlane{
+		entered: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{}),
+	}
+	d := &Daemon{
+		ctx: ctx, cancel: cancel, configPath: configPath, runtimeConfigPath: lease.ConfigPath(),
+		plane: plane, lease: lease, stateStore: lease.Store(), done: make(chan struct{}),
+		state: controlapi.DaemonStateRunning,
+		configuration: controlapi.ConfigurationStatus{
+			SchemaVersion: configstore.CurrentSchemaVersion, LastKnownGoodRevision: -1,
+		},
+		retryDelay: time.Millisecond, shutdownLimit: 25 * time.Millisecond,
+	}
+	reloadDone := make(chan error, 1)
+	go func() {
+		_, reloadErr := d.Reload(context.Background(), cfg.Revision, false)
+		reloadDone <- reloadErr
+	}()
+	select {
+	case <-plane.entered:
+	case <-time.After(time.Second):
+		t.Fatal("direct reload did not enter context-ignoring Apply")
+	}
+	cancel()
+	go d.finish(nil)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, statusErr := d.Status(context.Background())
+		if publicerr.Code(statusErr, "operation.failed") == "service.stopping" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("new operation was not rejected during shutdown: %v", statusErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-d.done:
+		t.Fatal("daemon released owned resources while direct reload was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case <-plane.closed:
+		t.Fatal("runtime plane closed underneath direct reload")
+	default:
+	}
+	if _, err := configstore.LoadStoreExisting(lease.Store()); err != nil {
+		t.Fatalf("state store closed underneath direct reload: %v", err)
+	}
+	if _, err := acquireInstanceLease(configPath); err == nil || !strings.Contains(err.Error(), "daemon.already_running") {
+		t.Fatalf("instance lease released underneath direct reload: %v", err)
+	}
+
 	close(plane.release)
 	select {
-	case <-d.reconcileDone:
+	case <-reloadDone:
 	case <-time.After(time.Second):
-		t.Fatal("reconciler did not exit after blocked Apply was released")
+		t.Fatal("direct reload did not exit after release")
 	}
+	select {
+	case <-d.done:
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not finish after direct reload exited")
+	}
+	if err := d.Wait(); !errors.Is(err, errOperationShutdownTimedOut) ||
+		!errors.Is(err, xrayrt.ErrShutdownIncomplete) {
+		t.Fatalf("finish error=%v, want explicit incomplete operation shutdown", err)
+	}
+	select {
+	case <-plane.closed:
+	default:
+		t.Fatal("runtime plane was not closed after direct reload exited")
+	}
+	second, err := acquireInstanceLease(configPath)
+	if err != nil {
+		t.Fatalf("instance lease not released after shutdown: %v", err)
+	}
+	_ = second.Close()
 }
 
 func TestReconcilerRetriesAsynchronousXrayGenerationCleanup(t *testing.T) {
@@ -1233,7 +1625,7 @@ func TestDaemonStartsControlPlaneFromLastKnownGoodAfterRuntimeApplyFailure(t *te
 	if err != nil {
 		t.Fatalf("start from last-known-good: %v", err)
 	}
-	status, err := controlapi.GetStatus(recovered.Addr(), controlapi.TokenPath(recovered.ConfigPath()))
+	status, err := daemonStatus(recovered)
 	if err != nil {
 		_ = recovered.Close()
 		t.Fatal(err)
@@ -1248,7 +1640,7 @@ func TestDaemonStartsControlPlaneFromLastKnownGoodAfterRuntimeApplyFailure(t *te
 		_ = recovered.Close()
 		t.Fatalf("recovered daemon status = %+v", status)
 	}
-	lastGood, err := configstore.LoadLastKnownGood(configPath)
+	lastGood, err := loadStoreLastKnownGood(configPath)
 	if err != nil {
 		_ = recovered.Close()
 		t.Fatal(err)
@@ -1282,7 +1674,7 @@ func TestDaemonStartsControlPlaneFromLastKnownGoodAfterRuntimeApplyFailure(t *te
 	if fixedStatus.Configuration.StartupRollback != nil {
 		t.Fatalf("successful startup retained rollback status: %+v", fixedStatus.Configuration.StartupRollback)
 	}
-	lastGood, err = configstore.LoadLastKnownGood(configPath)
+	lastGood, err = loadStoreLastKnownGood(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1300,7 +1692,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	if err := initial.Close(); err != nil {
 		t.Fatal(err)
 	}
-	checkpoint, err := configstore.LoadLastKnownGood(configPath)
+	checkpoint, err := loadStoreLastKnownGood(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1351,7 +1743,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 		status.Reconcile.LastErrorCode != configContentInvalidError {
 		t.Fatalf("invalid content incorrectly fail-stopped the recovered runtime: %+v", status)
 	}
-	httpStatus, err := controlapi.GetStatus(recovered.Addr(), controlapi.TokenPath(recovered.ConfigPath()))
+	httpStatus, err := daemonStatus(recovered)
 	if err != nil {
 		t.Fatalf("authenticated status rejected content-invalid LKG state: %v", err)
 	}
@@ -1385,8 +1777,12 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	domainStatus, domainResponse, err := controlapi.AuthenticatedRequestContext(
-		context.Background(), recovered.Addr(), controlapi.TokenPath(recovered.ConfigPath()),
+	token, err := daemonControlToken(recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domainStatus, domainResponse, err := controlapi.AuthenticatedRequestTokenContext(
+		context.Background(), recovered.Addr(), token,
 		http.MethodPost, controlapi.DomainConfigRestorePath, domainBody,
 	)
 	if err != nil {
@@ -1403,7 +1799,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	if !bytes.Equal(after, payload) {
 		t.Fatalf("invalid configured source was rewritten: before=%s after=%s", payload, after)
 	}
-	stored, err := configstore.LoadLastKnownGood(configPath)
+	stored, err := loadStoreLastKnownGood(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1421,7 +1817,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 			recovered.applyPersistMu.Unlock()
 		}
 	}()
-	response, err := controlapi.Execute(recovered.Addr(), controlapi.TokenPath(recovered.ConfigPath()), controlapi.Request{
+	response, err := daemonExecute(recovered, controlapi.Request{
 		Args:      []string{"local", "config", "restore-last-good"},
 		JSON:      true,
 		Revision:  checkpoint.Revision,
@@ -1433,7 +1829,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	if response.ExitCode != 0 || !strings.Contains(response.Stdout, `"source":"last-known-good"`) {
 		t.Fatalf("restore response = %+v", response)
 	}
-	postRestoreStatus, err := controlapi.GetStatus(recovered.Addr(), controlapi.TokenPath(recovered.ConfigPath()))
+	postRestoreStatus, err := daemonStatus(recovered)
 	if err != nil {
 		t.Fatalf("authenticated status failed between restore and reconcile: %v", err)
 	}
@@ -1477,9 +1873,7 @@ func TestContentAndRuntimeStartupRollbacksKeepRepairControlPlaneServing(t *testi
 	if err := configstore.Save(configPath, checkpoint); err != nil {
 		t.Fatal(err)
 	}
-	if err := configstore.SaveLastKnownGood(configPath, checkpoint); err != nil {
-		t.Fatal(err)
-	}
+	saveStoreLastKnownGood(t, configPath, checkpoint)
 	if err := os.WriteFile(configPath, []byte("{\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1496,7 +1890,7 @@ func TestContentAndRuntimeStartupRollbacksKeepRepairControlPlaneServing(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d, err := start(ctx, Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"}, func(
-		context.Context, string, configstore.Config,
+		context.Context, string, *statestore.Store, configstore.Config,
 	) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error) {
 		return plane, checkpoint.Revision, &controlapi.StartupRollbackStatus{
 			ConfiguredRevision: checkpoint.Revision,
@@ -1509,7 +1903,7 @@ func TestContentAndRuntimeStartupRollbacksKeepRepairControlPlaneServing(t *testi
 	}
 	t.Cleanup(func() { _ = d.Close() })
 
-	status, err := controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+	status, err := daemonStatus(d)
 	if err != nil {
 		t.Fatalf("combined startup rollback made authenticated status unavailable: %v", err)
 	}
@@ -1528,9 +1922,7 @@ func TestAuthenticatedStatusSurvivesPermanentUnhealthyApplyAfterRestore(t *testi
 	if err := configstore.Save(configPath, checkpoint); err != nil {
 		t.Fatal(err)
 	}
-	if err := configstore.SaveLastKnownGood(configPath, checkpoint); err != nil {
-		t.Fatal(err)
-	}
+	saveStoreLastKnownGood(t, configPath, checkpoint)
 	if err := os.WriteFile(configPath, []byte("{\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1549,7 +1941,7 @@ func TestAuthenticatedStatusSurvivesPermanentUnhealthyApplyAfterRestore(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d, err := start(ctx, Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"}, func(
-		context.Context, string, configstore.Config,
+		context.Context, string, *statestore.Store, configstore.Config,
 	) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error) {
 		return plane, checkpoint.Revision, nil, nil
 	})
@@ -1562,7 +1954,7 @@ func TestAuthenticatedStatusSurvivesPermanentUnhealthyApplyAfterRestore(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := controlapi.Execute(d.Addr(), controlapi.TokenPath(d.ConfigPath()), controlapi.Request{
+	response, err := daemonExecute(d, controlapi.Request{
 		Args:      []string{"local", "config", "restore-last-good"},
 		JSON:      true,
 		Revision:  checkpoint.Revision,
@@ -1583,7 +1975,7 @@ func TestAuthenticatedStatusSurvivesPermanentUnhealthyApplyAfterRestore(t *testi
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	reads := 0
 	for time.Now().Before(deadline) {
-		status, statusErr := controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+		status, statusErr := daemonStatus(d)
 		if statusErr != nil {
 			t.Fatalf("authenticated status failed while unhealthy apply remained committed: %v", statusErr)
 		}
@@ -1615,7 +2007,7 @@ func TestDaemonRestartRejectsSameRevisionContentDriftWithoutReplacingLastKnownGo
 	if err := initial.Close(); err != nil {
 		t.Fatal(err)
 	}
-	checkpointBefore, err := configstore.LoadLastKnownGood(configPath)
+	checkpointBefore, err := loadStoreLastKnownGood(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1643,7 +2035,7 @@ func TestDaemonRestartRejectsSameRevisionContentDriftWithoutReplacingLastKnownGo
 		status.Configuration.StartupRollback.ErrorCode != "dataplane.revision_content_mismatch" {
 		t.Fatalf("same-revision restart drift was not observable: %+v", status)
 	}
-	checkpointAfter, err := configstore.LoadLastKnownGood(configPath)
+	checkpointAfter, err := loadStoreLastKnownGood(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1701,7 +2093,7 @@ func TestDaemonRestartKeepsNewerLastKnownGoodWhenConfigIsOlder(t *testing.T) {
 		status.Configuration.StartupRollback.ErrorCode != "dataplane.revision_regression" {
 		t.Fatalf("newer checkpoint was not kept as a diagnosable degraded runtime: %+v", status)
 	}
-	stored, err := configstore.LoadLastKnownGood(configPath)
+	stored, err := loadStoreLastKnownGood(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1759,14 +2151,17 @@ func TestDaemonReportsLastKnownGoodPersistFailureUntilRetrySucceeds(t *testing.T
 	}
 	defer d.Close()
 
-	checkpointPath := configstore.LastKnownGoodPath(configPath)
+	checkpointPath, err := d.stateStore.DiagnosticPath(statestore.LastKnownGood)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(checkpointPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(checkpointPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configstore.UpdatePinnedCAS(d.runtimeConfigPath, d.configPath, 0, func(cfg *configstore.Config) error {
+	if _, err := configstore.UpdateStoreCAS(d.stateStore, 0, func(cfg *configstore.Config) error {
 		cfg.Node.DisplayName = "checkpoint-write-must-fail"
 		return nil
 	}); err != nil {
@@ -1776,7 +2171,7 @@ func TestDaemonReportsLastKnownGoodPersistFailureUntilRetrySucceeds(t *testing.T
 	deadline := time.Now().Add(5 * time.Second)
 	var failed controlapi.DaemonStatus
 	for time.Now().Before(deadline) {
-		failed, err = controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+		failed, err = daemonStatus(d)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1796,7 +2191,7 @@ func TestDaemonReportsLastKnownGoodPersistFailureUntilRetrySucceeds(t *testing.T
 	deadline = time.Now().Add(5 * time.Second)
 	var recovered controlapi.DaemonStatus
 	for time.Now().Before(deadline) {
-		recovered, err = controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+		recovered, err = daemonStatus(d)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1814,8 +2209,28 @@ func TestDaemonReportsLastKnownGoodPersistFailureUntilRetrySucceeds(t *testing.T
 }
 
 func TestDaemonMigratesKnownUnversionedConfigBeforeStarting(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "xtier.json")
-	legacy := []byte(`{"revision":4,"node":{},"system":{}}`)
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "xtier.json")
+	legacySeedPath := filepath.Join(dir, "keystore", "node-seed.v1.json")
+	backing, err := identity.Create(legacySeedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := backing.Public()
+	legacy, err := json.Marshal(struct {
+		Revision int64                  `json:"revision"`
+		Node     configstore.NodeConfig `json:"node"`
+		Settings any                    `json:"system"`
+	}{
+		Revision: 4,
+		Node: configstore.NodeConfig{
+			NodeID: public.NodeID.String(), PublicKey: public.PublicKey, RendrCapable: true,
+		},
+		Settings: configstore.DefaultConfig().System,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := configstore.Save(configPath, configstore.DefaultConfig()); err != nil {
 		t.Fatal(err)
 	}
@@ -1827,7 +2242,7 @@ func TestDaemonMigratesKnownUnversionedConfigBeforeStarting(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	status, err := controlapi.GetStatus(d.Addr(), controlapi.TokenPath(d.ConfigPath()))
+	status, err := daemonStatus(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1843,6 +2258,16 @@ func TestDaemonMigratesKnownUnversionedConfigBeforeStarting(t *testing.T) {
 	}
 	if !bytes.Contains(payload, []byte(`"schema_version": 1`)) {
 		t.Fatalf("daemon did not version the migrated config: %s", payload)
+	}
+	migratedBacking, err := identity.LoadStore(d.stateStore)
+	if err != nil {
+		t.Fatalf("load migrated identity backing: %v", err)
+	}
+	if migratedBacking.Public() != public {
+		t.Fatalf("migrated seed identity=%+v want=%+v", migratedBacking.Public(), public)
+	}
+	if _, err := os.Stat(legacySeedPath); err != nil {
+		t.Fatalf("legacy seed source was removed: %v", err)
 	}
 }
 

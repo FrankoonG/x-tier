@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
 
 func TestCreateTokenPersistsAndDoesNotRotate(t *testing.T) {
@@ -39,6 +41,48 @@ func TestReadTokenRejectsMalformedToken(t *testing.T) {
 	}
 	if _, err := ReadToken(path); err == nil {
 		t.Fatal("malformed token was accepted")
+	}
+}
+
+func TestStoreTokensPersistWithoutSharingObjects(t *testing.T) {
+	store, err := statestore.Open(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	control, err := CreateStoreToken(store, statestore.ControlToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := CreateStoreToken(store, statestore.ControlToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web, err := CreateStoreToken(store, statestore.WebToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control != again {
+		t.Fatal("store token rotated")
+	}
+	if control == web {
+		t.Fatal("control and Web token objects share credentials")
+	}
+	if loaded, err := ReadStoreToken(store, statestore.ControlToken); err != nil || loaded != control {
+		t.Fatalf("ReadStoreToken() = %q, %v", loaded, err)
+	}
+}
+
+func TestExplicitTokenRejectsWhitespace(t *testing.T) {
+	token := strings.Repeat("a", 64)
+	if err := validateToken(token); err != nil {
+		t.Fatal(err)
+	}
+	for _, malformed := range []string{" " + token, token + "\n", ""} {
+		if err := validateToken(malformed); err == nil {
+			t.Fatalf("explicit token %q was accepted", malformed)
+		}
 	}
 }
 

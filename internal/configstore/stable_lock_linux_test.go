@@ -35,7 +35,8 @@ func TestUpdateCASStableLockSurvivesLockFileRenameAndPinsParent(t *testing.T) {
 		done <- err
 	}()
 	<-entered
-	if err := os.Rename(path+".lock", path+".lock.renamed"); err != nil {
+	lockPath := path + ".lock"
+	if err := os.Rename(lockPath, lockPath+".renamed"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(live, old); err != nil {

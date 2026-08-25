@@ -20,7 +20,44 @@ import (
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
+
+func TestStartOwnedStoreUsesObjectBoundTokenAndConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := configstore.CanonicalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	server, err := StartOwnedStore(context.Background(), "127.0.0.1:0", store, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	token, err := controlapi.ReadStoreToken(store, statestore.ControlToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := controlapi.ExecuteToken(server.Addr(), token, controlapi.Request{
+		Args: []string{"config", "validate"}, JSON: true,
+		RequestID: "01010101010101010101010101010101",
+	})
+	if err != nil || response.ExitCode != 0 || !strings.Contains(response.Stdout, `"revision": 0`) {
+		t.Fatalf("store-backed command response=%+v err=%v", response, err)
+	}
+	if _, err := os.Stat(controlapi.TokenPath(canonical)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("store-backed server created legacy token: %v", err)
+	}
+}
 
 type failingRuntimeReloader struct{ err error }
 

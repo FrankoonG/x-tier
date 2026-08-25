@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/FrankoonG/x-tier/internal/controlapi"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
 
 const (
@@ -53,6 +54,7 @@ type Config struct {
 	ControlAddr     string
 	TokenPath       string
 	CredentialPath  string
+	StateStore      *statestore.Store
 	StaticDir       string
 	UpstreamTimeout time.Duration
 }
@@ -71,6 +73,7 @@ type Server struct {
 	controlAddr            string
 	tokenPath              string
 	credentialPath         string
+	stateStore             *statestore.Store
 	readUpstreamBudget     time.Duration
 	mutationUpstreamBudget time.Duration
 	sessionKey             [sha256.Size]byte
@@ -104,30 +107,47 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.ControlAddr == "" {
 		cfg.ControlAddr = controlapi.DefaultAddr
 	}
-	if cfg.TokenPath == "" {
-		return nil, fmt.Errorf("webbridge.token_path_required")
-	}
-	if cfg.CredentialPath == "" {
-		return nil, fmt.Errorf("webbridge.credential_path_required")
-	}
-	controlTokenPath, err := filepath.Abs(cfg.TokenPath)
-	if err != nil {
-		return nil, fmt.Errorf("webbridge.token_path_invalid: %w", err)
-	}
-	credentialPath, err := filepath.Abs(cfg.CredentialPath)
-	if err != nil {
-		return nil, fmt.Errorf("webbridge.credential_path_invalid: %w", err)
-	}
-	if filepath.Clean(controlTokenPath) == filepath.Clean(credentialPath) {
-		return nil, fmt.Errorf("webbridge.credential_reuses_control_token")
-	}
-	credential, err := controlapi.ReadToken(credentialPath)
-	if err != nil {
-		return nil, fmt.Errorf("webbridge.credential_unavailable: %w", err)
-	}
-	controlToken, err := controlapi.ReadToken(controlTokenPath)
-	if err != nil {
-		return nil, fmt.Errorf("webbridge.control_token_unavailable: %w", err)
+	var controlTokenPath, credentialPath string
+	var credential, controlToken string
+	var err error
+	if cfg.StateStore != nil {
+		if cfg.TokenPath != "" || cfg.CredentialPath != "" {
+			return nil, fmt.Errorf("webbridge.state_source_mixed")
+		}
+		credential, err = controlapi.ReadStoreToken(cfg.StateStore, statestore.WebToken)
+		if err != nil {
+			return nil, fmt.Errorf("webbridge.credential_unavailable: %w", err)
+		}
+		controlToken, err = controlapi.ReadStoreToken(cfg.StateStore, statestore.ControlToken)
+		if err != nil {
+			return nil, fmt.Errorf("webbridge.control_token_unavailable: %w", err)
+		}
+	} else {
+		if cfg.TokenPath == "" {
+			return nil, fmt.Errorf("webbridge.token_path_required")
+		}
+		if cfg.CredentialPath == "" {
+			return nil, fmt.Errorf("webbridge.credential_path_required")
+		}
+		controlTokenPath, err = filepath.Abs(cfg.TokenPath)
+		if err != nil {
+			return nil, fmt.Errorf("webbridge.token_path_invalid: %w", err)
+		}
+		credentialPath, err = filepath.Abs(cfg.CredentialPath)
+		if err != nil {
+			return nil, fmt.Errorf("webbridge.credential_path_invalid: %w", err)
+		}
+		if filepath.Clean(controlTokenPath) == filepath.Clean(credentialPath) {
+			return nil, fmt.Errorf("webbridge.credential_reuses_control_token")
+		}
+		credential, err = controlapi.ReadToken(credentialPath)
+		if err != nil {
+			return nil, fmt.Errorf("webbridge.credential_unavailable: %w", err)
+		}
+		controlToken, err = controlapi.ReadToken(controlTokenPath)
+		if err != nil {
+			return nil, fmt.Errorf("webbridge.control_token_unavailable: %w", err)
+		}
 	}
 	if subtle.ConstantTimeCompare([]byte(credential), []byte(controlToken)) == 1 {
 		return nil, fmt.Errorf("webbridge.credential_reuses_control_token")
@@ -176,6 +196,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 		controlAddr:            cfg.ControlAddr,
 		tokenPath:              controlTokenPath,
 		credentialPath:         credentialPath,
+		stateStore:             cfg.StateStore,
 		readUpstreamBudget:     cfg.UpstreamTimeout,
 		mutationUpstreamBudget: mutationUpstreamBudget,
 		staticRoot:             staticRoot,
@@ -398,11 +419,11 @@ func (s *Server) authenticate(r *http.Request) bool {
 	if !ok {
 		return false
 	}
-	credential, err := controlapi.ReadToken(s.credentialPath)
+	credential, err := s.readCredential()
 	if err != nil {
 		return false
 	}
-	controlToken, err := controlapi.ReadToken(s.tokenPath)
+	controlToken, err := s.readControlToken()
 	if err != nil || subtle.ConstantTimeCompare([]byte(credential), []byte(controlToken)) == 1 {
 		return false
 	}
@@ -413,6 +434,20 @@ func (s *Server) authenticate(r *http.Request) bool {
 
 func CredentialPath(configPath string) string {
 	return configPath + ".web-token"
+}
+
+func (s *Server) readCredential() (string, error) {
+	if s.stateStore != nil {
+		return controlapi.ReadStoreToken(s.stateStore, statestore.WebToken)
+	}
+	return controlapi.ReadToken(s.credentialPath)
+}
+
+func (s *Server) readControlToken() (string, error) {
+	if s.stateStore != nil {
+		return controlapi.ReadStoreToken(s.stateStore, statestore.ControlToken)
+	}
+	return controlapi.ReadToken(s.tokenPath)
 }
 
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
@@ -656,7 +691,11 @@ func (s *Server) handleDomainAction(w http.ResponseWriter, r *http.Request, rout
 func (s *Server) upstream(parent context.Context, budget time.Duration, method, path string, body []byte) (int, []byte, error) {
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
-	return controlapi.AuthenticatedRequestContext(ctx, s.controlAddr, s.tokenPath, method, path, body)
+	token, err := s.readControlToken()
+	if err != nil {
+		return 0, nil, fmt.Errorf("webbridge.control_token_unavailable: %w", err)
+	}
+	return controlapi.AuthenticatedRequestTokenContext(ctx, s.controlAddr, token, method, path, body)
 }
 
 func (s *Server) safeSession(r *http.Request) (string, string, time.Time, error) {

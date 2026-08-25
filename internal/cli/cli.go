@@ -18,6 +18,7 @@ import (
 	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/settings"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/webbridge"
 	"github.com/FrankoonG/x-tier/internal/xrayconfig"
 )
@@ -31,6 +32,7 @@ type globals struct {
 	revision     int64
 	daemon       bool
 	ownershipKey string
+	stateStore   *statestore.Store
 	ctx          context.Context
 }
 
@@ -53,6 +55,12 @@ func (e appliedCommandError) Error() string { return e.err.Error() }
 func (e appliedCommandError) Unwrap() error { return e.err }
 
 func loadConfig(g globals) (configstore.Config, error) {
+	if g.stateStore != nil {
+		if g.daemon {
+			return configstore.LoadStoreExisting(g.stateStore)
+		}
+		return configstore.LoadStore(g.stateStore)
+	}
 	if g.daemon {
 		return configstore.LoadExisting(g.configPath)
 	}
@@ -67,7 +75,7 @@ func (e commandError) Error() string {
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
-	return run(context.Background(), args, stdout, stderr, false, "").ExitCode
+	return run(context.Background(), args, stdout, stderr, false, "", nil).ExitCode
 }
 
 // RunDaemon executes a command inside the long-running daemon. It is kept
@@ -80,7 +88,7 @@ func RunDaemonContext(ctx context.Context, args []string, stdout, stderr io.Writ
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return run(ctx, args, stdout, stderr, true, "")
+	return run(ctx, args, stdout, stderr, true, "", nil)
 }
 
 // RunOwnedDaemon executes inside xtierd against its pinned config path. The
@@ -93,10 +101,25 @@ func RunOwnedDaemonContext(ctx context.Context, args []string, ownershipKey stri
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return run(ctx, args, stdout, stderr, true, ownershipKey)
+	return run(ctx, args, stdout, stderr, true, ownershipKey, nil)
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer, daemon bool, ownershipKey string) ExecutionResult {
+// RunOwnedDaemonStoreContext executes a daemon command against the state store
+// pinned by the daemon's lifetime lease. It is the production daemon path;
+// RunOwnedDaemonContext remains for legacy compatibility tests.
+func RunOwnedDaemonStoreContext(ctx context.Context, args []string, ownershipKey string, store *statestore.Store, stdout, stderr io.Writer) ExecutionResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if store == nil {
+		return ExecutionResult{ExitCode: writeCommandError(globals{}, stdout, stderr, commandError{
+			"config.store_required", fmt.Errorf("daemon state store is required"),
+		})}
+	}
+	return run(ctx, args, stdout, stderr, true, ownershipKey, store)
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, daemon bool, ownershipKey string, store *statestore.Store) ExecutionResult {
 	g, rest, err := parseGlobals(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -108,7 +131,33 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, daemon bo
 	}
 	g.daemon = daemon
 	g.ownershipKey = ownershipKey
+	g.stateStore = store
 	g.ctx = ctx
+	if store != nil {
+		if !daemon || filepath.Clean(g.configPath) != store.ConfigPath() {
+			return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
+				"config.store_mismatch", fmt.Errorf("daemon config does not match its state store"),
+			})}
+		}
+		g.configPath = store.ConfigPath()
+	}
+	if !daemon {
+		canonical, canonicalErr := configstore.CanonicalPath(g.configPath)
+		if canonicalErr != nil {
+			return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, canonicalErr)}
+		}
+		g.configPath = canonical
+		if g.offline {
+			offlineStore, openErr := statestore.Open(g.configPath)
+			if openErr != nil {
+				return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
+					"config.store_open", openErr,
+				})}
+			}
+			defer offlineStore.Close()
+			g.stateStore = offlineStore
+		}
+	}
 	if isWebCredentialShow(rest) {
 		if daemon {
 			return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
@@ -174,15 +223,13 @@ func isWebCredentialShow(args []string) bool {
 }
 
 func runWebCredentialShow(g globals, stdout, stderr io.Writer) int {
-	configPath, err := configstore.CanonicalPath(g.configPath)
-	if err != nil {
-		return writeCommandError(g, stdout, stderr, commandError{
-			"web.credential_unavailable",
-			fmt.Errorf("Web credential is unavailable"),
-		})
+	var credential string
+	var err error
+	if g.stateStore != nil {
+		credential, err = controlapi.ReadStoreToken(g.stateStore, statestore.WebToken)
+	} else {
+		credential, err = readConfigStoreToken(g.configPath, statestore.WebToken)
 	}
-	path := webbridge.CredentialPath(configPath)
-	credential, err := controlapi.ReadToken(path)
 	if err != nil {
 		return writeCommandError(g, stdout, stderr, commandError{
 			"web.credential_unavailable",
@@ -192,7 +239,7 @@ func runWebCredentialShow(g globals, stdout, stderr io.Writer) int {
 	if g.json {
 		err = json.NewEncoder(stdout).Encode(map[string]any{
 			"ok": true, "username": webbridge.BasicUsername,
-			"credential": credential, "credential_path": path,
+			"credential": credential, "credential_source": "private_state",
 		})
 	} else {
 		_, err = fmt.Fprintf(stdout, "username=%s\ncredential=%s\n", webbridge.BasicUsername, credential)
@@ -230,7 +277,11 @@ func runViaDaemon(g globals, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return writeCommandError(g, stdout, stderr, err)
 	}
-	resp, err := controlapi.Execute(g.control, controlapi.TokenPath(g.configPath), controlapi.Request{
+	token, err := readConfigStoreToken(g.configPath, statestore.ControlToken)
+	if err != nil {
+		return writeCommandError(g, stdout, stderr, commandError{"control.token_unavailable", err})
+	}
+	resp, err := controlapi.ExecuteToken(g.control, token, controlapi.Request{
 		Args:      args,
 		JSON:      g.json,
 		DryRun:    g.dryRun,
@@ -357,7 +408,11 @@ func writeRejectedMutation(g globals, stdout, stderr io.Writer, requestID string
 }
 
 func runDaemonStatus(g globals, stdout, stderr io.Writer) int {
-	status, err := controlapi.GetStatus(g.control, controlapi.TokenPath(g.configPath))
+	token, err := readConfigStoreToken(g.configPath, statestore.ControlToken)
+	if err != nil {
+		return writeCommandError(g, stdout, stderr, commandError{"control.token_unavailable", err})
+	}
+	status, err := controlapi.GetStatusToken(g.control, token)
 	if err != nil {
 		return writeCommandError(g, stdout, stderr, err)
 	}
@@ -365,6 +420,15 @@ func runDaemonStatus(g globals, stdout, stderr io.Writer) int {
 		return writeCommandError(g, stdout, stderr, err)
 	}
 	return 0
+}
+
+func readConfigStoreToken(configPath string, object statestore.Object) (token string, err error) {
+	store, err := statestore.Open(configPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() { err = errors.Join(err, store.Close()) }()
+	return controlapi.ReadStoreToken(store, object)
 }
 
 func writeCommandError(g globals, stdout, stderr io.Writer, err error) int {
@@ -455,7 +519,7 @@ func localStatus(g globals, out io.Writer) error {
 	topo := localview.TopologyFromConfig(cfg)
 	relations := route.PeerRelations(topo)
 	local := relations[route.NodeID(cfg.Node.NodeID)]
-	identityStatus, err := identityState(cfg, identitySeedPath(g.configPath))
+	identityStatus, err := identityStateForGlobals(g, cfg)
 	if err != nil {
 		return err
 	}
@@ -490,7 +554,7 @@ func localIdentity(g globals, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		state, err := identityState(cfg, identitySeedPath(g.configPath))
+		state, err := identityStateForGlobals(g, cfg)
 		if err != nil {
 			return err
 		}
@@ -511,8 +575,7 @@ func localIdentity(g globals, args []string, out io.Writer) error {
 			return err
 		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
-			seedPath := identitySeedPath(g.configPath)
-			observed, backing, err := inspectIdentity(*cfg, seedPath)
+			observed, backing, err := inspectIdentityForGlobals(g, *cfg)
 			if err != nil {
 				return nil, err
 			}
@@ -531,7 +594,11 @@ func localIdentity(g globals, args []string, out io.Writer) error {
 						"would_create_backing": true,
 					}, nil
 				}
-				id, err = identity.Create(seedPath)
+				if g.stateStore != nil {
+					id, err = identity.CreateStore(g.stateStore)
+				} else {
+					id, err = identity.Create(identitySeedPath(g.configPath))
+				}
 				created = err == nil
 			case identityStateRecoverable:
 				// A previous attempt may have persisted the seed before its config CAS
@@ -606,8 +673,28 @@ func identityState(cfg configstore.Config, seedPath string) (identityView, error
 	return state, err
 }
 
+func identityStateForGlobals(g globals, cfg configstore.Config) (identityView, error) {
+	state, _, err := inspectIdentityForGlobals(g, cfg)
+	return state, err
+}
+
+func inspectIdentityForGlobals(g globals, cfg configstore.Config) (identityView, *identity.Identity, error) {
+	if g.stateStore != nil {
+		return inspectIdentityWithLoader(cfg, func() (*identity.Identity, error) {
+			return identity.LoadStore(g.stateStore)
+		})
+	}
+	return inspectIdentity(cfg, identitySeedPath(g.configPath))
+}
+
 func inspectIdentity(cfg configstore.Config, seedPath string) (identityView, *identity.Identity, error) {
-	id, err := identity.Load(seedPath)
+	return inspectIdentityWithLoader(cfg, func() (*identity.Identity, error) {
+		return identity.Load(seedPath)
+	})
+}
+
+func inspectIdentityWithLoader(cfg configstore.Config, load func() (*identity.Identity, error)) (identityView, *identity.Identity, error) {
+	id, err := load()
 	if errors.Is(err, os.ErrNotExist) {
 		configured, classifyErr := identity.ClassifyConfiguredIdentity(cfg.Node.NodeID, cfg.Node.PublicKey)
 		if classifyErr != nil {
@@ -1187,7 +1274,11 @@ func mutate(g globals, out io.Writer, fn func(*configstore.Config) (any, error))
 
 	var payload any
 	update := configstore.UpdateCAS
-	if g.ownershipKey != "" {
+	if g.stateStore != nil {
+		update = func(_ string, revision int64, mutation func(*configstore.Config) error) (configstore.UpdateResult, error) {
+			return configstore.UpdateStoreCAS(g.stateStore, revision, mutation)
+		}
+	} else if g.ownershipKey != "" {
 		update = func(path string, revision int64, mutation func(*configstore.Config) error) (configstore.UpdateResult, error) {
 			return configstore.UpdatePinnedCAS(path, g.ownershipKey, revision, mutation)
 		}

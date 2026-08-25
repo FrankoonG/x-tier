@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
 
 const (
@@ -247,6 +250,28 @@ func ExecuteContext(ctx context.Context, addr, tokenPath string, req Request) (R
 	if err != nil {
 		return Response{}, err
 	}
+	return decodeCommandResponse(status, body)
+}
+
+func ExecuteToken(addr, token string, req Request) (Response, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), MutationClientBudget)
+	defer cancel()
+	return ExecuteTokenContext(ctx, addr, token, req)
+}
+
+func ExecuteTokenContext(ctx context.Context, addr, token string, req Request) (Response, error) {
+	b, err := json.Marshal(req)
+	if err != nil {
+		return Response{}, err
+	}
+	status, body, err := AuthenticatedRequestTokenContext(ctx, addr, token, http.MethodPost, CommandPath, b)
+	if err != nil {
+		return Response{}, err
+	}
+	return decodeCommandResponse(status, body)
+}
+
+func decodeCommandResponse(status int, body []byte) (Response, error) {
 	if status != http.StatusOK {
 		err := fmt.Errorf("control.http_status: %d %s", status, strings.TrimSpace(string(body)))
 		if commandHTTPStatusMayHaveExecuted(status) {
@@ -286,6 +311,24 @@ func GetStatusContext(ctx context.Context, addr, tokenPath string) (DaemonStatus
 	if err != nil {
 		return DaemonStatus{}, err
 	}
+	return decodeDaemonStatus(statusCode, body)
+}
+
+func GetStatusToken(addr, token string) (DaemonStatus, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ReadRequestBudget)
+	defer cancel()
+	return GetStatusTokenContext(ctx, addr, token)
+}
+
+func GetStatusTokenContext(ctx context.Context, addr, token string) (DaemonStatus, error) {
+	statusCode, body, err := AuthenticatedRequestTokenContext(ctx, addr, token, http.MethodGet, StatusPath, nil)
+	if err != nil {
+		return DaemonStatus{}, err
+	}
+	return decodeDaemonStatus(statusCode, body)
+}
+
+func decodeDaemonStatus(statusCode int, body []byte) (DaemonStatus, error) {
 	if statusCode != http.StatusOK {
 		return DaemonStatus{}, fmt.Errorf("control.http_status: %d %s", statusCode, strings.TrimSpace(string(body)))
 	}
@@ -300,24 +343,25 @@ func GetStatusContext(ctx context.Context, addr, tokenPath string) (DaemonStatus
 // exchange. It is also the supported helper for callers that need a raw status
 // and body while retaining all transport authentication checks.
 func AuthenticatedRequestContext(ctx context.Context, addr, tokenPath, method, path string, body []byte) (int, []byte, error) {
-	if ctx == nil {
-		return 0, nil, fmt.Errorf("control.context_nil")
-	}
-	endpoint, err := localControlURL(addr)
-	if err != nil {
+	if _, err := authenticatedRequestEndpoint(ctx, addr, path, body); err != nil {
 		return 0, nil, err
 	}
-	if path == "" || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") {
-		return 0, nil, fmt.Errorf("control.path_invalid")
-	}
-	if len(body) > maxRequestBytes {
-		return 0, nil, fmt.Errorf("control.request_too_large")
-	}
-	requestBody := append([]byte(nil), body...)
 	token, err := ReadToken(tokenPath)
 	if err != nil {
 		return 0, nil, fmt.Errorf("control.token_unavailable: %w", err)
 	}
+	return AuthenticatedRequestTokenContext(ctx, addr, token, method, path, body)
+}
+
+func AuthenticatedRequestTokenContext(ctx context.Context, addr, token, method, path string, body []byte) (int, []byte, error) {
+	endpoint, err := authenticatedRequestEndpoint(ctx, addr, path, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := validateToken(token); err != nil {
+		return 0, nil, fmt.Errorf("control.token_unavailable: %w", err)
+	}
+	requestBody := append([]byte(nil), body...)
 	client := localHTTPClient()
 	defer client.CloseIdleConnections()
 	challenge, err := fetchChallenge(ctx, client, endpoint, token)
@@ -347,6 +391,23 @@ func AuthenticatedRequestContext(ctx context.Context, addr, tokenPath, method, p
 		return 0, nil, requestDeliveryError{err: fmt.Errorf("control.response_auth_invalid")}
 	}
 	return response.StatusCode, responseBody, nil
+}
+
+func authenticatedRequestEndpoint(ctx context.Context, addr, path string, body []byte) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("control.context_nil")
+	}
+	endpoint, err := localControlURL(addr)
+	if err != nil {
+		return "", err
+	}
+	if path == "" || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") {
+		return "", fmt.Errorf("control.path_invalid")
+	}
+	if len(body) > maxRequestBytes {
+		return "", fmt.Errorf("control.request_too_large")
+	}
+	return endpoint, nil
 }
 
 func doTrackedAuthenticatedRequest(client *http.Client, request *http.Request) (*http.Response, error) {
@@ -577,15 +638,64 @@ func CreateToken(path string) (string, error) {
 	return token, nil
 }
 
+func CreateStoreToken(store *statestore.Store, object statestore.Object) (string, error) {
+	if store == nil || (object != statestore.ControlToken && object != statestore.WebToken) {
+		return "", fmt.Errorf("invalid token store object")
+	}
+	if token, err := ReadStoreToken(store, object); err == nil {
+		return token, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(raw[:])
+	if err := store.CreateExclusive(object, []byte(token+"\n")); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return ReadStoreToken(store, object)
+		}
+		return "", err
+	}
+	return token, nil
+}
+
+func ReadStoreToken(store *statestore.Store, object statestore.Object) (string, error) {
+	if store == nil || (object != statestore.ControlToken && object != statestore.WebToken) {
+		return "", fmt.Errorf("invalid token store object")
+	}
+	payload, err := store.Read(object, 256)
+	if err != nil {
+		return "", err
+	}
+	return parseToken(payload)
+}
+
 func ReadToken(path string) (string, error) {
 	b, err := readSecretFile(path)
 	if err != nil {
 		return "", err
 	}
-	token := strings.TrimSpace(string(b))
+	return parseToken(b)
+}
+
+func parseToken(payload []byte) (string, error) {
+	token := strings.TrimSpace(string(payload))
 	decoded, err := hex.DecodeString(token)
 	if err != nil || len(decoded) != 32 {
 		return "", fmt.Errorf("invalid control token")
 	}
 	return token, nil
+}
+
+func validateToken(token string) error {
+	if token == "" || strings.TrimSpace(token) != token {
+		return fmt.Errorf("invalid control token")
+	}
+	parsed, err := parseToken([]byte(token))
+	if err != nil || parsed != token {
+		return fmt.Errorf("invalid control token")
+	}
+	return nil
 }

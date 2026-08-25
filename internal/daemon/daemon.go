@@ -14,7 +14,9 @@ import (
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/controlserver"
 	"github.com/FrankoonG/x-tier/internal/dataplane"
+	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/webbridge"
 	"github.com/FrankoonG/x-tier/internal/xrayconfig"
 	"github.com/FrankoonG/x-tier/internal/xrayrt"
@@ -34,6 +36,7 @@ const (
 	configContentInvalidError       = "config.content_invalid"
 	configReadFailedError           = "config.read_failed"
 	configReadFailClosedError       = "config.read_failed_fail_closed"
+	legacyRecoveryAmbiguousError    = "config.legacy_recovery_ambiguous"
 )
 
 const (
@@ -46,6 +49,7 @@ const (
 var (
 	errRuntimePlaneShutdownTimedOut = errors.New("daemon: runtime plane graceful shutdown timed out")
 	errReconcileShutdownTimedOut    = errors.New("daemon: reconciler shutdown timed out")
+	errOperationShutdownTimedOut    = errors.New("daemon: active runtime operations shutdown timed out")
 	errLastKnownGoodRevisionAhead   = errors.New("daemon: last-known-good revision is ahead of the applied revision")
 )
 
@@ -58,6 +62,7 @@ type runtimePlane interface {
 type runtimePlaneStarter func(
 	context.Context,
 	string,
+	*statestore.Store,
 	configstore.Config,
 ) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error)
 
@@ -86,6 +91,7 @@ type Daemon struct {
 	web           *webbridge.Server
 	plane         runtimePlane
 	lease         *instanceLease
+	stateStore    *statestore.Store
 	reconcileDone chan struct{}
 
 	stateMu        sync.RWMutex
@@ -94,6 +100,9 @@ type Daemon struct {
 	observedConfig configObservation
 
 	applyPersistMu       sync.Mutex
+	operationMu          sync.Mutex
+	operations           sync.WaitGroup
+	operationsClosing    bool
 	checkpointPersistMu  sync.Mutex
 	reconcileFailureMu   sync.RWMutex
 	reconcileFailure     reconcileFailureState
@@ -155,9 +164,13 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 		}
 	}()
 	runtimeConfigPath := lease.ConfigPath()
-	cfg, migrated, configRollback, err := loadInitialConfig(runtimeConfigPath, configPath)
+	stateStore := lease.Store()
+	cfg, migrated, configRollback, err := loadInitialConfig(stateStore, runtimeConfigPath, configPath)
 	if err != nil {
 		return nil, fmt.Errorf("daemon.config_load: %w", err)
+	}
+	if err := migrateLegacyState(stateStore, cfg.Node.NodeID); err != nil {
+		return nil, fmt.Errorf("daemon.state_migration: %w", err)
 	}
 	bootID, err := newBootID()
 	if err != nil {
@@ -173,6 +186,7 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 		ctx:               daemonCtx,
 		cancel:            cancel,
 		lease:             lease,
+		stateStore:        stateStore,
 		state:             controlapi.DaemonStateStarting,
 		configuration: controlapi.ConfigurationStatus{
 			SchemaVersion:         cfg.SchemaVersion,
@@ -185,7 +199,7 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 		shutdownLimit:              defaultRuntimePlaneShutdownLimit,
 		configReadFailureTolerance: normalizedConfigReadFailureTolerance(opts.ConfigReadFailureTolerance),
 	}
-	runtimePlane, persistedRevision, startupRollback, err := startPlane(daemonCtx, runtimeConfigPath, cfg)
+	runtimePlane, persistedRevision, startupRollback, err := startPlane(daemonCtx, runtimeConfigPath, stateStore, cfg)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("daemon.dataplane_start: %w", err)
@@ -212,10 +226,10 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 	}
 	d.recordLastKnownGood(persistedRevision, "")
 	d.setStartupRollback(startupRollback)
-	server, err := controlserver.StartOwned(
+	server, err := controlserver.StartOwnedStore(
 		daemonCtx,
 		opts.ControlAddr,
-		runtimeConfigPath,
+		stateStore,
 		configPath,
 		d,
 	)
@@ -230,8 +244,7 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 	d.server = server
 	d.serverMu.Unlock()
 	if opts.WebAddr != "" {
-		credentialPath := webbridge.CredentialPath(runtimeConfigPath)
-		if _, err := controlapi.CreateToken(credentialPath); err != nil {
+		if _, err := controlapi.CreateStoreToken(stateStore, statestore.WebToken); err != nil {
 			controlErr := closeAndWaitControlServer(server)
 			cancel()
 			return nil, errors.Join(
@@ -241,11 +254,10 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 			)
 		}
 		web, err := webbridge.Start(daemonCtx, webbridge.Config{
-			Addr:           opts.WebAddr,
-			ControlAddr:    server.Addr(),
-			TokenPath:      controlapi.TokenPath(runtimeConfigPath),
-			CredentialPath: credentialPath,
-			StaticDir:      opts.WebRoot,
+			Addr:        opts.WebAddr,
+			ControlAddr: server.Addr(),
+			StateStore:  stateStore,
+			StaticDir:   opts.WebRoot,
 		})
 		if err != nil {
 			controlErr := closeAndWaitControlServer(server)
@@ -286,6 +298,18 @@ func (d *Daemon) ConfigPath() string {
 	return d.configPath
 }
 
+func (d *Daemon) loadConfig() (configstore.Config, error) {
+	return loadExistingConfig(d.stateStore, d.runtimeConfigPath)
+}
+
+func (d *Daemon) loadLastKnownGood() (configstore.Config, error) {
+	return loadLastKnownGood(d.stateStore, d.runtimeConfigPath)
+}
+
+func (d *Daemon) saveLastKnownGood(cfg configstore.Config) error {
+	return saveLastKnownGood(d.stateStore, d.runtimeConfigPath, cfg)
+}
+
 func (d *Daemon) WebAddr() string {
 	if d == nil {
 		return ""
@@ -308,7 +332,11 @@ func (d *Daemon) Status(ctx context.Context) (controlapi.DaemonStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return controlapi.DaemonStatus{}, err
 	}
-	cfg, loadErr := configstore.LoadExisting(d.runtimeConfigPath)
+	if err := d.beginOperation(); err != nil {
+		return controlapi.DaemonStatus{}, err
+	}
+	defer d.endOperation()
+	cfg, loadErr := d.loadConfig()
 	configuredRevision, configuredDigest := d.observedConfigSnapshot()
 	if loadErr == nil {
 		configuredDigest, loadErr = configstore.ContentDigest(cfg)
@@ -361,11 +389,18 @@ func (d *Daemon) Status(ctx context.Context) (controlapi.DaemonStatus, error) {
 }
 
 func (d *Daemon) Reload(ctx context.Context, expectedRevision int64, dryRun bool) (controlapi.ReconcileStatus, error) {
-	if d == nil || d.plane == nil {
+	if d == nil {
 		return controlapi.ReconcileStatus{}, publicerr.Errorf("service.reload_unavailable", "runtime plane is unavailable")
 	}
 	if ctx == nil {
 		return controlapi.ReconcileStatus{}, publicerr.Errorf("service.reload_context_nil", "reload context is nil")
+	}
+	if err := d.beginOperation(); err != nil {
+		return controlapi.ReconcileStatus{}, err
+	}
+	defer d.endOperation()
+	if d.plane == nil {
+		return controlapi.ReconcileStatus{}, publicerr.Errorf("service.reload_unavailable", "runtime plane is unavailable")
 	}
 	applyCtx, cancel := linkedRuntimeContext(ctx, d.ctx)
 	defer cancel()
@@ -374,7 +409,7 @@ func (d *Daemon) Reload(ctx context.Context, expectedRevision int64, dryRun bool
 	if err := applyCtx.Err(); err != nil {
 		return controlapi.ReconcileStatus{}, publicerr.Wrap("service.reload_canceled", err)
 	}
-	cfg, err := configstore.LoadExisting(d.runtimeConfigPath)
+	cfg, err := d.loadConfig()
 	if err != nil {
 		d.setOperationalState(true)
 		if configstore.IsContentError(err) {
@@ -492,21 +527,24 @@ func (d *Daemon) serve() {
 	}
 	select {
 	case <-d.ctx.Done():
+		d.stopAcceptingOperations()
 		d.setState(controlapi.DaemonStateStopping)
 		var err error
 		if web != nil {
-			err = errors.Join(err, web.Close())
+			err = errors.Join(err, closeAndWaitWebServer(web))
 		}
 		err = errors.Join(err, closeAndWaitControlServer(server))
 		d.finish(err)
 	case <-server.Done():
+		d.stopAcceptingOperations()
 		err := server.Wait()
 		d.cancel()
 		if web != nil {
-			err = errors.Join(err, web.Close())
+			err = errors.Join(err, closeAndWaitWebServer(web))
 		}
 		d.finish(err)
 	case <-webDone:
+		d.stopAcceptingOperations()
 		err := web.Wait()
 		d.cancel()
 		err = errors.Join(err, closeAndWaitControlServer(server))
@@ -521,18 +559,46 @@ func closeAndWaitControlServer(server *controlserver.Server) error {
 	return errors.Join(server.Close(), server.Wait())
 }
 
+func closeAndWaitWebServer(server *webbridge.Server) error {
+	if server == nil {
+		return nil
+	}
+	return errors.Join(server.Close(), server.Wait())
+}
+
 func (d *Daemon) finish(err error) {
+	d.stopAcceptingOperations()
 	shutdownLimit := d.shutdownLimit
 	if shutdownLimit <= 0 {
 		shutdownLimit = defaultRuntimePlaneShutdownLimit
 	}
 	shutdownDeadline := time.Now().Add(shutdownLimit)
+	operationDone := d.operationsDone()
+	operationBudget := shutdownLimit / 4
+	if operationBudget <= 0 {
+		operationBudget = time.Nanosecond
+	}
+	operationErr := waitForOperations(operationDone, operationBudget)
+	err = errors.Join(err, operationErr)
+	if operationErr != nil {
+		// A direct provider call may still own the state store or runtime plane.
+		// Keep both alive after reporting the missed graceful deadline.
+		<-operationDone
+		shutdownDeadline = time.Now().Add(shutdownLimit)
+	}
 	if d.reconcileDone != nil {
 		reconcileBudget := shutdownLimit / 4
 		if reconcileBudget <= 0 {
 			reconcileBudget = time.Nanosecond
 		}
-		err = errors.Join(err, waitForReconciler(d.reconcileDone, reconcileBudget))
+		reconcileErr := waitForReconciler(d.reconcileDone, reconcileBudget)
+		err = errors.Join(err, reconcileErr)
+		if reconcileErr != nil {
+			// The reconciler may still be using the state store or runtime plane.
+			// Report the missed deadline, but do not release owned resources under it.
+			<-d.reconcileDone
+			shutdownDeadline = time.Now().Add(shutdownLimit)
+		}
 	}
 	if d.plane != nil {
 		remaining := time.Until(shutdownDeadline)
@@ -547,6 +613,52 @@ func (d *Daemon) finish(err error) {
 	d.waitErr = errors.Join(d.waitErr, err)
 	d.waitMu.Unlock()
 	close(d.done)
+}
+
+func (d *Daemon) beginOperation() error {
+	d.operationMu.Lock()
+	defer d.operationMu.Unlock()
+	if d.operationsClosing {
+		return publicerr.Errorf("service.stopping", "daemon is stopping")
+	}
+	d.operations.Add(1)
+	return nil
+}
+
+func (d *Daemon) endOperation() {
+	d.operations.Done()
+}
+
+func (d *Daemon) stopAcceptingOperations() {
+	d.operationMu.Lock()
+	d.operationsClosing = true
+	d.operationMu.Unlock()
+}
+
+func (d *Daemon) operationsDone() <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		d.operations.Wait()
+		close(done)
+	}()
+	return done
+}
+
+func waitForOperations(done <-chan struct{}, shutdownLimit time.Duration) error {
+	if done == nil {
+		return nil
+	}
+	if shutdownLimit <= 0 {
+		shutdownLimit = defaultRuntimePlaneShutdownLimit
+	}
+	timer := time.NewTimer(shutdownLimit)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return errors.Join(errOperationShutdownTimedOut, xrayrt.ErrShutdownIncomplete, context.DeadlineExceeded)
+	}
 }
 
 func waitForReconciler(done <-chan struct{}, shutdownLimit time.Duration) error {
@@ -716,7 +828,7 @@ func (d *Daemon) reconcileLoop(initialRevision int64) {
 			d.applyPersistMu.Unlock()
 			continue
 		}
-		cfg, err := configstore.LoadExisting(d.runtimeConfigPath)
+		cfg, err := d.loadConfig()
 		if err != nil {
 			d.setOperationalState(true)
 			if configstore.IsContentError(err) {
@@ -1037,7 +1149,7 @@ func (d *Daemon) persistLastKnownGood(cfg configstore.Config) error {
 	defer d.checkpointPersistMu.Unlock()
 	checkpoint := d.configurationStatus()
 	if checkpoint.LastKnownGoodRevision >= cfg.Revision {
-		existing, err := configstore.LoadLastKnownGood(d.runtimeConfigPath)
+		existing, err := d.loadLastKnownGood()
 		if err != nil || existing.Revision != checkpoint.LastKnownGoodRevision {
 			d.recordLastKnownGood(-1, lastKnownGoodPersistError)
 			if err != nil {
@@ -1075,7 +1187,7 @@ func (d *Daemon) persistLastKnownGood(cfg configstore.Config) error {
 		d.recordLastKnownGood(existing.Revision, "")
 		return nil
 	}
-	if err := configstore.SaveLastKnownGood(d.runtimeConfigPath, cfg); err != nil {
+	if err := d.saveLastKnownGood(cfg); err != nil {
 		d.recordLastKnownGood(-1, lastKnownGoodPersistError)
 		return err
 	}
@@ -1286,8 +1398,38 @@ func appliedRuntimeHealthy(status dataplane.Status, revision int64, digest [32]b
 	return appliedConfigurationMatches(status, revision, digest) && runtimeStatusHealthy(status)
 }
 
-func startRuntimePlane(ctx context.Context, configPath string, configured configstore.Config) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error) {
-	lastGood, loadErr := configstore.LoadLastKnownGood(configPath)
+func migrateLegacyState(store *statestore.Store, assertedIdentity string) error {
+	if store == nil {
+		return fmt.Errorf("state store is required")
+	}
+	return configstore.WithStoreLock(store, func() error {
+		_, err := store.MigrateLegacy(statestore.LegacyMigrationOptions{
+			Identity: assertedIdentity,
+			ValidateIdentitySeed: func(expected string, payload []byte) error {
+				seed, err := identity.UnmarshalSeedEnvelope(payload)
+				if err != nil {
+					return err
+				}
+				backing, err := identity.FromSeed(seed)
+				if err != nil {
+					return err
+				}
+				if backing.NodeID().String() != expected {
+					return fmt.Errorf("seed identity does not match configured node")
+				}
+				return nil
+			},
+			IsConfigDocument: func(payload []byte) bool {
+				_, err := configstore.DecodeCheckpointDocument(payload)
+				return err == nil
+			},
+		})
+		return err
+	})
+}
+
+func startRuntimePlane(ctx context.Context, configPath string, store *statestore.Store, configured configstore.Config) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error) {
+	lastGood, loadErr := loadLastKnownGood(store, configPath)
 	hasLastGood := loadErr == nil
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 		return nil, -1, nil, fmt.Errorf("load last-known-good: %w", loadErr)
@@ -1323,7 +1465,7 @@ func startRuntimePlane(ctx context.Context, configPath string, configured config
 		plane, startErr = dataplane.Start(ctx, configured)
 	}
 	if startErr == nil {
-		if err := saveLastKnownGoodMonotonic(configPath, configured); err != nil {
+		if err := saveLastKnownGoodMonotonicStore(store, configPath, configured); err != nil {
 			return nil, -1, nil, errors.Join(
 				fmt.Errorf("persist initial last-known-good revision %d: %w", configured.Revision, err),
 				closeRuntimePlane(plane, 100*time.Millisecond, defaultRuntimePlaneShutdownLimit),
@@ -1351,7 +1493,7 @@ func startRuntimePlane(ctx context.Context, configPath string, configured config
 				closeRuntimePlane(plane, 100*time.Millisecond, defaultRuntimePlaneShutdownLimit),
 			)
 		}
-		if err := saveLastKnownGoodMonotonic(configPath, configured); err != nil {
+		if err := saveLastKnownGoodMonotonicStore(store, configPath, configured); err != nil {
 			return nil, -1, nil, errors.Join(
 				fmt.Errorf("persist recovered configured revision %d: %w", configured.Revision, err),
 				closeRuntimePlane(plane, 100*time.Millisecond, defaultRuntimePlaneShutdownLimit),
@@ -1371,15 +1513,15 @@ func startRuntimePlane(ctx context.Context, configPath string, configured config
 	}, nil
 }
 
-func loadInitialConfig(runtimeConfigPath, ownershipKey string) (configstore.Config, bool, *controlapi.StartupRollbackStatus, error) {
-	if _, err := configstore.LoadExisting(runtimeConfigPath); err != nil {
+func loadInitialConfig(store *statestore.Store, runtimeConfigPath, ownershipKey string) (configstore.Config, bool, *controlapi.StartupRollbackStatus, error) {
+	if _, err := loadExistingConfig(store, runtimeConfigPath); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			if configstore.IsContentError(err) {
-				return recoverInitialConfigFromLastKnownGood(runtimeConfigPath, err)
+				return recoverInitialConfigFromLastKnownGood(store, runtimeConfigPath, err)
 			}
 			return configstore.Config{}, false, nil, err
 		}
-		if _, checkpointErr := configstore.LoadLastKnownGood(runtimeConfigPath); checkpointErr == nil {
+		if _, checkpointErr := loadLastKnownGood(store, runtimeConfigPath); checkpointErr == nil {
 			return configstore.Config{}, false, nil, publicerr.Errorf(
 				"config.missing_with_last_good",
 				"configured file is missing while a last-known-good checkpoint exists",
@@ -1387,20 +1529,49 @@ func loadInitialConfig(runtimeConfigPath, ownershipKey string) (configstore.Conf
 		} else if !errors.Is(checkpointErr, os.ErrNotExist) {
 			return configstore.Config{}, false, nil, fmt.Errorf("load last-known-good before initialization: %w", checkpointErr)
 		}
+		ambiguous, inspectErr := hasAmbiguousLegacyRecovery(store)
+		if inspectErr != nil {
+			return configstore.Config{}, false, nil, inspectErr
+		}
+		if ambiguous {
+			return configstore.Config{}, false, nil, publicerr.Errorf(
+				legacyRecoveryAmbiguousError,
+				"configured file is missing while an ownership-ambiguous legacy recovery file exists",
+			)
+		}
 	}
-	cfg, migrated, err := configstore.LoadPinnedOrMigrate(runtimeConfigPath, ownershipKey)
+	var cfg configstore.Config
+	var migrated bool
+	var err error
+	if store != nil {
+		cfg, migrated, err = configstore.LoadStoreOrMigrate(store, true)
+	} else {
+		cfg, migrated, err = configstore.LoadPinnedOrMigrate(runtimeConfigPath, ownershipKey)
+	}
 	if err != nil {
 		if configstore.IsContentError(err) {
-			return recoverInitialConfigFromLastKnownGood(runtimeConfigPath, err)
+			return recoverInitialConfigFromLastKnownGood(store, runtimeConfigPath, err)
 		}
 		return configstore.Config{}, false, nil, err
 	}
 	return cfg, migrated, nil, nil
 }
 
-func recoverInitialConfigFromLastKnownGood(runtimeConfigPath string, cause error) (configstore.Config, bool, *controlapi.StartupRollbackStatus, error) {
-	checkpoint, err := configstore.LoadLastKnownGood(runtimeConfigPath)
+func recoverInitialConfigFromLastKnownGood(store *statestore.Store, runtimeConfigPath string, cause error) (configstore.Config, bool, *controlapi.StartupRollbackStatus, error) {
+	checkpoint, err := loadLastKnownGood(store, runtimeConfigPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			ambiguous, inspectErr := hasAmbiguousLegacyRecovery(store)
+			if inspectErr != nil {
+				return configstore.Config{}, false, nil, errors.Join(cause, inspectErr)
+			}
+			if ambiguous {
+				return configstore.Config{}, false, nil, publicerr.Wrap(
+					legacyRecoveryAmbiguousError,
+					errors.Join(cause, errors.New("ownership-ambiguous legacy recovery file requires explicit operator action")),
+				)
+			}
+		}
 		return configstore.Config{}, false, nil, errors.Join(
 			cause,
 			fmt.Errorf("load last-known-good after invalid configured content: %w", err),
@@ -1413,10 +1584,25 @@ func recoverInitialConfigFromLastKnownGood(runtimeConfigPath string, cause error
 	}, nil
 }
 
+func hasAmbiguousLegacyRecovery(store *statestore.Store) (bool, error) {
+	if store == nil {
+		return false, nil
+	}
+	ambiguous, err := store.HasLegacyRecoveryCandidates()
+	if err != nil {
+		return false, fmt.Errorf("inspect legacy recovery candidates: %w", err)
+	}
+	return ambiguous, nil
+}
+
 func saveLastKnownGoodMonotonic(configPath string, configured configstore.Config) error {
-	existing, err := configstore.LoadLastKnownGood(configPath)
+	return saveLastKnownGoodMonotonicStore(nil, configPath, configured)
+}
+
+func saveLastKnownGoodMonotonicStore(store *statestore.Store, configPath string, configured configstore.Config) error {
+	existing, err := loadLastKnownGood(store, configPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return configstore.SaveLastKnownGood(configPath, configured)
+		return saveLastKnownGood(store, configPath, configured)
 	}
 	if err != nil {
 		return err
@@ -1442,7 +1628,28 @@ func saveLastKnownGoodMonotonic(configPath string, configured configstore.Config
 		}
 		return nil
 	}
-	return configstore.SaveLastKnownGood(configPath, configured)
+	return saveLastKnownGood(store, configPath, configured)
+}
+
+func loadExistingConfig(store *statestore.Store, configPath string) (configstore.Config, error) {
+	if store != nil {
+		return configstore.LoadStoreExisting(store)
+	}
+	return configstore.LoadExisting(configPath)
+}
+
+func loadLastKnownGood(store *statestore.Store, configPath string) (configstore.Config, error) {
+	if store != nil {
+		return configstore.LoadStoreLastKnownGood(store)
+	}
+	return configstore.LoadLastKnownGood(configPath)
+}
+
+func saveLastKnownGood(store *statestore.Store, configPath string, cfg configstore.Config) error {
+	if store != nil {
+		return configstore.SaveStoreLastKnownGood(store, cfg)
+	}
+	return configstore.SaveLastKnownGood(configPath, cfg)
 }
 
 func newBootID() (string, error) {

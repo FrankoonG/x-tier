@@ -103,8 +103,9 @@ func TestWithLockCreatesProtectedDACLAndRejectsInheritedDACL(t *testing.T) {
 	if err := WithLock(path, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+	lockPath := path + ".lock"
 	lock, err := openWindowsSecureFile(
-		path+".lock",
+		lockPath,
 		windows.GENERIC_READ,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 	)
@@ -116,7 +117,8 @@ func TestWithLockCreatesProtectedDACLAndRejectsInheritedDACL(t *testing.T) {
 	}
 
 	insecurePath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(insecurePath+".lock", []byte("stale\n"), 0o600); err != nil {
+	insecureLockPath := insecurePath + ".lock"
+	if err := os.WriteFile(insecureLockPath, []byte("stale\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := WithLock(insecurePath, func() error { return nil }); !errors.Is(err, ErrInsecureFile) {
@@ -143,12 +145,13 @@ func TestWithLockRejectsWindowsWrongOwnerWhenPermitted(t *testing.T) {
 	if err := WithLock(path, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+	lockPath := path + ".lock"
 	administrators, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := windows.SetNamedSecurityInfo(
-		path+".lock",
+		lockPath,
 		windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION,
 		administrators,

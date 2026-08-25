@@ -20,6 +20,7 @@ import (
 	"github.com/FrankoonG/x-tier/internal/localview"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/route"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/xrayconfig"
 )
 
@@ -45,9 +46,14 @@ type domainMutationEffects struct {
 
 type domainMutation func(*configstore.Config, bool, *domainMutationEffects) (any, error)
 type domainIdentityCreator func(string) (*identity.Identity, error)
+type domainStoreIdentityCreator func(*statestore.Store) (*identity.Identity, error)
 
 func createDomainIdentity(path string) (*identity.Identity, error) {
 	return identity.Create(path)
+}
+
+func createDomainStoreIdentity(store *statestore.Store) (*identity.Identity, error) {
+	return identity.CreateStore(store)
 }
 
 type domainFailure struct {
@@ -138,7 +144,7 @@ func (s *Server) handleDomainRead(w http.ResponseWriter, r *http.Request) {
 		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
 		return
 	}
-	cfg, err := configstore.LoadExisting(s.configPath)
+	cfg, err := s.loadDomainConfig()
 	if err != nil {
 		writeDomainResult(w, domainErrorResult(err, 0))
 		return
@@ -148,7 +154,7 @@ func (s *Server) handleDomainRead(w http.ResponseWriter, r *http.Request) {
 	var payload map[string]any
 	switch r.URL.Path {
 	case controlapi.DomainLocalPath:
-		identityStatus, err := inspectDomainIdentityView(cfg, domainIdentitySeedPath(s.configPath))
+		identityStatus, err := s.inspectDomainIdentityView(cfg)
 		if err != nil {
 			writeDomainResult(w, domainErrorResult(err, 0))
 			return
@@ -173,7 +179,7 @@ func (s *Server) handleDomainRead(w http.ResponseWriter, r *http.Request) {
 			"inbounds": cfg.NodeInbound,
 		}
 	case controlapi.DomainIdentityPath:
-		identityStatus, err := inspectDomainIdentityView(cfg, domainIdentitySeedPath(s.configPath))
+		identityStatus, err := s.inspectDomainIdentityView(cfg)
 		if err != nil {
 			writeDomainResult(w, domainErrorResult(err, 0))
 			return
@@ -208,7 +214,7 @@ func (s *Server) handleProfileValidate(w http.ResponseWriter, r *http.Request) {
 		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
 		return
 	}
-	cfg, err := configstore.LoadExisting(s.configPath)
+	cfg, err := s.loadDomainConfig()
 	if err != nil {
 		writeDomainResult(w, domainErrorResult(err, 0))
 		return
@@ -245,7 +251,7 @@ func (s *Server) handlePathCompile(w http.ResponseWriter, r *http.Request) {
 		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
 		return
 	}
-	cfg, err := configstore.LoadExisting(s.configPath)
+	cfg, err := s.loadDomainConfig()
 	if err != nil {
 		writeDomainResult(w, domainErrorResult(err, 0))
 		return
@@ -524,7 +530,7 @@ func (s *Server) executeConfigDomainMutation(meta controlapi.DomainMutationReque
 	s.domainExecutions.Add(1)
 	effects := &domainMutationEffects{}
 	if meta.DryRun {
-		cfg, err := configstore.LoadExisting(s.configPath)
+		cfg, err := s.loadDomainConfig()
 		if err != nil {
 			return domainErrorResult(err, 0)
 		}
@@ -560,7 +566,11 @@ func (s *Server) executeConfigDomainMutation(meta controlapi.DomainMutationReque
 	defer release()
 	var payload any
 	update := configstore.UpdateCAS
-	if s.ownershipKey != "" {
+	if s.stateStore != nil {
+		update = func(_ string, revision int64, mutate func(*configstore.Config) error) (configstore.UpdateResult, error) {
+			return configstore.UpdateStoreCAS(s.stateStore, revision, mutate)
+		}
+	} else if s.ownershipKey != "" {
 		update = func(path string, revision int64, mutate func(*configstore.Config) error) (configstore.UpdateResult, error) {
 			return configstore.UpdatePinnedCAS(path, s.ownershipKey, revision, mutate)
 		}
@@ -604,8 +614,7 @@ func mutationAdmissionDomainResult(err error) domainResult {
 
 func (s *Server) identityInitMutation(request controlapi.IdentityInitRequest) domainMutation {
 	return func(cfg *configstore.Config, dryRun bool, effects *domainMutationEffects) (any, error) {
-		seedPath := domainIdentitySeedPath(s.configPath)
-		observed, backing, err := inspectDomainIdentity(*cfg, seedPath)
+		observed, backing, err := s.inspectDomainIdentity(*cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -619,14 +628,22 @@ func (s *Server) identityInitMutation(request controlapi.IdentityInitRequest) do
 				proposed.RendrCapable = true
 				return map[string]any{"identity": observed, "node": proposed, "would_create_backing": true}, nil
 			}
-			creator := s.createIdentity
-			if creator == nil {
-				creator = createDomainIdentity
+			if s.stateStore != nil {
+				creator := s.createStoreIdentity
+				if creator == nil {
+					creator = createDomainStoreIdentity
+				}
+				id, err = creator(s.stateStore)
+			} else {
+				creator := s.createIdentity
+				if creator == nil {
+					creator = createDomainIdentity
+				}
+				id, err = creator(domainIdentitySeedPath(s.configPath))
 			}
-			id, err = creator(seedPath)
 			created = err == nil
 			if err != nil {
-				if published, loadErr := identity.Load(seedPath); loadErr == nil && effects != nil {
+				if published, loadErr := s.loadDomainIdentity(); loadErr == nil && effects != nil {
 					public := published.Public()
 					effects.preparations = append(effects.preparations, controlapi.MutationPreparation{
 						Kind:   "identity_backing",
@@ -1202,13 +1219,42 @@ func domainIdentitySeedPath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "keystore", "node-seed.v1.json")
 }
 
+func (s *Server) loadDomainConfig() (configstore.Config, error) {
+	if s.stateStore != nil {
+		return configstore.LoadStoreExisting(s.stateStore)
+	}
+	return configstore.LoadExisting(s.configPath)
+}
+
+func (s *Server) loadDomainIdentity() (*identity.Identity, error) {
+	if s.stateStore != nil {
+		return identity.LoadStore(s.stateStore)
+	}
+	return identity.Load(domainIdentitySeedPath(s.configPath))
+}
+
+func (s *Server) inspectDomainIdentityView(cfg configstore.Config) (domainIdentityView, error) {
+	view, _, err := s.inspectDomainIdentity(cfg)
+	return view, err
+}
+
+func (s *Server) inspectDomainIdentity(cfg configstore.Config) (domainIdentityView, *identity.Identity, error) {
+	return inspectDomainIdentityWithLoader(cfg, s.loadDomainIdentity)
+}
+
 func inspectDomainIdentityView(cfg configstore.Config, seedPath string) (domainIdentityView, error) {
 	view, _, err := inspectDomainIdentity(cfg, seedPath)
 	return view, err
 }
 
 func inspectDomainIdentity(cfg configstore.Config, seedPath string) (domainIdentityView, *identity.Identity, error) {
-	id, err := identity.Load(seedPath)
+	return inspectDomainIdentityWithLoader(cfg, func() (*identity.Identity, error) {
+		return identity.Load(seedPath)
+	})
+}
+
+func inspectDomainIdentityWithLoader(cfg configstore.Config, load func() (*identity.Identity, error)) (domainIdentityView, *identity.Identity, error) {
+	id, err := load()
 	if errors.Is(err, os.ErrNotExist) {
 		configured, classifyErr := identity.ClassifyConfiguredIdentity(cfg.Node.NodeID, cfg.Node.PublicKey)
 		if classifyErr != nil {

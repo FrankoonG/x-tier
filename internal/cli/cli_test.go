@@ -21,6 +21,7 @@ import (
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/route"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/webbridge"
 )
 
@@ -309,10 +310,7 @@ func TestDefaultCLIUsesDaemonControl(t *testing.T) {
 	defer ln.Close()
 	var got controlapi.Request
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	token, err := controlapi.CreateToken(controlapi.TokenPath(configPath))
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := createCLIStoreToken(t, configPath, statestore.ControlToken)
 	server := &http.Server{Handler: authenticatedCLITestHandler(t, token, http.MethodPost, controlapi.CommandPath, func(body []byte) (int, []byte) {
 		if err := json.Unmarshal(body, &got); err != nil {
 			return http.StatusBadRequest, []byte(err.Error())
@@ -344,10 +342,7 @@ func TestDaemonMutationTransportFailureReportsIndeterminateOutcome(t *testing.T)
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	token, err := controlapi.CreateToken(controlapi.TokenPath(configPath))
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := createCLIStoreToken(t, configPath, statestore.ControlToken)
 	challenge, err := controlapi.SignChallenge(token, strings.Repeat("cd", 32), time.Now().Add(30*time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -402,9 +397,7 @@ func TestDaemonMutationPreDeliveryFailureReportsNotApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if _, err := controlapi.CreateToken(controlapi.TokenPath(configPath)); err != nil {
-		t.Fatal(err)
-	}
+	_ = createCLIStoreToken(t, configPath, statestore.ControlToken)
 
 	code, output := runCLI(
 		t,
@@ -429,10 +422,7 @@ func TestDaemonMutationRendersSignedOutcomeMetadata(t *testing.T) {
 	}
 	defer listener.Close()
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	token, err := controlapi.CreateToken(controlapi.TokenPath(configPath))
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := createCLIStoreToken(t, configPath, statestore.ControlToken)
 	server := &http.Server{Handler: authenticatedCLITestHandler(t, token, http.MethodPost, controlapi.CommandPath, func([]byte) (int, []byte) {
 		response, err := json.Marshal(controlapi.Response{
 			ExitCode: 0,
@@ -495,11 +485,7 @@ func TestDaemonStatusUsesLiveProviderStatus(t *testing.T) {
 	}
 	defer ln.Close()
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	tokenPath := controlapi.TokenPath(configPath)
-	token, err := controlapi.CreateToken(tokenPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := createCLIStoreToken(t, configPath, statestore.ControlToken)
 	providerStatus := controlapi.DaemonStatus{
 		APIVersion:  controlapi.APIVersion,
 		State:       controlapi.DaemonStateRunning,
@@ -690,7 +676,12 @@ func TestIdentityShowAndStatusCoverBackingStates(t *testing.T) {
 			cfg := configstore.DefaultConfig()
 			var backing *identity.Identity
 			if tc.withBacking {
-				backing = createIdentity(t, identitySeedPath(path))
+				store := openCLIStore(t, path)
+				var err error
+				backing, err = identity.CreateStore(store)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tc.name == "mismatch" {
 				other := createIdentity(t, filepath.Join(dir, "other-keystore", "node-seed.v1.json"))
@@ -722,12 +713,13 @@ func TestIdentityShowAndStatusCoverBackingStates(t *testing.T) {
 
 func TestIdentityInitCreatesBackedIdentityWithoutLeakingSeed(t *testing.T) {
 	path := seedConfig(t, configstore.DefaultConfig())
-	code, out := runDaemonCLI(t, "--offline", "--config", path, "--json", "--revision", "0", "local", "identity", "init", "--name", "alpha")
+	store := openCLIStore(t, path)
+	code, out := runStoreDaemonCLI(t, store, "--json", "--revision", "0", "local", "identity", "init", "--name", "alpha")
 	if code != 0 {
 		t.Fatalf("identity init failed: %s", out)
 	}
 
-	seedBytes, err := os.ReadFile(identitySeedPath(path))
+	seedBytes, err := store.Read(statestore.IdentitySeed, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,6 +747,108 @@ func TestIdentityInitCreatesBackedIdentityWithoutLeakingSeed(t *testing.T) {
 	state := objectField(t, decodeJSON(t, out), "identity")
 	if state["state"] != identityStateBacked || state["os_acl_release_qualified"] != true {
 		t.Fatalf("identity is not backed by platform-qualified storage: %s", out)
+	}
+}
+
+func TestSameDirectoryConfigsUseIndependentIdentityBackings(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{
+		filepath.Join(dir, "a"),
+		filepath.Join(dir, "a.last-good"),
+	}
+	for _, path := range paths {
+		if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stores := []*statestore.Store{openCLIStore(t, paths[0]), openCLIStore(t, paths[1])}
+	for index, store := range stores {
+		code, out := runStoreDaemonCLI(
+			t, store, "--json", "--revision", "0",
+			"local", "identity", "init", "--name", fmt.Sprintf("node-%d", index),
+		)
+		if code != 0 {
+			t.Fatalf("identity init for %q failed: %s", store.ConfigPath(), out)
+		}
+	}
+
+	if stores[0].ConfigKey() == stores[1].ConfigKey() {
+		t.Fatalf("same-directory configs share state key %q", stores[0].ConfigKey())
+	}
+	first, err := configstore.LoadStoreExisting(stores[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := configstore.LoadStoreExisting(stores[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Node.NodeID == "" || second.Node.NodeID == "" || first.Node.NodeID == second.Node.NodeID {
+		t.Fatalf("identity backings are not independent: first=%q second=%q", first.Node.NodeID, second.Node.NodeID)
+	}
+	for _, store := range stores {
+		if _, err := identity.LoadStore(store); err != nil {
+			t.Fatalf("load identity backing for %q: %v", store.ConfigPath(), err)
+		}
+	}
+}
+
+func TestOwnedCLIUsesCanonicalParentForPrivateState(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	aliasDir := filepath.Join(root, "alias")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Skipf("directory symlink unavailable: %v", err)
+	}
+	realPath := filepath.Join(realDir, "config.json")
+	aliasPath := filepath.Join(aliasDir, "config.json")
+	if err := configstore.Save(realPath, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+
+	realStore := openCLIStore(t, realPath)
+	canonical, err := configstore.CanonicalPath(aliasPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasStore, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = aliasStore.Close() })
+	if realStore.ConfigKey() != aliasStore.ConfigKey() {
+		t.Fatalf("parent alias resolved a different state key: real=%q alias=%q", realStore.ConfigKey(), aliasStore.ConfigKey())
+	}
+
+	code, out := runStoreDaemonCLI(
+		t, realStore, "--json", "--revision", "0",
+		"local", "identity", "init", "--name", "canonical",
+	)
+	if code != 0 {
+		t.Fatalf("identity init failed: %s", out)
+	}
+	code, out = runStoreDaemonCLI(t, aliasStore, "--json", "local", "identity", "show")
+	if code != 0 {
+		t.Fatalf("identity show through parent alias failed: %s", out)
+	}
+	state := objectField(t, decodeJSON(t, out), "identity")
+	if state["state"] != identityStateBacked {
+		t.Fatalf("parent alias resolved different private state: %s", out)
+	}
+	realIdentity, err := identity.LoadStore(realStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasIdentity, err := identity.LoadStore(aliasStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if realIdentity.Public() != aliasIdentity.Public() {
+		t.Fatalf("canonical parent resolved a different identity backing")
 	}
 }
 
@@ -1154,11 +1248,7 @@ func TestXrayProfileAddRejectsUnavailableOptions(t *testing.T) {
 
 func TestWebCredentialShowIsLocalOnlyAndExplicit(t *testing.T) {
 	path := seedConfig(t, configstore.DefaultConfig())
-	credentialPath := webbridge.CredentialPath(path)
-	credential, err := controlapi.CreateToken(credentialPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	credential := createCLIStoreToken(t, path, statestore.WebToken)
 
 	var stdout, stderr bytes.Buffer
 	if code := Run([]string{"--config", path, "--json", "web", "credential", "show"}, &stdout, &stderr); code != 0 {
@@ -1197,6 +1287,44 @@ func runDaemonCLI(t *testing.T, args ...string) (int, string) {
 		return code, stdout.String()
 	}
 	return code, stderr.String()
+}
+
+func runStoreDaemonCLI(t *testing.T, store *statestore.Store, args ...string) (int, string) {
+	t.Helper()
+	full := []string{"--offline", "--config", store.ConfigPath()}
+	full = append(full, args...)
+	var stdout, stderr bytes.Buffer
+	result := RunOwnedDaemonStoreContext(
+		context.Background(), full, store.ConfigPath(), store, &stdout, &stderr,
+	)
+	if stdout.Len() > 0 {
+		return result.ExitCode, stdout.String()
+	}
+	return result.ExitCode, stderr.String()
+}
+
+func openCLIStore(t *testing.T, configPath string) *statestore.Store {
+	t.Helper()
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func createCLIStoreToken(t *testing.T, configPath string, object statestore.Object) string {
+	t.Helper()
+	store := openCLIStore(t, configPath)
+	token, err := controlapi.CreateStoreToken(store, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
 }
 
 func seedConfig(t *testing.T, cfg configstore.Config) string {

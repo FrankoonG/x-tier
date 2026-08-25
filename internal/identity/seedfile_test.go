@@ -149,7 +149,7 @@ func TestLoadRejectsNonRegularAndInsecureFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := marshalSeedEnvelope(seed)
+	data, err := MarshalSeedEnvelope(seed)
 	if err != nil {
 		t.Fatal(err)
 	}

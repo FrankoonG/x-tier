@@ -9,14 +9,14 @@ import (
 	"sync"
 
 	"github.com/FrankoonG/x-tier/internal/stablelock"
+	"github.com/FrankoonG/x-tier/internal/statestore"
 )
 
 type instanceLease struct {
 	file         *os.File
+	store        *statestore.Store
 	stable       io.Closer
 	configStable io.Closer
-	pinnedPath   string
-	closePin     func() error
 	once         sync.Once
 	err          error
 }
@@ -25,17 +25,21 @@ func acquireInstanceLease(configPath string) (*instanceLease, error) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return nil, fmt.Errorf("daemon.lock_directory: %w", err)
 	}
-	pinnedPath, closePin, err := pinInstanceConfigPath(configPath)
+	store, err := statestore.Open(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("daemon.config_pin: %w", err)
+		return nil, fmt.Errorf("daemon.state_open: %w", err)
 	}
-	keepPin := false
+	keepStore := false
 	defer func() {
-		if !keepPin {
-			_ = closePin()
+		if !keepStore {
+			_ = store.Close()
 		}
 	}()
-	stable, err := stablelock.AcquirePathIdentity("daemon", configPath, pinnedPath)
+	stableIdentity, err := store.StableIdentityKey()
+	if err != nil {
+		return nil, fmt.Errorf("daemon.config_identity: %w", err)
+	}
+	stable, err := stablelock.AcquirePathIdentityKey("daemon", configPath, stableIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("daemon.already_running: %w", err)
 	}
@@ -45,7 +49,7 @@ func acquireInstanceLease(configPath string) (*instanceLease, error) {
 			_ = stable.Close()
 		}
 	}()
-	configStable, err := stablelock.AcquirePathIdentity("config", configPath, pinnedPath)
+	configStable, err := stablelock.AcquirePathIdentityKey("config", configPath, stableIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("daemon.config_owned: %w", err)
 	}
@@ -55,8 +59,7 @@ func acquireInstanceLease(configPath string) (*instanceLease, error) {
 			_ = configStable.Close()
 		}
 	}()
-	path := pinnedPath + ".daemon.lock"
-	file, err := openInstanceLock(path)
+	file, err := store.OpenLock(statestore.DaemonLock)
 	if err != nil {
 		return nil, fmt.Errorf("daemon.lock_open: %w", err)
 	}
@@ -64,10 +67,15 @@ func acquireInstanceLease(configPath string) (*instanceLease, error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("daemon.already_running: %w", err)
 	}
-	lease := &instanceLease{file: file, stable: stable, configStable: configStable, pinnedPath: pinnedPath, closePin: closePin}
+	lease := &instanceLease{
+		file:         file,
+		store:        store,
+		stable:       stable,
+		configStable: configStable,
+	}
 	keepStable = true
 	keepConfigStable = true
-	keepPin = true
+	keepStore = true
 	if err := file.Truncate(0); err != nil {
 		_ = lease.Close()
 		return nil, fmt.Errorf("daemon.lock_metadata: %w", err)
@@ -91,7 +99,14 @@ func (l *instanceLease) ConfigPath() string {
 	if l == nil {
 		return ""
 	}
-	return l.pinnedPath
+	return l.store.ConfigPath()
+}
+
+func (l *instanceLease) Store() *statestore.Store {
+	if l == nil {
+		return nil
+	}
+	return l.store
 }
 
 func (l *instanceLease) Close() error {
@@ -103,14 +118,14 @@ func (l *instanceLease) Close() error {
 		if closeErr := l.file.Close(); l.err == nil {
 			l.err = closeErr
 		}
-		if l.closePin != nil {
-			l.err = errors.Join(l.err, l.closePin())
-		}
 		if l.stable != nil {
 			l.err = errors.Join(l.err, l.stable.Close())
 		}
 		if l.configStable != nil {
 			l.err = errors.Join(l.err, l.configStable.Close())
+		}
+		if l.store != nil {
+			l.err = errors.Join(l.err, l.store.Close())
 		}
 	})
 	return l.err
