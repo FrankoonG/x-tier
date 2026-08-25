@@ -28,6 +28,34 @@ const target = {
 };
 const renameArgv = ['local', 'identity', 'rename', `a'b\n$(should-not-run)`];
 
+function validDaemonStatus(): Record<string, unknown> {
+  return {
+    api_version: 1,
+    boot_id: 'test-boot',
+    state: 'running',
+    revision: 9,
+    reconcile: {
+      state: 'applied', applied_revision: 9, attempted_revision: 9,
+      configuration_published: true,
+      observed_at: '2026-08-26T00:00:00Z', observation_fresh: true,
+    },
+    config_path: '/tmp/xtier.json',
+    control_addr: '127.0.0.1:19090',
+    started_at: '2026-08-26T00:00:00Z',
+    idempotency: { scope: 'process_memory', restart_persistent: false, provisional: true },
+    control: { command_ingress: 0, command_executions: 0, domain_ingress: 0, domain_executions: 0 },
+    configuration: { schema_version: 1, migrated_at_startup: false, last_known_good_revision: 9 },
+    rendr: {
+      state: 'running', stream_factory: 'xray-stream', stream_carrier: 'unknown',
+      mobility_mode: 'redial_attach', endpoint_owned: false, packet_supported: false,
+    },
+    xray: {
+      state: 'running', fail_stopped: false, draining: [], inbounds: [],
+      strict_stream_outbound: true, strict_packet_outbound: false,
+    },
+  };
+}
+
 test('config recovery is gated by the structured reconcile error code', () => {
   assert.equal(isConfigContentInvalid({ last_error_code: 'config.content_invalid' }), true);
   assert.equal(isConfigContentInvalid({}), false);
@@ -70,6 +98,8 @@ test('secret values are redacted from CLI equivalents, thrown errors, and journa
       ok: false,
       error_code: 'config.profile_rejected',
       message: `rejected credential ${secret}`,
+      applied: false,
+      outcome: 'not_applied',
     }, { status: 400 });
   };
 
@@ -110,6 +140,7 @@ test('a typed mutation sends no CLI envelope and returns the domain object direc
     }
     return Response.json({
       api_version: 1, ok: true, changed: true, dry_run: false,
+      applied: true, outcome: 'applied',
       before_revision: 7, after_revision: 8,
       result: { node: { display_name: renameArgv[3] } },
     });
@@ -185,6 +216,7 @@ test('an indeterminate typed domain result is treated as an unknown transport ou
       ok: false,
       error_code: 'domain.execution_indeterminate',
       message: 'operation failed (domain.execution_indeterminate)',
+      applied: false,
       outcome: 'indeterminate',
     }, { status: 500 });
   };
@@ -249,6 +281,8 @@ test('typed error_code is consumed directly and stdout is never parsed', async (
       ok: false,
       error_code: 'config.revision_conflict',
       message: 'have 8 want 7',
+      applied: false,
+      outcome: 'not_applied',
       stdout: '{"ok":true,"after_revision":999}',
     }, { status: 409 });
   };
@@ -264,6 +298,251 @@ test('typed error_code is consumed directly and stdout is never parsed', async (
         && error.detail === 'have 8 want 7',
     );
     assert.equal(getJournal()[0]?.outcome, 'failed');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('an applied error is journaled as applied_with_error from the outcome tuple', async () => {
+  clearJournal();
+  resetControlSession();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
+    }
+    return Response.json({
+      api_version: 1,
+      ok: false,
+      error_code: 'config.commit_visible_and_resynced',
+      message: 'the committed configuration was re-read',
+      applied: true,
+      outcome: 'applied',
+    }, { status: 200 });
+  };
+
+  try {
+    await assert.rejects(
+      executeMutation(mutations.identityRename('A'), {
+        revision: 7,
+        requestId: '2223456789abcdef0123456789abcdef',
+      }),
+      (error: unknown) => error instanceof CommandFailure
+        && error.applied
+        && error.outcome === 'applied',
+    );
+    assert.equal(getJournal()[0]?.outcome, 'applied_with_error');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('response facts are rejected before an untrusted error code is consumed', async () => {
+  for (const [index, envelope] of [
+    {
+      api_version: 2,
+      ok: false,
+      error_code: 'config.revision_conflict',
+      message: 'untrusted version',
+      applied: false,
+      outcome: 'not_applied',
+    },
+    {
+      api_version: 1,
+      ok: false,
+      error_code: 'config.revision_conflict',
+      message: 'inconsistent tuple',
+      applied: false,
+      outcome: 'applied',
+    },
+  ].entries()) {
+    clearJournal();
+    resetControlSession();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
+      }
+      return Response.json(envelope, { status: 409 });
+    };
+    try {
+      await assert.rejects(
+        executeMutation(mutations.identityRename('A'), {
+          revision: 7,
+          requestId: `${index + 23}`.padStart(32, '0'),
+        }),
+        (error: unknown) => error instanceof TransportFailure
+          && error.outcomeUnknown
+          && error.message.startsWith('control.response_invalid'),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('dry-run success requires matching revision evidence before Apply can be enabled', async () => {
+  for (const [index, envelope] of [
+    { api_version: 1, ok: true },
+    {
+      api_version: 1, ok: true, changed: true, dry_run: false,
+      before_revision: 7, after_revision: 8,
+    },
+    {
+      api_version: 1, ok: true, changed: true, dry_run: true,
+      before_revision: 6, after_revision: 7,
+    },
+    {
+      api_version: 1, ok: true, changed: true, dry_run: true,
+      before_revision: 7, after_revision: 7,
+    },
+    {
+      api_version: 1, ok: true, changed: true, dry_run: true,
+      before_revision: 7, after_revision: 9,
+    },
+  ].entries()) {
+    clearJournal();
+    resetControlSession();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
+      }
+      return Response.json(envelope);
+    };
+    try {
+      await assert.rejects(
+        executeMutation(mutations.identityRename('A'), {
+          revision: 7,
+          dryRun: true,
+          requestId: `${index + 26}`.padStart(32, '0'),
+        }),
+        (error: unknown) => error instanceof TransportFailure
+          && !error.outcomeUnknown
+          && error.message.startsWith('control.response_invalid'),
+      );
+      assert.notEqual(getJournal()[0]?.outcome, 'ok');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('config and reload dry runs accept only their own revision transition', async () => {
+  for (const [operation, afterRevision] of [
+    [mutations.identityRename('A'), 8],
+    [mutations.runtimeReload(), 7],
+  ] as const) {
+    clearJournal();
+    resetControlSession();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
+      }
+      return Response.json({
+        api_version: 1, ok: true, changed: true, dry_run: true,
+        before_revision: 7, after_revision: afterRevision,
+      });
+    };
+    try {
+      const result = await executeMutation<{ after_revision: number }>(operation, {
+        revision: 7,
+        dryRun: true,
+      });
+      assert.equal(result.after_revision, afterRevision);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('an incomplete daemon status is rejected at the API boundary', async () => {
+  clearJournal();
+  resetControlSession();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ api_version: 1, state: 'running', revision: 0 });
+  try {
+    await assert.rejects(
+      getDaemonStatus(),
+      (error: unknown) => error instanceof TransportFailure
+        && !error.outcomeUnknown
+        && error.message.startsWith('control.response_invalid'),
+    );
+    assert.equal(getJournal()[0]?.outcome, 'unreachable');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('illegal daemon status values are rejected before screens consume them', async () => {
+  const mutations: Array<(status: Record<string, unknown>) => void> = [
+    (status) => { status.state = 'bogus'; },
+    (status) => { (status.reconcile as Record<string, unknown>).state = 'bogus'; },
+    (status) => { (status.reconcile as Record<string, unknown>).configuration_published = false; },
+    (status) => { (status.idempotency as Record<string, unknown>).restart_persistent = true; },
+    (status) => { (status.rendr as Record<string, unknown>).endpoint_owned = true; },
+    (status) => { (status.xray as Record<string, unknown>).inbounds = [{ tag: 'user/socks', state: 'bogus' }]; },
+  ];
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const mutate of mutations) {
+      clearJournal();
+      resetControlSession();
+      const status = validDaemonStatus();
+      mutate(status);
+      globalThis.fetch = async () => Response.json(status);
+      await assert.rejects(
+        getDaemonStatus(),
+        (error: unknown) => error instanceof TransportFailure
+          && !error.outcomeUnknown
+          && error.message.startsWith('control.response_invalid'),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('not_applied identity preparations remain structured on CommandFailure', async () => {
+  clearJournal();
+  resetControlSession();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
+    }
+    return Response.json({
+      api_version: 1,
+      ok: false,
+      error_code: 'config.backup_prune',
+      message: 'configuration was not committed',
+      applied: false,
+      outcome: 'not_applied',
+      preparations: [{ kind: 'identity_backing', state: 'recoverable', node_id: 'node-a' }],
+    }, { status: 422 });
+  };
+  try {
+    await assert.rejects(
+      executeMutation(mutations.identityInit('A'), {
+        revision: 0,
+        requestId: '2523456789abcdef0123456789abcdef',
+      }),
+      (error: unknown) => error instanceof CommandFailure
+        && error.outcome === 'not_applied'
+        && error.preparations[0]?.kind === 'identity_backing'
+        && error.preparations[0]?.state === 'recoverable',
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -327,7 +606,21 @@ test('all screen operations call versioned domain routes without a CLI transport
           if (url === '/v1/health') {
             return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
           }
-          return Response.json({ api_version: 1, ok: true });
+          if (mapping.name === 'daemon status') {
+            return Response.json(validDaemonStatus());
+          }
+          return Response.json({
+            api_version: 1,
+            ok: true,
+            ...(mapping.mutating ? {
+              changed: true,
+              dry_run: false,
+              before_revision: 9,
+              after_revision: mapping.name === 'runtime reload' ? 9 : 10,
+              applied: true,
+              outcome: 'applied',
+            } : {}),
+          });
         };
 
         const requestId = index.toString(16).padStart(32, '0');

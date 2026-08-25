@@ -664,6 +664,18 @@ func TestLocalReloadAppliesAndRejectsStaleRevision(t *testing.T) {
 	if changed.Revision != 1 || changed.Xray.Current == nil || changed.Xray.Current.Generation <= after.Xray.Current.Generation {
 		t.Fatalf("changed reload did not publish a new generation: before=%+v after=%+v", after.Xray.Current, changed.Xray.Current)
 	}
+	request.RequestID = "81700000000000000000000000000000"
+	response, err = controlapi.Execute(d.Addr(), tokenPath, request)
+	if err != nil || response.ExitCode != 0 {
+		t.Fatalf("idempotent reload retry response=%+v err=%v", response, err)
+	}
+	retried, err := controlapi.GetStatus(d.Addr(), tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Xray.Current == nil || retried.Xray.Current.Generation != changed.Xray.Current.Generation {
+		t.Fatalf("same-revision reload retry changed generation: before=%+v after=%+v", changed.Xray.Current, retried.Xray.Current)
+	}
 	request.Revision = 99
 	request.RequestID = "82000000000000000000000000000000"
 	response, err = controlapi.Execute(d.Addr(), tokenPath, request)
@@ -1381,7 +1393,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 		t.Fatal(err)
 	}
 	if domainStatus != http.StatusOK || !bytes.Contains(domainResponse, []byte(`"source":"last-known-good"`)) ||
-		!bytes.Contains(domainResponse, []byte(`"changed":false`)) {
+		!bytes.Contains(domainResponse, []byte(`"changed":true`)) {
 		t.Fatalf("daemon restore domain dry-run status=%d body=%s", domainStatus, domainResponse)
 	}
 	after, err := os.ReadFile(configPath)
@@ -1576,7 +1588,8 @@ func TestAuthenticatedStatusSurvivesPermanentUnhealthyApplyAfterRestore(t *testi
 			t.Fatalf("authenticated status failed while unhealthy apply remained committed: %v", statusErr)
 		}
 		if status.Revision != checkpoint.Revision+1 || status.Reconcile.AppliedRevision != checkpoint.Revision+1 ||
-			status.Configuration.StartupRollback == nil || status.Configuration.LastKnownGoodRevision != checkpoint.Revision {
+			!status.Reconcile.ConfigurationPublished || status.Configuration.StartupRollback == nil ||
+			status.Configuration.LastKnownGoodRevision != checkpoint.Revision {
 			t.Fatalf("permanently unhealthy restore status=%+v", status)
 		}
 		reads++
@@ -1947,24 +1960,31 @@ func TestAppliedConfigurationRequiresRunningNonFailStoppedRuntime(t *testing.T) 
 	if appliedConfigurationMatches(failStopped, 3, digest) {
 		t.Fatal("fail-stopped status was reported as applied")
 	}
+	if !publishedConfigurationMatches(failStopped, 3, digest) {
+		t.Fatal("published configuration was hidden by fail-stop health")
+	}
 	rendrFailed := base
 	rendrFailed.Rendr.State = "failed"
 	if appliedRuntimeHealthy(rendrFailed, 3, digest) {
 		t.Fatal("failed Rendr runtime was reported as healthy and applied")
 	}
 	d := &Daemon{}
-	if got := d.reconcileStatusFrom(3, digest, rendrFailed); got.State == controlapi.ReconcileStateApplied {
+	if got := d.reconcileStatusFrom(3, digest, rendrFailed); got.State == controlapi.ReconcileStateApplied || !got.ConfigurationPublished {
 		t.Fatalf("failed Rendr runtime produced applied reconcile state: %+v", got)
 	}
 }
 
 func TestReloadDoesNotCheckpointSuccessfulButUnhealthyApply(t *testing.T) {
 	for _, testCase := range []struct {
-		name   string
-		status func(configstore.Config, [32]byte) dataplane.Status
+		name                   string
+		errorCode              string
+		configurationPublished bool
+		status                 func(configstore.Config, [32]byte) dataplane.Status
 	}{
 		{
-			name: "fail-stopped target",
+			name:                   "fail-stopped target",
+			errorCode:              "service.reload_applied_unhealthy",
+			configurationPublished: true,
 			status: func(cfg configstore.Config, digest [32]byte) dataplane.Status {
 				return dataplane.Status{
 					State: "running", AppliedRevision: cfg.Revision, AttemptedRevision: cfg.Revision,
@@ -1974,7 +1994,8 @@ func TestReloadDoesNotCheckpointSuccessfulButUnhealthyApply(t *testing.T) {
 			},
 		},
 		{
-			name: "healthy stale revision",
+			name:      "healthy stale revision",
+			errorCode: "service.reload_not_applied",
 			status: func(cfg configstore.Config, _ [32]byte) dataplane.Status {
 				return dataplane.Status{
 					State: "running", AppliedRevision: cfg.Revision - 1, AttemptedRevision: cfg.Revision - 1,
@@ -1983,7 +2004,9 @@ func TestReloadDoesNotCheckpointSuccessfulButUnhealthyApply(t *testing.T) {
 			},
 		},
 		{
-			name: "failed rendr runtime",
+			name:                   "failed rendr runtime",
+			errorCode:              "service.reload_applied_unhealthy",
+			configurationPublished: true,
 			status: func(cfg configstore.Config, digest [32]byte) dataplane.Status {
 				return dataplane.Status{
 					State: "running", AppliedRevision: cfg.Revision, AttemptedRevision: cfg.Revision,
@@ -2018,9 +2041,12 @@ func TestReloadDoesNotCheckpointSuccessfulButUnhealthyApply(t *testing.T) {
 				},
 			}
 
-			_, err = d.Reload(context.Background(), candidate.Revision, false)
-			if publicerr.Message(err, "fallback") != "operation failed (service.reload_not_applied)" {
+			status, err := d.Reload(context.Background(), candidate.Revision, false)
+			if publicerr.Message(err, "fallback") != "operation failed ("+testCase.errorCode+")" {
 				t.Fatalf("reload error=%v", err)
+			}
+			if status.ConfigurationPublished != testCase.configurationPublished {
+				t.Fatalf("configuration_published=%v, want %v; status=%+v", status.ConfigurationPublished, testCase.configurationPublished, status)
 			}
 			stored, loadErr := configstore.LoadLastKnownGood(configPath)
 			if loadErr != nil {

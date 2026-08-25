@@ -117,6 +117,9 @@ type Phase =
 
 export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps) {
   const { mutate, revision, refresh } = useControl();
+  const operationKey = spec
+    ? `${spec.operation.method}\u0000${spec.operation.path}\u0000${JSON.stringify(spec.operation.body)}`
+    : null;
 
   const [phase, setPhase] = useState<Phase>('checking');
   const [preview, setPreview] = useState<unknown>(null);
@@ -124,6 +127,7 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
   const [result, setResult] = useState<unknown>(null);
   /** Revision the visible dry run was checked against. */
   const [checkedAt, setCheckedAt] = useState(revision);
+  const [checkedOperationKey, setCheckedOperationKey] = useState<string | null>(null);
 
   // Guards a dry run that returns after the dialog moved on — closed, or a
   // second check started. Without it a slow first check can overwrite the
@@ -135,6 +139,7 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
     const ticket = ++run.current;
     setPhase('checking');
     setFailure(null);
+    setCheckedOperationKey(null);
     try {
       const payload = await mutate<unknown>(spec.operation, { dryRun: true });
       if (ticket !== run.current) return;
@@ -144,9 +149,13 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
        * `before_revision` IS the revision the check ran against, so it is
        * correct even when the dry run was issued after a refresh whose new
        * value this closure never saw. Reading the rendered `revision` here
-       * would mark a perfectly fresh check as stale. */
+      * would mark a perfectly fresh check as stale. */
       const before = (payload as MutationResponse | null)?.before_revision;
-      setCheckedAt(typeof before === 'number' ? before : revision);
+      if (typeof before !== 'number' || !Number.isSafeInteger(before)) {
+        throw new Error('control.response_invalid: dry run omitted before_revision');
+      }
+      setCheckedAt(before);
+      setCheckedOperationKey(operationKey);
       setPhase('ready');
     } catch (err) {
       if (ticket !== run.current) return;
@@ -154,16 +163,17 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
       setPreview(null);
       setPhase('refused');
     }
-  }, [spec, mutate, revision]);
+  }, [spec, mutate, operationKey, revision]);
 
   // Re-checks whenever a different typed operation is dialled up. The CLI
   // equivalent is only a stable local key and never selects a network route.
-  const operationKey = spec?.operation.cliEquivalent.join('\u0000');
   useEffect(() => {
     if (!spec) return;
     setResult(null);
+    setCheckedOperationKey(null);
     applyRequestId.current = null;
     applyRevision.current = null;
+    applyOperationKey.current = null;
     void dryRun();
     // `dryRun` is intentionally excluded: it closes over `revision`, which
     // changes on every write, and re-checking on that would re-run the dialog's
@@ -191,13 +201,23 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
    * refresh has since moved.
    */
   const applyRevision = useRef<number | null>(null);
+  const applyOperationKey = useRef<string | null>(null);
 
   const apply = async () => {
     if (!spec) return;
+    const replayUnknown = phase === 'unknown';
+    if (!replayUnknown && (
+      phase !== 'ready' || checkedAt !== revision || checkedOperationKey !== operationKey
+    )) return;
+    if (replayUnknown && (
+      applyRequestId.current === null || applyRevision.current === null
+      || applyOperationKey.current !== operationKey
+    )) return;
     setPhase('applying');
     setFailure(null);
     applyRequestId.current ??= newRequestId();
-    applyRevision.current ??= revision;
+    applyRevision.current ??= checkedAt;
+    applyOperationKey.current ??= operationKey;
     try {
       const applied = await mutate<unknown>(spec.operation, {
         requestId: applyRequestId.current,
@@ -261,11 +281,19 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
        */
       applyRequestId.current = null;
       applyRevision.current = null;
+      applyOperationKey.current = null;
 
       // The write landed despite the error. Reporting it as a failure would
       // tell the operator their change was lost while it is on disk.
       setPhase(view.applied ? 'applied' : 'failed');
-      if (view.applied) onApplied?.(null);
+      if (view.applied) {
+        toast({
+          variant: 'warning',
+          title: 'Applied with an error',
+          message: `${spec.title} was applied, but the daemon reported ${view.code}.`,
+        });
+        onApplied?.(null);
+      }
     }
   };
 
@@ -275,7 +303,10 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
   };
 
   const busy = phase === 'checking' || phase === 'applying';
-  const stale = phase === 'ready' && checkedAt !== revision;
+  const checkedOperation = checkedOperationKey === operationKey;
+  const ready = phase === 'ready' && checkedOperation;
+  const stale = ready && checkedAt !== revision;
+  const replayableUnknown = phase === 'unknown' && applyOperationKey.current === operationKey;
 
   return (
     <Dialog
@@ -312,11 +343,10 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
             </Button>
           )}
 
-          {/* Offered only where pressing it can help. Withheld after a
-            * blocked refusal, and — most importantly — after an unknown
-            * outcome, where a second press is how a change gets applied
-            * twice. */}
-          {phase !== 'applied' && phase !== 'unknown' && (
+          {/* A fresh apply exists only after a successful, current check. The
+            * applying state keeps the same stable control visible while the
+            * request is in flight. */}
+          {(ready || phase === 'applying') && (
             <Button
               variant={spec?.destructive ? 'danger' : 'primary'}
               onClick={() => void apply()}
@@ -325,18 +355,16 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
                * "applying now would be rejected" while the button sent the
                * CURRENT revision — so it was not rejected at all, and the write
                * landed against a state nobody had previewed. */
-              disabled={
-                busy || stale || (phase === 'refused' && (failure?.blocked ?? true))
-              }
+              disabled={phase === 'applying' || stale}
             >
               {spec?.confirmLabel ?? 'Apply'}
             </Button>
           )}
 
           {/* Reuse both request_id and revision. The live daemon can replay a
-            * cached outcome; after restart/expiry, revision CAS prevents a
-            * write that already advanced configuration from running again. */}
-          {phase === 'unknown' && (
+            * cached outcome. After restart, config writes are guarded by CAS;
+            * runtime reload reconciles the same revision idempotently. */}
+          {replayableUnknown && (
             <Button variant="default" onClick={() => void apply()}>
               Ask the daemon again
             </Button>
@@ -354,7 +382,7 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
           </Row>
         )}
 
-        {phase === 'ready' && (
+        {ready && (
           <div style={{ display: 'grid', gap: 'var(--stratum-space-6)' }}>
             {/* The daemon has already been asked. That is the whole value of
               * this step: a confirmation dialog that only restates the
@@ -398,7 +426,7 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
           <FailureNotice failure={failure} />
         )}
 
-        {phase === 'unknown' && (
+        {replayableUnknown && (
           <div style={{ display: 'grid', gap: 'var(--stratum-space-6)' }}>
             <Banner variant="warning" title="The outcome of this change is unknown">
               <div style={{ display: 'grid', gap: 'var(--stratum-space-6)' }}>

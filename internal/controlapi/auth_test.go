@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +16,102 @@ import (
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func TestTrackedAuthenticatedRequestRequiresWriteEvidence(t *testing.T) {
+	transportFailure := errors.New("injected transport failure")
+	for _, test := range []struct {
+		name     string
+		wrote    bool
+		mayApply bool
+	}{
+		{name: "failed before write"},
+		{name: "failed after write", wrote: true, mayApply: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if test.wrote {
+					trace := httptrace.ContextClientTrace(request.Context())
+					if trace == nil || trace.WroteRequest == nil {
+						t.Fatal("authenticated request did not install a write trace")
+					}
+					trace.WroteRequest(httptrace.WroteRequestInfo{})
+				}
+				return nil, transportFailure
+			})}
+			request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1/v1/command", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = doTrackedAuthenticatedRequest(client, request)
+			if err == nil || !errors.Is(err, transportFailure) {
+				t.Fatalf("request error=%v", err)
+			}
+			if got := CommandMayHaveApplied(err); got != test.mayApply {
+				t.Fatalf("CommandMayHaveApplied=%v, want %v: %v", got, test.mayApply, err)
+			}
+		})
+	}
+}
+
+func TestTrackedAuthenticatedRequestUsesRealTransportBoundary(t *testing.T) {
+	t.Run("dial failure is definitely pre-delivery", func(t *testing.T) {
+		dialFailure := errors.New("injected dial failure")
+		client := &http.Client{Transport: &http.Transport{
+			DialContext: func(context.Context, string, string) (net.Conn, error) {
+				return nil, dialFailure
+			},
+		}}
+		request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1/v1/command", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = doTrackedAuthenticatedRequest(client, request)
+		if err == nil || !errors.Is(err, dialFailure) || CommandMayHaveApplied(err) {
+			t.Fatalf("dial failure classification=%v may_apply=%t", err, CommandMayHaveApplied(err))
+		}
+	})
+
+	t.Run("server consumed request before response loss", func(t *testing.T) {
+		received := make(chan string, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Errorf("read request body: %v", err)
+			}
+			received <- string(body)
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack response: %v", err)
+				return
+			}
+			_ = conn.Close()
+		}))
+		defer server.Close()
+
+		request, err := http.NewRequest(http.MethodPost, server.URL+CommandPath, strings.NewReader(`{"request_id":"real-transport"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = doTrackedAuthenticatedRequest(server.Client(), request)
+		if err == nil || !CommandMayHaveApplied(err) {
+			t.Fatalf("post-write failure classification=%v may_apply=%t", err, CommandMayHaveApplied(err))
+		}
+		select {
+		case body := <-received:
+			if body != `{"request_id":"real-transport"}` {
+				t.Fatalf("received body=%q", body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("server did not consume request")
+		}
+	})
+}
 
 func TestAuthenticatedRequestNeverSendsPersistentToken(t *testing.T) {
 	tokenPath := filepath.Join(t.TempDir(), "control.token")

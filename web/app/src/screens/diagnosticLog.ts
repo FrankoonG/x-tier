@@ -10,6 +10,7 @@ const LEVEL: Record<JournalEntry['outcome'], LogLevel> = {
   pending: 'debug',
   ok: 'info',
   failed: 'warn',
+  applied_with_error: 'warn',
   unreachable: 'error',
   unknown: 'fatal',
 };

@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
@@ -29,15 +29,26 @@ type cachedDomainResponse struct {
 	done        chan struct{}
 	completed   bool
 	protected   bool
-	completedAt time.Time
 }
 
 type domainResult struct {
-	status int
-	body   []byte
+	status       int
+	body         []byte
+	applied      *bool
+	outcome      controlapi.MutationOutcome
+	preparations []controlapi.MutationPreparation
 }
 
-type domainMutation func(*configstore.Config, bool) (any, error)
+type domainMutationEffects struct {
+	preparations []controlapi.MutationPreparation
+}
+
+type domainMutation func(*configstore.Config, bool, *domainMutationEffects) (any, error)
+type domainIdentityCreator func(string) (*identity.Identity, error)
+
+func createDomainIdentity(path string) (*identity.Identity, error) {
+	return identity.Create(path)
+}
 
 type domainFailure struct {
 	code string
@@ -256,14 +267,14 @@ func (s *Server) handleRuntimeReload(w http.ResponseWriter, r *http.Request) {
 	var request controlapi.RuntimeReloadRequest
 	raw, err := decodeDomainBody(r.Body, &request)
 	if err != nil {
-		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
+		writeDomainResult(w, domainMutationErrorResult(err, http.StatusBadRequest, false, nil))
 		return
 	}
 	if err := validateDomainMutationRequest(request.DomainMutationRequest); err != nil {
-		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
+		writeDomainResult(w, domainMutationErrorResult(err, http.StatusBadRequest, request.DryRun, nil))
 		return
 	}
-	s.executeCachedDomainMutation(w, r, request.DomainMutationRequest, raw, true, func() domainResult {
+	s.executeCachedDomainMutation(w, r, request.DomainMutationRequest, raw, func() domainResult {
 		s.domainExecutions.Add(1)
 		ctx, cancel := s.mutationContext()
 		defer cancel()
@@ -276,25 +287,35 @@ func (s *Server) handleRuntimeReload(w http.ResponseWriter, r *http.Request) {
 		}
 		reloader, ok := s.status.(RuntimeReloader)
 		if !ok {
-			return domainErrorResult(domainFailure{code: "service.reload_unavailable", err: fmt.Errorf("runtime reloader is unavailable")}, http.StatusServiceUnavailable)
+			return domainMutationErrorResult(
+				domainFailure{code: "service.reload_unavailable", err: fmt.Errorf("runtime reloader is unavailable")},
+				http.StatusServiceUnavailable,
+				request.DryRun,
+				nil,
+			)
 		}
-		status, err := reloader.Reload(ctx, request.Revision, request.DryRun)
-		if err != nil {
-			failure := domainFailure{code: runtimeCommandErrorCode(err), err: errors.New(sanitizeRuntimeCommandError(err))}
-			if !request.DryRun && status.State == controlapi.ReconcileStateApplied && status.AppliedRevision == request.Revision {
-				return domainErrorResultWithOutcome(failure, 0, true, string(controlapi.MutationOutcomeApplied))
+		status, reloadErr := reloader.Reload(ctx, request.Revision, request.DryRun)
+		if request.DryRun {
+			if reloadErr != nil {
+				return domainMutationErrorResult(reloadErr, 0, true, nil)
 			}
-			if request.DryRun || (status.State == controlapi.ReconcileStateFailed && status.AttemptedRevision == request.Revision) {
-				return domainErrorResult(failure, 0)
+		} else if classifiedErr, applied, outcome := classifyReloadMutation(status, reloadErr, request.Revision); classifiedErr != nil {
+			failure := domainFailure{
+				code: runtimeCommandErrorCode(classifiedErr),
+				err:  errors.New(sanitizeRuntimeCommandError(classifiedErr)),
 			}
-			if reloadFailureWasNotAttempted(failure.code) {
-				return domainErrorResult(failure, 0)
+			httpStatus := 0
+			if failure.code == "service.reload_result_invalid" {
+				httpStatus = http.StatusInternalServerError
 			}
-			return domainErrorResultWithOutcome(failure, 0, false, "indeterminate")
+			return domainMutationErrorResultWithOutcome(failure, httpStatus, applied, outcome, nil)
 		}
-		return domainJSONResult(http.StatusOK, map[string]any{
+		return domainMutationJSONResult(request.DryRun, map[string]any{
 			"ok":                   true,
+			"changed":              true,
 			"dry_run":              request.DryRun,
+			"before_revision":      request.Revision,
+			"after_revision":       request.Revision,
 			"applied_revision":     status.AppliedRevision,
 			"attempted_revision":   status.AttemptedRevision,
 			"reconciliation_state": status.State,
@@ -306,14 +327,14 @@ func (s *Server) handleConfigRestore(w http.ResponseWriter, r *http.Request) {
 	var request controlapi.ConfigRestoreRequest
 	raw, err := decodeDomainBody(r.Body, &request)
 	if err != nil {
-		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
+		writeDomainResult(w, domainMutationErrorResult(err, http.StatusBadRequest, false, nil))
 		return
 	}
 	if err := validateDomainMutationRequest(request.DomainMutationRequest); err != nil {
-		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
+		writeDomainResult(w, domainMutationErrorResult(err, http.StatusBadRequest, request.DryRun, nil))
 		return
 	}
-	s.executeCachedDomainMutation(w, r, request.DomainMutationRequest, raw, true, func() domainResult {
+	s.executeCachedDomainMutation(w, r, request.DomainMutationRequest, raw, func() domainResult {
 		s.domainExecutions.Add(1)
 		if !request.DryRun {
 			ctx, cancel := s.mutationContext()
@@ -326,11 +347,11 @@ func (s *Server) handleConfigRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err := s.restoreLastKnownGood(request.Revision, request.DryRun)
 		if err != nil {
-			return domainErrorResult(err, 0)
+			return domainMutationErrorResult(err, 0, request.DryRun, nil)
 		}
-		return domainJSONResult(http.StatusOK, map[string]any{
+		return domainMutationJSONResult(request.DryRun, map[string]any{
 			"ok":              true,
-			"changed":         !request.DryRun,
+			"changed":         true,
 			"dry_run":         request.DryRun,
 			"before_revision": result.BeforeRevision,
 			"after_revision":  result.AfterRevision,
@@ -410,62 +431,78 @@ func (s *Server) handleDomainMutation(w http.ResponseWriter, r *http.Request) {
 		err = domainFailure{code: "domain.not_found", err: fmt.Errorf("mutation is not available")}
 	}
 	if err != nil {
-		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
+		writeDomainResult(w, domainMutationErrorResult(err, http.StatusBadRequest, false, nil))
 		return
 	}
 	if err := validateDomainMutationRequest(meta); err != nil {
-		writeDomainResult(w, domainErrorResult(err, http.StatusBadRequest))
+		writeDomainResult(w, domainMutationErrorResult(err, http.StatusBadRequest, meta.DryRun, nil))
 		return
 	}
-	s.executeCachedDomainMutation(w, r, meta, raw, false, func() domainResult {
+	s.executeCachedDomainMutation(w, r, meta, raw, func() domainResult {
 		return s.executeConfigDomainMutation(meta, mutation)
 	})
 }
 
-func (s *Server) executeCachedDomainMutation(w http.ResponseWriter, r *http.Request, meta controlapi.DomainMutationRequest, raw []byte, protect bool, execute func() domainResult) {
+func (s *Server) executeCachedDomainMutation(w http.ResponseWriter, r *http.Request, meta controlapi.DomainMutationRequest, raw []byte, execute func() domainResult) {
 	if !s.beginCommand() {
-		writeDomainResult(w, domainErrorResult(domainFailure{code: "control.stopping", err: fmt.Errorf("control server is stopping")}, http.StatusServiceUnavailable))
+		writeDomainResult(w, domainMutationErrorResult(
+			domainFailure{code: "control.stopping", err: fmt.Errorf("control server is stopping")},
+			http.StatusServiceUnavailable,
+			meta.DryRun,
+			nil,
+		))
 		return
 	}
 	defer s.commands.Done()
 
 	if meta.DryRun {
-		result, _ := executeDomainSafely(execute)
+		result := executeDomainSafely(execute, false)
 		writeDomainResult(w, result)
 		return
 	}
 	fingerprint := sha256.Sum256(append([]byte(r.Method+"\x00"+r.URL.Path+"\x00"), raw...))
-	entry, leader, status := s.claimDomainRequest(meta.RequestID, fingerprint, protect)
+	entry, leader, status := s.claimDomainRequest(meta.RequestID, fingerprint)
 	if status != 0 {
 		code := "domain.request_id_conflict"
 		if status == http.StatusServiceUnavailable {
 			code = "domain.idempotency_capacity_exhausted"
 		}
-		writeDomainResult(w, domainErrorResult(domainFailure{code: code, err: fmt.Errorf("request_id cannot be claimed")}, status))
+		writeDomainResult(w, domainMutationErrorResult(
+			domainFailure{code: code, err: fmt.Errorf("request_id cannot be claimed")},
+			status,
+			false,
+			nil,
+		))
 		return
 	}
 	if !leader {
 		writeDomainResult(w, waitDomainResult(r.Context(), entry))
 		return
 	}
-	result, indeterminate := executeDomainSafely(execute)
-	s.completeDomainRequest(meta.RequestID, entry, result, protect || indeterminate)
+	result := executeDomainSafely(execute, true)
+	s.completeDomainRequest(meta.RequestID, entry, result)
 	writeDomainResult(w, result)
 }
 
-func executeDomainSafely(execute func() domainResult) (result domainResult, indeterminate bool) {
+func executeDomainSafely(execute func() domainResult, mutation bool) (result domainResult) {
 	defer func() {
 		if recover() != nil {
-			result = domainErrorResultWithOutcome(
-				domainFailure{code: "domain.execution_indeterminate", err: errors.New("domain mutation did not return")},
-				http.StatusInternalServerError,
-				false,
-				"indeterminate",
-			)
-			indeterminate = true
+			failure := domainFailure{code: "domain.execution_failed", err: errors.New("domain operation did not return")}
+			if mutation {
+				failure.code = "domain.execution_indeterminate"
+				result = domainMutationErrorResultWithOutcome(
+					failure,
+					http.StatusInternalServerError,
+					false,
+					controlapi.MutationOutcomeIndeterminate,
+					nil,
+				)
+				return
+			}
+			result = domainErrorResult(failure, http.StatusInternalServerError)
 		}
 	}()
-	return execute(), false
+	return execute()
 }
 
 func waitDomainResult(ctx context.Context, entry *cachedDomainResponse) domainResult {
@@ -473,17 +510,19 @@ func waitDomainResult(ctx context.Context, entry *cachedDomainResponse) domainRe
 	case <-entry.done:
 		return entry.result
 	case <-ctx.Done():
-		return domainErrorResultWithOutcome(
+		return domainMutationErrorResultWithOutcome(
 			domainFailure{code: "domain.request_canceled", err: errors.New("request canceled while awaiting the original execution")},
 			http.StatusRequestTimeout,
 			false,
-			"indeterminate",
+			controlapi.MutationOutcomeIndeterminate,
+			nil,
 		)
 	}
 }
 
 func (s *Server) executeConfigDomainMutation(meta controlapi.DomainMutationRequest, mutation domainMutation) domainResult {
 	s.domainExecutions.Add(1)
+	effects := &domainMutationEffects{}
 	if meta.DryRun {
 		cfg, err := configstore.LoadExisting(s.configPath)
 		if err != nil {
@@ -493,15 +532,23 @@ func (s *Server) executeConfigDomainMutation(meta controlapi.DomainMutationReque
 		if err := configstore.ValidateRevision(cfg, meta.Revision); err != nil {
 			return domainErrorResult(err, 0)
 		}
-		payload, err := mutation(&cfg, true)
+		if before == math.MaxInt64 {
+			return domainMutationErrorResult(
+				domainFailure{code: "config.revision_exhausted", err: errors.New("configuration revision is exhausted")},
+				0,
+				true,
+				nil,
+			)
+		}
+		payload, err := mutation(&cfg, true, effects)
 		if err != nil {
-			return domainErrorResult(err, 0)
+			return domainMutationErrorResult(err, 0, true, nil)
 		}
 		cfg.Revision = before
 		if err := configstore.Validate(cfg); err != nil {
 			return domainErrorResult(err, http.StatusUnprocessableEntity)
 		}
-		return domainMutationResult(true, before, before, payload)
+		return domainMutationResult(true, before, before+1, payload)
 	}
 
 	ctx, cancel := s.mutationContext()
@@ -520,17 +567,17 @@ func (s *Server) executeConfigDomainMutation(meta controlapi.DomainMutationReque
 	}
 	result, err := update(s.configPath, meta.Revision, func(cfg *configstore.Config) error {
 		var mutateErr error
-		payload, mutateErr = mutation(cfg, false)
+		payload, mutateErr = mutation(cfg, false, effects)
 		return mutateErr
 	})
 	if err != nil {
-		return domainErrorResult(err, 0)
+		return domainMutationErrorResult(err, 0, false, effects.preparations)
 	}
 	return domainMutationResult(false, result.BeforeRevision, result.AfterRevision, payload)
 }
 
 func domainMutationResult(dryRun bool, before, after int64, payload any) domainResult {
-	return domainJSONResult(http.StatusOK, map[string]any{
+	return domainMutationJSONResult(dryRun, map[string]any{
 		"ok":              true,
 		"changed":         true,
 		"dry_run":         dryRun,
@@ -547,11 +594,16 @@ func mutationAdmissionDomainResult(err error) domainResult {
 		code = "control.stopping"
 		message = "control server stopped before mutation execution"
 	}
-	return domainErrorResult(domainFailure{code: code, err: errors.New(message)}, http.StatusServiceUnavailable)
+	return domainMutationErrorResult(
+		domainFailure{code: code, err: errors.New(message)},
+		http.StatusServiceUnavailable,
+		false,
+		nil,
+	)
 }
 
 func (s *Server) identityInitMutation(request controlapi.IdentityInitRequest) domainMutation {
-	return func(cfg *configstore.Config, dryRun bool) (any, error) {
+	return func(cfg *configstore.Config, dryRun bool, effects *domainMutationEffects) (any, error) {
 		seedPath := domainIdentitySeedPath(s.configPath)
 		observed, backing, err := inspectDomainIdentity(*cfg, seedPath)
 		if err != nil {
@@ -567,8 +619,22 @@ func (s *Server) identityInitMutation(request controlapi.IdentityInitRequest) do
 				proposed.RendrCapable = true
 				return map[string]any{"identity": observed, "node": proposed, "would_create_backing": true}, nil
 			}
-			id, err = identity.Create(seedPath)
+			creator := s.createIdentity
+			if creator == nil {
+				creator = createDomainIdentity
+			}
+			id, err = creator(seedPath)
 			created = err == nil
+			if err != nil {
+				if published, loadErr := identity.Load(seedPath); loadErr == nil && effects != nil {
+					public := published.Public()
+					effects.preparations = append(effects.preparations, controlapi.MutationPreparation{
+						Kind:   "identity_backing",
+						State:  identityStateRecoverable,
+						NodeID: public.NodeID.String(),
+					})
+				}
+			}
 		case identityStateRecoverable:
 		case identityStateBacked:
 			return nil, domainFailure{code: "identity.exists", err: fmt.Errorf("node identity is already initialized and backed")}
@@ -583,6 +649,13 @@ func (s *Server) identityInitMutation(request controlapi.IdentityInitRequest) do
 			return nil, err
 		}
 		public := id.Public()
+		if created && effects != nil {
+			effects.preparations = append(effects.preparations, controlapi.MutationPreparation{
+				Kind:   "identity_backing",
+				State:  identityStateRecoverable,
+				NodeID: public.NodeID.String(),
+			})
+		}
 		cfg.Node.NodeID = public.NodeID.String()
 		cfg.Node.PublicKey = public.PublicKey
 		if request.Name != "" {
@@ -601,7 +674,7 @@ func (s *Server) identityInitMutation(request controlapi.IdentityInitRequest) do
 }
 
 func identityRenameMutation(request controlapi.IdentityRenameRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		if request.Name == "" {
 			return nil, domainFailure{code: "identity.name_required", err: fmt.Errorf("display name is required")}
 		}
@@ -611,7 +684,7 @@ func identityRenameMutation(request controlapi.IdentityRenameRequest) domainMuta
 }
 
 func settingsMutation(request controlapi.SettingsUpdateRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		patch := request.Settings
 		if patch.LogLevel == nil && patch.MaxNestedDepth == nil && patch.MaxResponseNodes == nil &&
 			patch.MaxResponseBytes == nil && patch.MaxCacheEntries == nil && patch.MaxFetchFanOut == nil {
@@ -640,7 +713,7 @@ func settingsMutation(request controlapi.SettingsUpdateRequest) domainMutation {
 }
 
 func inboundPutMutation(request controlapi.InboundPutRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		if request.Kind == "" {
 			return nil, domainFailure{code: "config.inbound_kind_required", err: fmt.Errorf("inbound kind is required")}
 		}
@@ -684,7 +757,7 @@ func inboundPutMutation(request controlapi.InboundPutRequest) domainMutation {
 }
 
 func inboundStateMutation(request controlapi.InboundStateRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		index := domainInboundIndex(cfg.NodeInbound, request.Kind)
 		if index < 0 {
 			return nil, domainFailure{code: "config.inbound_unknown", err: fmt.Errorf("%s", request.Kind)}
@@ -704,7 +777,7 @@ func inboundStateMutation(request controlapi.InboundStateRequest) domainMutation
 }
 
 func peerCreateMutation(request controlapi.PeerCreateRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		if request.Name == "" || request.NodeID == "" {
 			return nil, domainFailure{code: "config.peer_identity_required", err: fmt.Errorf("peer name and node_id are required")}
 		}
@@ -729,7 +802,7 @@ func peerCreateMutation(request controlapi.PeerCreateRequest) domainMutation {
 }
 
 func peerUpdateMutation(request controlapi.PeerUpdateRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		peer, index, ok := configstore.FindPeer(cfg.Peers, request.Name)
 		if !ok {
 			return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
@@ -753,7 +826,7 @@ func peerUpdateMutation(request controlapi.PeerUpdateRequest) domainMutation {
 }
 
 func peerStateMutation(request controlapi.PeerStateRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		peer, index, ok := configstore.FindPeer(cfg.Peers, request.Name)
 		if !ok {
 			return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
@@ -773,7 +846,7 @@ func peerStateMutation(request controlapi.PeerStateRequest) domainMutation {
 }
 
 func peerRemoveMutation(request controlapi.PeerRemoveRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		_, index, ok := configstore.FindPeer(cfg.Peers, request.Name)
 		if !ok {
 			return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
@@ -784,7 +857,7 @@ func peerRemoveMutation(request controlapi.PeerRemoveRequest) domainMutation {
 }
 
 func profilePutMutation(request controlapi.XrayProfilePutRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		if request.ID == "" || request.Kind == "" {
 			return nil, domainFailure{code: "config.profile_identity_required", err: fmt.Errorf("profile id and kind are required")}
 		}
@@ -823,7 +896,7 @@ func profilePutMutation(request controlapi.XrayProfilePutRequest) domainMutation
 }
 
 func profileRemoveMutation(request controlapi.XrayProfileRemoveRequest) domainMutation {
-	return func(cfg *configstore.Config, _ bool) (any, error) {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
 		if domainProfileInUse(*cfg, request.ID) {
 			return nil, domainFailure{code: "config.in_use", err: fmt.Errorf("%s", request.ID)}
 		}
@@ -832,10 +905,9 @@ func profileRemoveMutation(request controlapi.XrayProfileRemoveRequest) domainMu
 	}
 }
 
-func (s *Server) claimDomainRequest(requestID string, fingerprint [sha256.Size]byte, protect bool) (*cachedDomainResponse, bool, int) {
+func (s *Server) claimDomainRequest(requestID string, fingerprint [sha256.Size]byte) (*cachedDomainResponse, bool, int) {
 	s.domainRequestsMu.Lock()
 	defer s.domainRequestsMu.Unlock()
-	s.evictExpiredProtectedDomainRequestsLocked(s.cacheNow())
 	if cached, ok := s.domainRequests[requestID]; ok {
 		if cached.fingerprint != fingerprint {
 			return nil, false, http.StatusConflict
@@ -848,26 +920,28 @@ func (s *Server) claimDomainRequest(requestID string, fingerprint [sha256.Size]b
 			return nil, false, http.StatusServiceUnavailable
 		}
 	}
-	entry := &cachedDomainResponse{fingerprint: fingerprint, done: make(chan struct{}), protected: protect}
+	entry := &cachedDomainResponse{fingerprint: fingerprint, done: make(chan struct{})}
 	s.domainRequests[requestID] = entry
 	return entry, true, 0
 }
 
-func (s *Server) completeDomainRequest(requestID string, entry *cachedDomainResponse, result domainResult, protect bool) {
+func (s *Server) completeDomainRequest(requestID string, entry *cachedDomainResponse, result domainResult) {
 	s.domainRequestsMu.Lock()
 	defer s.domainRequestsMu.Unlock()
 	current, ok := s.domainRequests[requestID]
 	if !ok || current != entry || entry.completed {
 		panic("controlserver: invalid domain request completion")
 	}
-	entry.result = domainResult{status: result.status, body: append([]byte(nil), result.body...)}
+	entry.result = domainResult{
+		status:       result.status,
+		body:         append([]byte(nil), result.body...),
+		applied:      cloneDomainBool(result.applied),
+		outcome:      result.outcome,
+		preparations: append([]controlapi.MutationPreparation(nil), result.preparations...),
+	}
 	entry.completed = true
-	entry.protected = protect
-	entry.completedAt = s.cacheNow()
-	if protect {
-		s.domainProtectedRequests = append(s.domainProtectedRequests, requestID)
-		s.trimProtectedDomainRequestsLocked()
-	} else {
+	entry.protected = result.outcome == controlapi.MutationOutcomeIndeterminate
+	if !entry.protected {
 		s.domainCompletedRequests = append(s.domainCompletedRequests, requestID)
 	}
 	close(entry.done)
@@ -886,53 +960,31 @@ func (s *Server) evictCompletedDomainRequestsLocked() {
 	if len(s.domainCompletedRequests) == 0 {
 		s.domainCompletedRequests = nil
 	}
-	for len(s.domainRequests) >= requestCacheCapacity && len(s.domainProtectedRequests) > 0 {
-		s.evictOldestProtectedDomainRequestLocked()
-	}
 }
 
-func (s *Server) evictExpiredProtectedDomainRequestsLocked(now time.Time) {
-	for len(s.domainProtectedRequests) > 0 {
-		requestID := s.domainProtectedRequests[0]
-		entry, ok := s.domainRequests[requestID]
-		if ok && entry.completed && entry.protected && now.Before(entry.completedAt.Add(protectedDomainRequestTTL)) {
-			break
+func classifyReloadMutation(status controlapi.ReconcileStatus, reloadErr error, revision int64) (error, bool, controlapi.MutationOutcome) {
+	published := status.ConfigurationPublished &&
+		status.AppliedRevision == revision && status.AttemptedRevision == revision
+	confirmed := published && status.State == controlapi.ReconcileStateApplied
+	if reloadErr == nil {
+		if confirmed {
+			return nil, true, controlapi.MutationOutcomeApplied
 		}
-		s.domainProtectedRequests[0] = ""
-		s.domainProtectedRequests = s.domainProtectedRequests[1:]
-		if ok && entry.completed && entry.protected {
-			delete(s.domainRequests, requestID)
-		}
+		return publicerr.Errorf(
+			"service.reload_result_invalid",
+			"runtime did not confirm revision %d as applied",
+			revision,
+		), false, controlapi.MutationOutcomeIndeterminate
 	}
-	if len(s.domainProtectedRequests) == 0 {
-		s.domainProtectedRequests = nil
+	if published {
+		return reloadErr, true, controlapi.MutationOutcomeApplied
 	}
-}
-
-func (s *Server) trimProtectedDomainRequestsLocked() {
-	for len(s.domainProtectedRequests) > protectedDomainRequestCapacity {
-		s.evictOldestProtectedDomainRequestLocked()
+	code := runtimeCommandErrorCode(reloadErr)
+	if status.State == controlapi.ReconcileStateFailed && status.AttemptedRevision == revision ||
+		reloadFailureWasNotAttempted(code) {
+		return reloadErr, false, controlapi.MutationOutcomeNotApplied
 	}
-}
-
-func (s *Server) evictOldestProtectedDomainRequestLocked() {
-	requestID := s.domainProtectedRequests[0]
-	s.domainProtectedRequests[0] = ""
-	s.domainProtectedRequests = s.domainProtectedRequests[1:]
-	entry, ok := s.domainRequests[requestID]
-	if ok && entry.completed && entry.protected {
-		delete(s.domainRequests, requestID)
-	}
-	if len(s.domainProtectedRequests) == 0 {
-		s.domainProtectedRequests = nil
-	}
-}
-
-func (s *Server) cacheNow() time.Time {
-	if s.now != nil {
-		return s.now()
-	}
-	return time.Now()
+	return reloadErr, false, controlapi.MutationOutcomeIndeterminate
 }
 
 func reloadFailureWasNotAttempted(code string) bool {
@@ -1006,40 +1058,103 @@ func domainJSONResult(status int, payload map[string]any) domainResult {
 	return domainResult{status: status, body: append(body, '\n')}
 }
 
+func domainMutationJSONResult(dryRun bool, payload map[string]any) domainResult {
+	if dryRun {
+		return domainJSONResult(http.StatusOK, payload)
+	}
+	payload["applied"] = true
+	payload["outcome"] = controlapi.MutationOutcomeApplied
+	payload["api_version"] = controlapi.DomainAPIVersion
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return domainMutationErrorResultWithOutcome(
+			domainFailure{code: "domain.response_invalid", err: err},
+			http.StatusInternalServerError,
+			true,
+			controlapi.MutationOutcomeApplied,
+			nil,
+		)
+	}
+	applied := true
+	return domainResult{
+		status:  http.StatusOK,
+		body:    append(body, '\n'),
+		applied: &applied,
+		outcome: controlapi.MutationOutcomeApplied,
+	}
+}
+
 func domainErrorResult(err error, status int) domainResult {
 	code, message := classifyDomainError(err)
-	applied, outcome := mutationErrorMetadata(err)
-	if outcome == controlapi.MutationOutcomeNotApplied {
-		outcome = ""
+	return marshalDomainError(code, message, status, nil, "", nil)
+}
+
+func domainMutationErrorResult(err error, status int, dryRun bool, preparations []controlapi.MutationPreparation) domainResult {
+	if dryRun {
+		return domainErrorResult(err, status)
 	}
-	return marshalDomainError(code, message, status, applied, string(outcome))
+	applied, outcome := mutationErrorMetadata(err)
+	return domainMutationErrorResultWithOutcome(err, status, applied, outcome, preparations)
 }
 
-func domainErrorResultWithOutcome(err error, status int, applied bool, outcome string) domainResult {
+func domainMutationErrorResultWithOutcome(
+	err error,
+	status int,
+	applied bool,
+	outcome controlapi.MutationOutcome,
+	preparations []controlapi.MutationPreparation,
+) domainResult {
 	code, message := classifyDomainError(err)
-	return marshalDomainError(code, message, status, applied, outcome)
+	if outcome != controlapi.MutationOutcomeNotApplied {
+		preparations = nil
+	}
+	return marshalDomainError(code, message, status, &applied, outcome, preparations)
 }
 
-func marshalDomainError(code, message string, status int, applied bool, outcome string) domainResult {
+func marshalDomainError(
+	code, message string,
+	status int,
+	applied *bool,
+	outcome controlapi.MutationOutcome,
+	preparations []controlapi.MutationPreparation,
+) domainResult {
 	if status == 0 {
 		status = domainErrorStatus(code)
 	}
-	if applied {
+	if applied != nil && *applied {
 		status = http.StatusOK
 	}
 	body, marshalErr := json.Marshal(controlapi.DomainError{
-		APIVersion: controlapi.DomainAPIVersion,
-		OK:         false,
-		ErrorCode:  code,
-		Message:    sanitizeDomainError(code, message),
-		Applied:    applied,
-		Outcome:    outcome,
+		APIVersion:   controlapi.DomainAPIVersion,
+		OK:           false,
+		ErrorCode:    code,
+		Message:      sanitizeDomainError(code, message),
+		Applied:      cloneDomainBool(applied),
+		Outcome:      outcome,
+		Preparations: append([]controlapi.MutationPreparation(nil), preparations...),
 	})
 	if marshalErr != nil {
 		body = []byte(`{"api_version":1,"ok":false,"error_code":"domain.response_invalid","message":"response encoding failed"}`)
 		status = http.StatusInternalServerError
+		applied = nil
+		outcome = ""
+		preparations = nil
 	}
-	return domainResult{status: status, body: append(body, '\n')}
+	return domainResult{
+		status:       status,
+		body:         append(body, '\n'),
+		applied:      cloneDomainBool(applied),
+		outcome:      outcome,
+		preparations: append([]controlapi.MutationPreparation(nil), preparations...),
+	}
+}
+
+func cloneDomainBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func classifyDomainError(err error) (string, string) {

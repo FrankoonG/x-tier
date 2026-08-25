@@ -87,12 +87,19 @@ type DomainMutationRequest struct {
 }
 
 type DomainError struct {
-	APIVersion int    `json:"api_version"`
-	OK         bool   `json:"ok"`
-	ErrorCode  string `json:"error_code"`
-	Message    string `json:"message"`
-	Applied    bool   `json:"applied,omitempty"`
-	Outcome    string `json:"outcome,omitempty"`
+	APIVersion   int                   `json:"api_version"`
+	OK           bool                  `json:"ok"`
+	ErrorCode    string                `json:"error_code"`
+	Message      string                `json:"message"`
+	Applied      *bool                 `json:"applied,omitempty"`
+	Outcome      MutationOutcome       `json:"outcome,omitempty"`
+	Preparations []MutationPreparation `json:"preparations,omitempty"`
+}
+
+type MutationPreparation struct {
+	Kind   string `json:"kind"`
+	State  string `json:"state"`
+	NodeID string `json:"node_id,omitempty"`
 }
 
 type IdentityInitRequest struct {

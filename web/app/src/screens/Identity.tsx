@@ -387,6 +387,7 @@ export function Identity() {
             blocked: false,
             code: localError,
             detail: '',
+            applied: false,
           }}
         />
       )}

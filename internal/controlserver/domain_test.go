@@ -20,12 +20,14 @@ import (
 	"github.com/FrankoonG/x-tier/internal/cli"
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
+	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
 )
 
 type domainTestProvider struct {
 	reloads       atomic.Int32
 	reloadStatus  controlapi.ReconcileStatus
+	returnStatus  bool
 	reloadErr     error
 	reloadEntered chan<- struct{}
 	reloadRelease <-chan struct{}
@@ -53,12 +55,40 @@ func (p *domainTestProvider) Reload(ctx context.Context, revision int64, dryRun 
 	if p.reloadErr != nil {
 		return p.reloadStatus, p.reloadErr
 	}
+	if p.returnStatus {
+		return p.reloadStatus, nil
+	}
 	return controlapi.ReconcileStatus{
-		State:             controlapi.ReconcileStateApplied,
-		AppliedRevision:   revision,
-		AttemptedRevision: revision,
-		ObservedAt:        time.Now().UTC(),
+		State:                  controlapi.ReconcileStateApplied,
+		AppliedRevision:        revision,
+		AttemptedRevision:      revision,
+		ConfigurationPublished: true,
+		ObservedAt:             time.Now().UTC(),
 	}, nil
+}
+
+func TestDomainDryRunPanicHasNoMutationOutcomeOrCacheEntry(t *testing.T) {
+	server := &Server{domainRequests: make(map[string]*cachedDomainResponse)}
+	meta := domainMutationRequest(0, "90000000000000000000000000000001")
+	meta.DryRun = true
+	response := httptest.NewRecorder()
+	server.executeCachedDomainMutation(
+		response,
+		httptest.NewRequest(http.MethodPatch, controlapi.DomainIdentityPath, nil),
+		meta,
+		[]byte(`{"api_version":1,"revision":0,"dry_run":true}`),
+		func() domainResult { panic("private dry-run panic") },
+	)
+	if response.Code != http.StatusInternalServerError ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"error_code":"domain.execution_failed"`)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(`"applied"`)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(`"outcome"`)) ||
+		bytes.Contains(response.Body.Bytes(), []byte("private dry-run panic")) {
+		t.Fatalf("dry-run panic status=%d body=%s", response.Code, response.Body.Bytes())
+	}
+	if len(server.domainRequests) != 0 {
+		t.Fatalf("dry-run panic populated idempotency cache: %+v", server.domainRequests)
+	}
 }
 
 func TestDomainLeaderPanicCompletesProtectedIndeterminateResult(t *testing.T) {
@@ -68,7 +98,7 @@ func TestDomainLeaderPanicCompletesProtectedIndeterminateResult(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPatch, controlapi.DomainIdentityPath, nil)
 	response := httptest.NewRecorder()
 	executions := 0
-	server.executeCachedDomainMutation(response, request, meta, raw, false, func() domainResult {
+	server.executeCachedDomainMutation(response, request, meta, raw, func() domainResult {
 		executions++
 		panic("sensitive panic detail")
 	})
@@ -93,7 +123,7 @@ func TestDomainLeaderPanicCompletesProtectedIndeterminateResult(t *testing.T) {
 	}
 
 	replay := httptest.NewRecorder()
-	server.executeCachedDomainMutation(replay, httptest.NewRequest(http.MethodPatch, controlapi.DomainIdentityPath, nil), meta, raw, false, func() domainResult {
+	server.executeCachedDomainMutation(replay, httptest.NewRequest(http.MethodPatch, controlapi.DomainIdentityPath, nil), meta, raw, func() domainResult {
 		executions++
 		return domainJSONResult(http.StatusOK, map[string]any{"ok": true})
 	})
@@ -105,7 +135,7 @@ func TestDomainLeaderPanicCompletesProtectedIndeterminateResult(t *testing.T) {
 func TestCanceledDomainFollowerGetsExplicitIndeterminateResult(t *testing.T) {
 	server := &Server{domainRequests: make(map[string]*cachedDomainResponse)}
 	fingerprint := sha256.Sum256([]byte("request"))
-	entry, leader, status := server.claimDomainRequest("92000000000000000000000000000001", fingerprint, false)
+	entry, leader, status := server.claimDomainRequest("92000000000000000000000000000001", fingerprint)
 	if entry == nil || !leader || status != 0 {
 		t.Fatalf("claim = (%+v, %v, %d)", entry, leader, status)
 	}
@@ -117,7 +147,152 @@ func TestCanceledDomainFollowerGetsExplicitIndeterminateResult(t *testing.T) {
 		!bytes.Contains(result.body, []byte(`"outcome":"indeterminate"`)) {
 		t.Fatalf("canceled follower result=%d %s", result.status, result.body)
 	}
-	server.completeDomainRequest("92000000000000000000000000000001", entry, domainJSONResult(http.StatusOK, map[string]any{"ok": true}), false)
+	server.completeDomainRequest("92000000000000000000000000000001", entry, domainJSONResult(http.StatusOK, map[string]any{"ok": true}))
+}
+
+func TestOrdinaryIndeterminateDomainMutationIsProtected(t *testing.T) {
+	server := &Server{domainRequests: make(map[string]*cachedDomainResponse)}
+	meta := domainMutationRequest(0, "92000000000000000000000000000002")
+	raw := []byte(`{"api_version":1,"revision":0,"dry_run":false,"request_id":"92000000000000000000000000000002"}`)
+	response := httptest.NewRecorder()
+	unknown := errors.Join(
+		configstore.ErrCommitOutcomeUnknown,
+		publicerr.Errorf("config.commit_outcome_unknown", "private diagnostic"),
+	)
+	server.executeCachedDomainMutation(
+		response,
+		httptest.NewRequest(http.MethodPatch, controlapi.DomainSettingsPath, nil),
+		meta,
+		raw,
+		func() domainResult { return domainMutationErrorResult(unknown, 0, false, nil) },
+	)
+	if response.Code < 400 || !bytes.Contains(response.Body.Bytes(), []byte(`"outcome":"indeterminate"`)) {
+		t.Fatalf("indeterminate mutation status=%d body=%s", response.Code, response.Body.Bytes())
+	}
+	server.domainRequestsMu.Lock()
+	entry := server.domainRequests[meta.RequestID]
+	server.domainRequestsMu.Unlock()
+	if entry == nil || !entry.completed || !entry.protected {
+		t.Fatalf("indeterminate mutation was evictable: entry=%+v", entry)
+	}
+}
+
+func TestConfigMutationResponseEncodingFailureReportsApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{configPath: path}
+	result := server.executeConfigDomainMutation(
+		domainMutationRequest(0, "92000000000000000000000000000003"),
+		func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
+			cfg.System.LogLevel = "debug"
+			return make(chan int), nil
+		},
+	)
+	var failure controlapi.DomainError
+	if err := json.Unmarshal(result.body, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if result.status != http.StatusOK || failure.ErrorCode != "domain.response_invalid" ||
+		failure.Applied == nil || !*failure.Applied || failure.Outcome != controlapi.MutationOutcomeApplied {
+		t.Fatalf("post-commit encoding result=%d %+v", result.status, failure)
+	}
+	loaded, err := configstore.LoadExisting(path)
+	if err != nil || loaded.Revision != 1 || loaded.System.LogLevel != "debug" {
+		t.Fatalf("committed config=%+v err=%v", loaded, err)
+	}
+}
+
+func TestIdentityInitReportsRecoverableBackingAfterConfigCommitFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	var blockers []string
+	for i := 0; i < 5; i++ {
+		blocker := fmt.Sprintf("%s.bak.%02d", path, i)
+		if err := os.Mkdir(blocker, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		blockers = append(blockers, blocker)
+	}
+	server := startTestServer(t, path)
+	request := controlapi.IdentityInitRequest{
+		DomainMutationRequest: domainMutationRequest(0, "92000000000000000000000000000004"),
+		Name:                  "A",
+	}
+	status, body := requestDomain(t, server, http.MethodPost, controlapi.DomainIdentityInitPath, request)
+	var failure controlapi.DomainError
+	if err := json.Unmarshal(body, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if status < 400 || failure.Applied == nil || *failure.Applied ||
+		failure.Outcome != controlapi.MutationOutcomeNotApplied || len(failure.Preparations) != 1 {
+		t.Fatalf("identity preparation status=%d failure=%+v body=%s", status, failure, body)
+	}
+	preparation := failure.Preparations[0]
+	if preparation.Kind != "identity_backing" || preparation.State != identityStateRecoverable || preparation.NodeID == "" {
+		t.Fatalf("identity preparation=%+v", preparation)
+	}
+	if _, err := os.Stat(domainIdentitySeedPath(path)); err != nil {
+		t.Fatalf("recoverable seed was removed: %v", err)
+	}
+	unchanged, err := configstore.LoadExisting(path)
+	if err != nil || unchanged.Revision != 0 || unchanged.Node.NodeID != "" {
+		t.Fatalf("failed config commit changed config=%+v err=%v", unchanged, err)
+	}
+	for _, blocker := range blockers {
+		if err := os.Remove(blocker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request.RequestID = "92000000000000000000000000000005"
+	status, body = requestDomain(t, server, http.MethodPost, controlapi.DomainIdentityInitPath, request)
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`"outcome":"applied"`)) {
+		t.Fatalf("recover identity status=%d body=%s", status, body)
+	}
+	recovered, err := configstore.LoadExisting(path)
+	if err != nil || recovered.Revision != 1 || recovered.Node.NodeID != preparation.NodeID {
+		t.Fatalf("recovered identity=%+v err=%v want_node_id=%s", recovered, err, preparation.NodeID)
+	}
+}
+
+func TestIdentityInitReportsBackingPublishedBeforeCreatorError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	server := startTestServer(t, path)
+	server.createIdentity = func(seedPath string) (*identity.Identity, error) {
+		created, err := identity.Create(seedPath)
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("simulated directory sync failure after publication: " + created.Public().NodeID.String())
+	}
+	request := controlapi.IdentityInitRequest{
+		DomainMutationRequest: domainMutationRequest(0, "92000000000000000000000000000006"),
+		Name:                  "A",
+	}
+	status, body := requestDomain(t, server, http.MethodPost, controlapi.DomainIdentityInitPath, request)
+	var failure controlapi.DomainError
+	if err := json.Unmarshal(body, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if status < 400 || failure.Applied == nil || *failure.Applied ||
+		failure.Outcome != controlapi.MutationOutcomeNotApplied || len(failure.Preparations) != 1 ||
+		failure.Preparations[0].State != identityStateRecoverable || failure.Preparations[0].NodeID == "" {
+		t.Fatalf("published seed outcome status=%d failure=%+v body=%s", status, failure, body)
+	}
+	if _, err := identity.Load(domainIdentitySeedPath(path)); err != nil {
+		t.Fatalf("published seed is not recoverable: %v", err)
+	}
+	unchanged, err := configstore.LoadExisting(path)
+	if err != nil || unchanged.Revision != 0 || unchanged.Node.NodeID != "" {
+		t.Fatalf("creator error changed config=%+v err=%v", unchanged, err)
+	}
 }
 
 func TestDomainAPIRejectsMissingLiveConfigWithoutRecreatingIt(t *testing.T) {
@@ -181,8 +356,9 @@ func TestConfigRestoreDomainRepairsInvalidActiveConfigWithoutEnteringCLI(t *test
 	)}
 	dryRequest.DryRun = true
 	status, body := requestDomain(t, server, http.MethodPost, controlapi.DomainConfigRestorePath, dryRequest)
-	if status != http.StatusOK || !bytes.Contains(body, []byte(`"changed":false`)) ||
-		!bytes.Contains(body, []byte(`"before_revision":5`)) || !bytes.Contains(body, []byte(`"after_revision":6`)) {
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`"changed":true`)) ||
+		!bytes.Contains(body, []byte(`"before_revision":5`)) || !bytes.Contains(body, []byte(`"after_revision":6`)) ||
+		bytes.Contains(body, []byte(`"applied"`)) || bytes.Contains(body, []byte(`"outcome"`)) {
 		t.Fatalf("restore dry-run status=%d body=%s", status, body)
 	}
 	if current, err := os.ReadFile(path); err != nil || !bytes.Equal(current, invalid) {
@@ -193,7 +369,9 @@ func TestConfigRestoreDomainRepairsInvalidActiveConfigWithoutEnteringCLI(t *test
 	request := controlapi.ConfigRestoreRequest{DomainMutationRequest: domainMutationRequest(checkpoint.Revision, requestID)}
 	status, body = requestDomain(t, server, http.MethodPost, controlapi.DomainConfigRestorePath, request)
 	if status != http.StatusOK || !bytes.Contains(body, []byte(`"changed":true`)) ||
-		!bytes.Contains(body, []byte(`"source":"last-known-good"`)) {
+		!bytes.Contains(body, []byte(`"source":"last-known-good"`)) ||
+		!bytes.Contains(body, []byte(`"applied":true`)) ||
+		!bytes.Contains(body, []byte(`"outcome":"applied"`)) {
 		t.Fatalf("restore apply status=%d body=%s", status, body)
 	}
 	repaired, err := configstore.LoadExisting(path)
@@ -226,13 +404,14 @@ func TestConfigMutationAndRestoreReportUnknownCommitOutcomeConsistently(t *testi
 	local := &Server{configPath: path}
 	result := local.executeConfigDomainMutation(
 		domainMutationRequest(0, "92000000000000000000000000000021"),
-		func(*configstore.Config, bool) (any, error) { return nil, unknown },
+		func(*configstore.Config, bool, *domainMutationEffects) (any, error) { return nil, unknown },
 	)
 	var updateFailure controlapi.DomainError
 	if err := json.Unmarshal(result.body, &updateFailure); err != nil {
 		t.Fatal(err)
 	}
-	if result.status < 400 || updateFailure.Applied || updateFailure.Outcome != string(controlapi.MutationOutcomeIndeterminate) {
+	if result.status < 400 || updateFailure.Applied == nil || *updateFailure.Applied ||
+		updateFailure.Outcome != controlapi.MutationOutcomeIndeterminate {
 		t.Fatalf("config mutation result=%d %+v", result.status, updateFailure)
 	}
 
@@ -264,8 +443,8 @@ func TestConfigMutationAndRestoreReportUnknownCommitOutcomeConsistently(t *testi
 	if err := json.Unmarshal(body, &webFailure); err != nil {
 		t.Fatal(err)
 	}
-	if status < 400 || webFailure.Applied != cliResponse.Applied ||
-		webFailure.Outcome != string(cliResponse.Outcome) || restores.Load() != 2 {
+	if status < 400 || webFailure.Applied == nil || *webFailure.Applied != cliResponse.Applied ||
+		webFailure.Outcome != cliResponse.Outcome || restores.Load() != 2 {
 		t.Fatalf("Web restore status=%d failure=%+v CLI=%+v restores=%d", status, webFailure, cliResponse, restores.Load())
 	}
 }
@@ -538,7 +717,7 @@ func TestActiveConfigWritesRemainSerializedWithRuntimeReload(t *testing.T) {
 	}
 }
 
-func TestRuntimeReloadPostApplyErrorReportsAppliedAndStaysProtected(t *testing.T) {
+func TestRuntimeReloadPostApplyErrorReportsAppliedAndCachesExactResult(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
 		t.Fatal(err)
@@ -546,8 +725,11 @@ func TestRuntimeReloadPostApplyErrorReportsAppliedAndStaysProtected(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	provider := &domainTestProvider{
-		reloadStatus: controlapi.ReconcileStatus{State: controlapi.ReconcileStateApplied, AppliedRevision: 4, AttemptedRevision: 4},
-		reloadErr:    publicerr.Errorf("service.reload_checkpoint", "checkpoint unavailable"),
+		reloadStatus: controlapi.ReconcileStatus{
+			State: controlapi.ReconcileStateFailed, AppliedRevision: 4, AttemptedRevision: 4,
+			ConfigurationPublished: true,
+		},
+		reloadErr: publicerr.Errorf("service.reload_apply", "old generation cleanup remains pending"),
 	}
 	server, err := Start(ctx, "127.0.0.1:0", path, provider)
 	if err != nil {
@@ -557,8 +739,9 @@ func TestRuntimeReloadPostApplyErrorReportsAppliedAndStaysProtected(t *testing.T
 	const requestID = "93000000000000000000000000000001"
 	request := controlapi.RuntimeReloadRequest{DomainMutationRequest: domainMutationRequest(4, requestID)}
 	status, body := requestDomain(t, server, http.MethodPost, controlapi.DomainRuntimeReloadPath, request)
-	if status != http.StatusOK || !bytes.Contains(body, []byte(`"error_code":"service.reload_checkpoint"`)) ||
-		!bytes.Contains(body, []byte(`"applied":true`)) || bytes.Contains(body, []byte(`"outcome":"indeterminate"`)) {
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`"error_code":"service.reload_apply"`)) ||
+		!bytes.Contains(body, []byte(`"applied":true`)) ||
+		!bytes.Contains(body, []byte(`"outcome":"applied"`)) {
 		t.Fatalf("post-apply reload error status=%d body=%s", status, body)
 	}
 	status, replay := requestDomain(t, server, http.MethodPost, controlapi.DomainRuntimeReloadPath, request)
@@ -568,8 +751,8 @@ func TestRuntimeReloadPostApplyErrorReportsAppliedAndStaysProtected(t *testing.T
 	server.domainRequestsMu.Lock()
 	entry := server.domainRequests[requestID]
 	server.domainRequestsMu.Unlock()
-	if entry == nil || !entry.completed || !entry.protected {
-		t.Fatalf("runtime reload result is not protected: %+v", entry)
+	if entry == nil || !entry.completed || entry.protected {
+		t.Fatalf("confirmed applied reload result has wrong cache state: %+v", entry)
 	}
 }
 
@@ -636,7 +819,7 @@ func TestCanceledRuntimeReloadLeaderCompletesForSameRequestIDReplay(t *testing.T
 	}
 }
 
-func TestProtectedRuntimeReloadsCannotExhaustSharedDomainCache(t *testing.T) {
+func TestSuccessfulRuntimeReloadsRemainEvictable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
 		t.Fatal(err)
@@ -656,15 +839,14 @@ func TestProtectedRuntimeReloadsCannotExhaustSharedDomainCache(t *testing.T) {
 			DomainMutationRequest: domainMutationRequest(0, requestID),
 		})
 		if status != http.StatusOK {
-			t.Fatalf("protected reload %d status=%d body=%s", i, status, body)
+			t.Fatalf("reload %d status=%d body=%s", i, status, body)
 		}
 	}
 	server.domainRequestsMu.Lock()
-	protectedCount := len(server.domainProtectedRequests)
 	cacheCount := len(server.domainRequests)
 	server.domainRequestsMu.Unlock()
-	if protectedCount != protectedDomainRequestCapacity || cacheCount != protectedDomainRequestCapacity {
-		t.Fatalf("protected cache counts=(%d,%d), want (%d,%d)", protectedCount, cacheCount, protectedDomainRequestCapacity, protectedDomainRequestCapacity)
+	if cacheCount != requestCacheCapacity {
+		t.Fatalf("successful reload cache count=%d, want %d", cacheCount, requestCacheCapacity)
 	}
 
 	level := "debug"
@@ -681,6 +863,76 @@ func TestProtectedRuntimeReloadsCannotExhaustSharedDomainCache(t *testing.T) {
 	}
 	if loaded.Revision != 1 || loaded.System.LogLevel != level {
 		t.Fatalf("unrelated mutation was not committed: %+v", loaded)
+	}
+}
+
+func TestIndeterminateDomainCacheFailsClosedAtCapacity(t *testing.T) {
+	server := &Server{domainRequests: make(map[string]*cachedDomainResponse)}
+	unknown := errors.Join(
+		configstore.ErrCommitOutcomeUnknown,
+		publicerr.Errorf("config.commit_outcome_unknown", "private diagnostic"),
+	)
+	executions := 0
+	firstID := fmt.Sprintf("%032x", 1)
+	firstRaw := []byte(fmt.Sprintf(
+		`{"api_version":1,"revision":0,"dry_run":false,"request_id":%q}`,
+		firstID,
+	))
+
+	for i := 0; i < requestCacheCapacity; i++ {
+		requestID := fmt.Sprintf("%032x", i+1)
+		raw := []byte(fmt.Sprintf(
+			`{"api_version":1,"revision":0,"dry_run":false,"request_id":%q}`,
+			requestID,
+		))
+		response := httptest.NewRecorder()
+		server.executeCachedDomainMutation(
+			response,
+			httptest.NewRequest(http.MethodPatch, controlapi.DomainSettingsPath, nil),
+			domainMutationRequest(0, requestID),
+			raw,
+			func() domainResult {
+				executions++
+				return domainMutationErrorResult(unknown, 0, false, nil)
+			},
+		)
+		if response.Code < 400 || !bytes.Contains(response.Body.Bytes(), []byte(`"outcome":"indeterminate"`)) {
+			t.Fatalf("indeterminate mutation %d status=%d body=%s", i, response.Code, response.Body.Bytes())
+		}
+	}
+
+	replay := httptest.NewRecorder()
+	server.executeCachedDomainMutation(
+		replay,
+		httptest.NewRequest(http.MethodPatch, controlapi.DomainSettingsPath, nil),
+		domainMutationRequest(0, firstID),
+		firstRaw,
+		func() domainResult {
+			executions++
+			return domainJSONResult(http.StatusOK, map[string]any{"ok": true})
+		},
+	)
+	if replay.Code < 400 || !bytes.Contains(replay.Body.Bytes(), []byte(`"outcome":"indeterminate"`)) || executions != requestCacheCapacity {
+		t.Fatalf("protected replay status=%d executions=%d body=%s", replay.Code, executions, replay.Body.Bytes())
+	}
+
+	newID := fmt.Sprintf("%032x", requestCacheCapacity+1)
+	refused := httptest.NewRecorder()
+	server.executeCachedDomainMutation(
+		refused,
+		httptest.NewRequest(http.MethodPatch, controlapi.DomainSettingsPath, nil),
+		domainMutationRequest(0, newID),
+		[]byte(fmt.Sprintf(`{"api_version":1,"revision":0,"dry_run":false,"request_id":%q}`, newID)),
+		func() domainResult {
+			executions++
+			return domainJSONResult(http.StatusOK, map[string]any{"ok": true})
+		},
+	)
+	if refused.Code != http.StatusServiceUnavailable ||
+		!bytes.Contains(refused.Body.Bytes(), []byte(`"error_code":"domain.idempotency_capacity_exhausted"`)) ||
+		!bytes.Contains(refused.Body.Bytes(), []byte(`"outcome":"not_applied"`)) ||
+		executions != requestCacheCapacity {
+		t.Fatalf("capacity refusal status=%d executions=%d body=%s", refused.Code, executions, refused.Body.Bytes())
 	}
 }
 
@@ -711,8 +963,8 @@ func TestRuntimeReloadRevisionConflictIsDefiniteNotApplied(t *testing.T) {
 	})
 	if status != http.StatusConflict ||
 		!bytes.Contains(body, []byte(`"error_code":"config.revision_conflict"`)) ||
-		bytes.Contains(body, []byte(`"applied":true`)) ||
-		bytes.Contains(body, []byte(`"outcome"`)) {
+		!bytes.Contains(body, []byte(`"applied":false`)) ||
+		!bytes.Contains(body, []byte(`"outcome":"not_applied"`)) {
 		t.Fatalf("revision conflict status=%d body=%s", status, body)
 	}
 }
@@ -736,8 +988,47 @@ func TestRuntimeReloadContentInvalidIsDefiniteNotAttempted(t *testing.T) {
 	})
 	if status != http.StatusUnprocessableEntity ||
 		!bytes.Contains(body, []byte(`"error_code":"config.content_invalid"`)) ||
-		bytes.Contains(body, []byte(`"applied":true`)) || bytes.Contains(body, []byte(`"outcome"`)) {
+		!bytes.Contains(body, []byte(`"applied":false`)) ||
+		!bytes.Contains(body, []byte(`"outcome":"not_applied"`)) {
 		t.Fatalf("content-invalid reload status=%d body=%s", status, body)
+	}
+}
+
+func TestRuntimeReloadSuccessWithoutAppliedRevisionIsIndeterminate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	provider := &domainTestProvider{
+		returnStatus: true,
+		reloadStatus: controlapi.ReconcileStatus{
+			State:             controlapi.ReconcileStatePending,
+			AppliedRevision:   0,
+			AttemptedRevision: 0,
+		},
+	}
+	server, err := Start(ctx, "127.0.0.1:0", path, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	const requestID = "94000000000000000000000000000003"
+	status, body := requestDomain(t, server, http.MethodPost, controlapi.DomainRuntimeReloadPath, controlapi.RuntimeReloadRequest{
+		DomainMutationRequest: domainMutationRequest(0, requestID),
+	})
+	if status != http.StatusInternalServerError ||
+		!bytes.Contains(body, []byte(`"error_code":"service.reload_result_invalid"`)) ||
+		!bytes.Contains(body, []byte(`"applied":false`)) ||
+		!bytes.Contains(body, []byte(`"outcome":"indeterminate"`)) {
+		t.Fatalf("invalid reload result status=%d body=%s", status, body)
+	}
+	server.domainRequestsMu.Lock()
+	entry := server.domainRequests[requestID]
+	server.domainRequestsMu.Unlock()
+	if entry == nil || !entry.protected {
+		t.Fatalf("invalid reload result was not protected: %+v", entry)
 	}
 }
 
@@ -773,17 +1064,41 @@ func TestDiagnosticTextCannotForgeAppliedMutationOutcome(t *testing.T) {
 	}
 }
 
-func TestDomainErrorResultPreservesTypedUnknownCommitOutcome(t *testing.T) {
-	result := domainErrorResult(errors.Join(
+func TestDomainMutationErrorResultPreservesTypedUnknownCommitOutcome(t *testing.T) {
+	result := domainMutationErrorResult(errors.Join(
 		configstore.ErrCommitOutcomeUnknown,
 		publicerr.Errorf("config.commit_outcome_unknown", "private diagnostic"),
-	), 0)
+	), 0, false, nil)
 	var failure controlapi.DomainError
 	if err := json.Unmarshal(result.body, &failure); err != nil {
 		t.Fatal(err)
 	}
-	if failure.Applied || failure.Outcome != string(controlapi.MutationOutcomeIndeterminate) {
+	if failure.Applied == nil || *failure.Applied || failure.Outcome != controlapi.MutationOutcomeIndeterminate {
 		t.Fatalf("unknown commit outcome was collapsed: status=%d failure=%+v", result.status, failure)
+	}
+}
+
+func TestConfigDomainDryRunForecastsNextRevisionWithoutMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	server := startTestServer(t, path)
+	level := "debug"
+	request := controlapi.SettingsUpdateRequest{
+		DomainMutationRequest: domainMutationRequest(0, "99000000000000000000000000000001"),
+		Settings:              controlapi.SettingsPatch{LogLevel: &level},
+	}
+	request.DryRun = true
+	status, body := requestDomain(t, server, http.MethodPatch, controlapi.DomainSettingsPath, request)
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`"changed":true`)) ||
+		!bytes.Contains(body, []byte(`"before_revision":0`)) || !bytes.Contains(body, []byte(`"after_revision":1`)) ||
+		bytes.Contains(body, []byte(`"applied"`)) || bytes.Contains(body, []byte(`"outcome"`)) {
+		t.Fatalf("config dry-run status=%d body=%s", status, body)
+	}
+	unchanged, err := configstore.LoadExisting(path)
+	if err != nil || unchanged.Revision != 0 || unchanged.System.LogLevel == "debug" {
+		t.Fatalf("dry-run changed config=%+v err=%v", unchanged, err)
 	}
 }
 
@@ -1111,13 +1426,18 @@ func TestDomainRejectsUnknownFieldsAndUnsupportedVersion(t *testing.T) {
 	if status != http.StatusBadRequest || !bytes.Contains(body, []byte(`"error_code":"domain.request_invalid"`)) {
 		t.Fatalf("unknown-field status=%d body=%s", status, body)
 	}
+	if !bytes.Contains(body, []byte(`"applied":false`)) || !bytes.Contains(body, []byte(`"outcome":"not_applied"`)) {
+		t.Fatalf("undecodable pre-execution mutation was not definite: %s", body)
+	}
 
 	request := controlapi.IdentityRenameRequest{
 		DomainMutationRequest: controlapi.DomainMutationRequest{APIVersion: 2, Revision: 0, RequestID: "30000000000000000000000000000001"},
 		Name:                  "A",
 	}
 	status, body = requestDomain(t, server, http.MethodPatch, controlapi.DomainIdentityPath, request)
-	if status != http.StatusBadRequest || !bytes.Contains(body, []byte(`"error_code":"domain.api_version_unsupported"`)) {
+	if status != http.StatusBadRequest || !bytes.Contains(body, []byte(`"error_code":"domain.api_version_unsupported"`)) ||
+		!bytes.Contains(body, []byte(`"applied":false`)) ||
+		!bytes.Contains(body, []byte(`"outcome":"not_applied"`)) {
 		t.Fatalf("version status=%d body=%s", status, body)
 	}
 	loaded, err := configstore.Load(path)
@@ -1214,6 +1534,10 @@ func TestDomainCurrentWebOperationsEndToEndWithoutCLI(t *testing.T) {
 		status, body := requestDomain(t, server, method, route, request)
 		if status != http.StatusOK {
 			t.Fatalf("%s %s status=%d body=%s", method, route, status, body)
+		}
+		if !bytes.Contains(body, []byte(`"applied":true`)) ||
+			!bytes.Contains(body, []byte(`"outcome":"applied"`)) {
+			t.Fatalf("%s %s omitted applied mutation outcome: %s", method, route, body)
 		}
 		assertNoCLIEnvelope(t, body)
 		return body
@@ -1348,7 +1672,9 @@ func TestDomainCurrentWebOperationsEndToEndWithoutCLI(t *testing.T) {
 	status, body = requestDomain(t, server, http.MethodPost, controlapi.DomainRuntimeReloadPath, controlapi.RuntimeReloadRequest{
 		DomainMutationRequest: domainMutationRequest(revision, "5000000000000000000000000000000a"),
 	})
-	if status != http.StatusOK || !bytes.Contains(body, []byte(fmt.Sprintf(`"applied_revision":%d`, revision))) {
+	if status != http.StatusOK || !bytes.Contains(body, []byte(fmt.Sprintf(`"applied_revision":%d`, revision))) ||
+		!bytes.Contains(body, []byte(`"applied":true`)) ||
+		!bytes.Contains(body, []byte(`"outcome":"applied"`)) {
 		t.Fatalf("runtime reload status=%d body=%s", status, body)
 	}
 	if provider.reloads.Load() != 1 {
@@ -1388,7 +1714,7 @@ func TestInboundPutPreservesDisabledStateAndOmittedFields(t *testing.T) {
 	result, err := inboundPutMutation(controlapi.InboundPutRequest{
 		Kind:   "socks",
 		Listen: &listen,
-	})(&cfg, false)
+	})(&cfg, false, &domainMutationEffects{})
 	if err != nil {
 		t.Fatal(err)
 	}

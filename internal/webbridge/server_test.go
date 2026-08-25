@@ -857,9 +857,10 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 	baseline := upstream.requests.Load()
 
 	tests := []struct {
-		name   string
-		build  func() *http.Request
-		status int
+		name                string
+		build               func() *http.Request
+		status              int
+		definitelyUnapplied bool
 	}{
 		{
 			name: "command get",
@@ -882,7 +883,8 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 				authenticateBrowserRequest(r, session)
 				return r
 			},
-			status: http.StatusUnsupportedMediaType,
+			status:              http.StatusUnsupportedMediaType,
+			definitelyUnapplied: true,
 		},
 		{
 			name: "wrong content type",
@@ -892,7 +894,8 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 				authenticateBrowserRequest(r, session)
 				return r
 			},
-			status: http.StatusUnsupportedMediaType,
+			status:              http.StatusUnsupportedMediaType,
+			definitelyUnapplied: true,
 		},
 		{
 			name: "wrong charset",
@@ -902,7 +905,8 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 				authenticateBrowserRequest(r, session)
 				return r
 			},
-			status: http.StatusUnsupportedMediaType,
+			status:              http.StatusUnsupportedMediaType,
+			definitelyUnapplied: true,
 		},
 		{
 			name: "oversized command",
@@ -912,7 +916,8 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 				authenticateBrowserRequest(r, session)
 				return r
 			},
-			status: http.StatusRequestEntityTooLarge,
+			status:              http.StatusRequestEntityTooLarge,
+			definitelyUnapplied: true,
 		},
 		{
 			name: "health body",
@@ -935,6 +940,15 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 			result := doBridgeRequest(t, test.build())
 			if result.status != test.status {
 				t.Fatalf("status=%d body=%s", result.status, result.body)
+			}
+			if test.definitelyUnapplied {
+				var failure controlapi.DomainError
+				if err := json.Unmarshal(result.body, &failure); err != nil {
+					t.Fatal(err)
+				}
+				if failure.Applied == nil || *failure.Applied || failure.Outcome != controlapi.MutationOutcomeNotApplied {
+					t.Fatalf("pre-delivery refusal did not report not_applied: %+v", failure)
+				}
 			}
 		})
 	}
@@ -1130,6 +1144,53 @@ func TestStartRequiresLiteralLoopbackEndpoints(t *testing.T) {
 	}
 }
 
+func TestBridgeLocalMutationRejectionUsesDomainOutcomeContract(t *testing.T) {
+	upstream := newTestUpstream(t)
+	server := startTestBridge(t, upstream)
+	session, _ := bootstrapSession(t, server)
+	baseline := upstream.requests.Load()
+
+	for _, test := range []struct {
+		name        string
+		dryRun      bool
+		wantOutcome controlapi.MutationOutcome
+	}{
+		{name: "write", wantOutcome: controlapi.MutationOutcomeNotApplied},
+		{name: "dry run", dryRun: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := []byte(fmt.Sprintf(
+				`{"api_version":1,"revision":0,"dry_run":%t,"request_id":"b0000000000000000000000000000001"}`,
+				test.dryRun,
+			))
+			request := newBridgeRequest(t, server, http.MethodPost, controlapi.DomainIdentityInitPath, payload)
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(session.cookie)
+			// Missing CSRF is a local, pre-delivery refusal.
+			result := doBridgeRequest(t, request)
+			if result.status != http.StatusForbidden {
+				t.Fatalf("status=%d body=%s", result.status, result.body)
+			}
+			var failure controlapi.DomainError
+			if err := json.Unmarshal(result.body, &failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.ErrorCode != "webbridge.csrf_invalid" || failure.Outcome != test.wantOutcome {
+				t.Fatalf("failure=%+v", failure)
+			}
+			if test.dryRun && failure.Applied != nil {
+				t.Fatalf("dry-run rejection carried mutation facts: %+v", failure)
+			}
+			if !test.dryRun && (failure.Applied == nil || *failure.Applied) {
+				t.Fatalf("write rejection did not report applied=false: %+v", failure)
+			}
+		})
+	}
+	if got := upstream.requests.Load(); got != baseline {
+		t.Fatalf("local rejections reached upstream: baseline=%d got=%d", baseline, got)
+	}
+}
+
 func TestBridgeRejectsUnauthenticatedUpstreamResponse(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -1197,13 +1258,13 @@ func TestBridgeReportsUnavailableUpstreamWithoutLeakingToken(t *testing.T) {
 	assertTokenAbsent(t, token, result)
 }
 
-func TestMutationUpstreamTimeoutReportsIndeterminateOutcome(t *testing.T) {
+func TestMutationUpstreamErrorWithoutDeliveryIsDefinitelyNotApplied(t *testing.T) {
 	for _, test := range []struct {
-		name          string
-		body          []byte
-		indeterminate bool
+		name    string
+		body    []byte
+		outcome controlapi.MutationOutcome
 	}{
-		{name: "may apply", body: []byte(`{"dry_run":false}`), indeterminate: true},
+		{name: "write rejected before delivery", body: []byte(`{"dry_run":false}`), outcome: controlapi.MutationOutcomeNotApplied},
 		{name: "dry run", body: []byte(`{"dry_run":true}`)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1213,11 +1274,53 @@ func TestMutationUpstreamTimeoutReportsIndeterminateOutcome(t *testing.T) {
 				!bytes.Contains(response.Body.Bytes(), []byte(`"error_code":"webbridge.upstream_timeout"`)) {
 				t.Fatalf("timeout response status=%d body=%s", response.Code, response.Body.Bytes())
 			}
-			gotIndeterminate := bytes.Contains(response.Body.Bytes(), []byte(`"outcome":"indeterminate"`))
-			if gotIndeterminate != test.indeterminate {
-				t.Fatalf("indeterminate=%t, want %t: %s", gotIndeterminate, test.indeterminate, response.Body.Bytes())
+			var failure controlapi.DomainError
+			if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.Outcome != test.outcome {
+				t.Fatalf("outcome=%q, want %q: %s", failure.Outcome, test.outcome, response.Body.Bytes())
+			}
+			if test.outcome == "" && failure.Applied != nil {
+				t.Fatalf("dry-run error carried mutation fact: %+v", failure)
+			}
+			if test.outcome != "" && (failure.Applied == nil || *failure.Applied) {
+				t.Fatalf("pre-delivery error did not say applied=false: %+v", failure)
 			}
 		})
+	}
+}
+
+func TestMutationUpstreamFailureAfterDeliveryIsIndeterminate(t *testing.T) {
+	upstream := newTestUpstream(t)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	upstream.blockCommand = release
+	upstream.commandEntered = entered
+	bridge := startTestBridge(t, upstream)
+	bridge.mutationUpstreamBudget = 50 * time.Millisecond
+	session, _ := bootstrapSession(t, bridge)
+	t.Cleanup(func() { close(release) })
+
+	payload := []byte(`{"api_version":1,"revision":0,"dry_run":false,"request_id":"a0000000000000000000000000000001"}`)
+	request := newBridgeRequest(t, bridge, http.MethodPost, controlapi.DomainIdentityInitPath, payload)
+	request.Header.Set("Content-Type", "application/json")
+	authenticateBrowserRequest(request, session)
+	result := doBridgeRequest(t, request)
+	if result.status != http.StatusGatewayTimeout {
+		t.Fatalf("delivered timeout status=%d body=%s", result.status, result.body)
+	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("timed-out mutation never reached the upstream")
+	}
+	var failure controlapi.DomainError
+	if err := json.Unmarshal(result.body, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Applied == nil || *failure.Applied || failure.Outcome != controlapi.MutationOutcomeIndeterminate {
+		t.Fatalf("delivered timeout failure=%+v", failure)
 	}
 }
 

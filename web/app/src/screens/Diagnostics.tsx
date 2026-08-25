@@ -88,7 +88,7 @@ const LEVEL_LABELS: Partial<Record<LogLevel, string>> = {
 
 const LEVEL_OPTIONS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error', 'fatal'];
 
-const adviseFailure = (code: string) => ({ ...adviseCode(code), code, detail: '' });
+const adviseFailure = (code: string) => ({ ...adviseCode(code), code, detail: '', applied: false });
 
 /**
  * One plane's last payload, in the only three states it can be in.

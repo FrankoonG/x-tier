@@ -19,20 +19,38 @@ export function newRequestId(): string {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
+export type MutationOutcome = 'applied' | 'not_applied' | 'indeterminate';
+
+export interface MutationPreparation {
+  kind: string;
+  state: string;
+  node_id?: string;
+}
+
 /** A typed domain operation was rejected by the daemon. */
 export class CommandFailure extends Error {
   readonly code: string;
   readonly detail: string;
   readonly exitCode: number;
   readonly applied: boolean;
+  readonly outcome?: Exclude<MutationOutcome, 'indeterminate'>;
+  readonly preparations: readonly MutationPreparation[];
 
-  constructor(code: string, detail: string, exitCode = 1, applied = false) {
+  constructor(
+    code: string,
+    detail: string,
+    exitCode = 1,
+    outcome?: Exclude<MutationOutcome, 'indeterminate'>,
+    preparations: readonly MutationPreparation[] = [],
+  ) {
     super(code === detail || !detail ? code : `${code}: ${detail}`);
     this.name = 'CommandFailure';
     this.code = code;
     this.detail = detail;
     this.exitCode = exitCode;
-    this.applied = applied;
+    this.outcome = outcome;
+    this.applied = outcome === 'applied';
+    this.preparations = preparations.map((preparation) => ({ ...preparation }));
   }
 
   get isConflict(): boolean {
@@ -40,7 +58,7 @@ export class CommandFailure extends Error {
   }
 
   get isAppliedDespiteError(): boolean {
-    return this.applied || this.code === 'config.commit_visible_and_resynced';
+    return this.applied;
   }
 
   get isUnimplemented(): boolean {
@@ -128,7 +146,8 @@ async function establishSession(force = false): Promise<string> {
 
 function bridgeErrorCode(body: string): string | null {
   try {
-    const parsed = JSON.parse(body) as { error?: unknown };
+    const parsed = JSON.parse(body) as { error?: unknown; error_code?: unknown };
+    if (typeof parsed.error_code === 'string') return parsed.error_code;
     return typeof parsed.error === 'string' ? parsed.error : null;
   } catch {
     return null;
@@ -148,7 +167,7 @@ export interface JournalEntry {
   mutating: boolean;
   requestId: string;
   durationMs?: number;
-  outcome: 'pending' | 'ok' | 'failed' | 'unreachable' | 'unknown';
+  outcome: 'pending' | 'ok' | 'failed' | 'applied_with_error' | 'unreachable' | 'unknown';
   exitCode?: number;
   errorCode?: string;
   errorDetail?: string;
@@ -214,7 +233,8 @@ function redactThrownError(error: unknown, values: readonly string[] | undefined
       error.code,
       redactSecretValues(error.detail, values),
       error.exitCode,
-      error.applied,
+      error.outcome,
+      error.preparations,
     );
   }
   if (error instanceof TransportFailure) {
@@ -320,7 +340,8 @@ interface DomainErrorEnvelope {
   error_code: string;
   message: string;
   applied?: boolean;
-  outcome?: 'applied' | 'not_applied' | 'indeterminate';
+  outcome?: MutationOutcome;
+  preparations?: MutationPreparation[];
 }
 
 interface MutationMeta {
@@ -556,11 +577,300 @@ function decodeJSON(text: string): Record<string, unknown> {
   }
 }
 
-function typedDomainError(value: Record<string, unknown>): DomainErrorEnvelope | null {
-  if (value.ok !== false || typeof value.error_code !== 'string' || typeof value.message !== 'string') {
-    return null;
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function typedPreparations(value: unknown): MutationPreparation[] {
+  if (!Array.isArray(value)) throw new Error('preparations must be an array');
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new Error('preparation must be an object');
+    }
+    const item = entry as Record<string, unknown>;
+    if (typeof item.kind !== 'string' || !item.kind || typeof item.state !== 'string' || !item.state) {
+      throw new Error('preparation kind and state are required');
+    }
+    if (item.node_id !== undefined && typeof item.node_id !== 'string') {
+      throw new Error('preparation node_id must be a string');
+    }
+    return {
+      kind: item.kind,
+      state: item.state,
+      ...(typeof item.node_id === 'string' ? { node_id: item.node_id } : {}),
+    };
+  });
+}
+
+function mutationFacts(
+  value: Record<string, unknown>,
+  call: DomainCall,
+  success: boolean,
+): Pick<DomainErrorEnvelope, 'applied' | 'outcome' | 'preparations'> {
+  const hasApplied = hasOwn(value, 'applied');
+  const hasOutcome = hasOwn(value, 'outcome');
+  const hasPreparations = hasOwn(value, 'preparations');
+  const expectsFacts = call.mutating && !call.dryRun;
+  if (!expectsFacts) {
+    if (hasApplied || hasOutcome || hasPreparations) {
+      throw new Error('non-mutating response contains mutation outcome');
+    }
+    return {};
   }
-  return value as unknown as DomainErrorEnvelope;
+  if (!hasApplied || !hasOutcome || typeof value.applied !== 'boolean') {
+    throw new Error('mutation response is missing applied/outcome');
+  }
+  const outcome = value.outcome;
+  if (outcome !== 'applied' && outcome !== 'not_applied' && outcome !== 'indeterminate') {
+    throw new Error('mutation outcome is invalid');
+  }
+  if ((outcome === 'applied') !== value.applied) {
+    throw new Error('mutation applied/outcome tuple is inconsistent');
+  }
+  if (success && outcome !== 'applied') {
+    throw new Error('successful mutation was not confirmed applied');
+  }
+  if (hasPreparations && outcome !== 'not_applied') {
+    throw new Error('preparations require a not_applied outcome');
+  }
+  const preparations = hasPreparations ? typedPreparations(value.preparations) : undefined;
+  return { applied: value.applied, outcome, ...(preparations ? { preparations } : {}) };
+}
+
+function validateMutationSuccess(value: Record<string, unknown>, call: DomainCall): void {
+  if (!call.mutating) return;
+
+  const requestedRevision = call.body?.revision;
+  if (typeof requestedRevision !== 'number' || !Number.isSafeInteger(requestedRevision) || requestedRevision < 0) {
+    throw new Error('mutation request revision is invalid');
+  }
+  if (value.dry_run !== call.dryRun) {
+    throw new Error('mutation response dry_run does not match the request');
+  }
+  if (typeof value.changed !== 'boolean') {
+    throw new Error('mutation response is missing changed');
+  }
+  if (typeof value.before_revision !== 'number' || !Number.isSafeInteger(value.before_revision) || value.before_revision < 0) {
+    throw new Error('mutation response before_revision is invalid');
+  }
+  if (typeof value.after_revision !== 'number' || !Number.isSafeInteger(value.after_revision) || value.after_revision < 0) {
+    throw new Error('mutation response after_revision is invalid');
+  }
+  if (value.before_revision !== requestedRevision) {
+    throw new Error('mutation response revision does not match the request');
+  }
+  const expectedAfter = call.path === ROUTES.runtimeReload
+    ? requestedRevision
+    : requestedRevision + 1;
+  if (!Number.isSafeInteger(expectedAfter) || value.after_revision !== expectedAfter) {
+    throw new Error('mutation response revision transition is invalid');
+  }
+}
+
+function recordField(value: Record<string, unknown>, key: string): Record<string, unknown> {
+  const field = value[key];
+  if (typeof field !== 'object' || field === null || Array.isArray(field)) {
+    throw new Error(`daemon status ${key} is invalid`);
+  }
+  return field as Record<string, unknown>;
+}
+
+function requireStatusFields(
+  value: Record<string, unknown>,
+  strings: readonly string[],
+  booleans: readonly string[],
+  integers: readonly string[],
+): void {
+  for (const key of strings) {
+    if (typeof value[key] !== 'string') throw new Error(`daemon status ${key} is invalid`);
+  }
+  for (const key of booleans) {
+    if (typeof value[key] !== 'boolean') throw new Error(`daemon status ${key} is invalid`);
+  }
+  for (const key of integers) {
+    const field = value[key];
+    if (typeof field !== 'number' || !Number.isSafeInteger(field) || field < 0) {
+      throw new Error(`daemon status ${key} is invalid`);
+    }
+  }
+}
+
+const DAEMON_STATES = new Set(['starting', 'running', 'degraded', 'stopping', 'stopped']);
+const RUNTIME_STATES = new Set(['unavailable', 'starting', 'running', 'stopping', 'stopped', 'failed']);
+const RECONCILE_STATES = new Set(['pending', 'applied', 'failed']);
+const XRAY_INBOUND_STATES = new Set(['bound', 'missing', 'unexpected', 'unavailable']);
+const PUBLIC_ERROR_NAMESPACES = new Set([
+  'config', 'control', 'daemon', 'dataplane', 'domain', 'identity', 'lastgood', 'node',
+  'path', 'peer', 'rendradapter', 'route', 'runtime', 'service', 'settings', 'topology',
+  'webbridge', 'xrayconfig', 'xrayrt',
+]);
+
+function requireEnum(value: Record<string, unknown>, key: string, allowed: ReadonlySet<string>): string {
+  const field = value[key];
+  if (typeof field !== 'string' || !allowed.has(field)) {
+    throw new Error(`daemon status ${key} is invalid`);
+  }
+  return field;
+}
+
+function optionalString(value: Record<string, unknown>, key: string): string | undefined {
+  const field = value[key];
+  if (field === undefined) return undefined;
+  if (typeof field !== 'string') throw new Error(`daemon status ${key} is invalid`);
+  return field;
+}
+
+function optionalInteger(value: Record<string, unknown>, key: string): number | undefined {
+  const field = value[key];
+  if (field === undefined) return undefined;
+  if (typeof field !== 'number' || !Number.isSafeInteger(field) || field < 0) {
+    throw new Error(`daemon status ${key} is invalid`);
+  }
+  return field;
+}
+
+function validPublicErrorCode(value: string): boolean {
+  const match = /^([a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*)+$/.exec(value);
+  return match !== null && PUBLIC_ERROR_NAMESPACES.has(match[1]!);
+}
+
+function validateGeneration(value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('daemon status xray generation is invalid');
+  }
+  const generation = value as Record<string, unknown>;
+  requireStatusFields(generation, [], ['draining'], ['generation', 'ref_count']);
+  optionalString(generation, 'cleanup_error');
+}
+
+function validateDaemonStatus(value: Record<string, unknown>): void {
+  requireStatusFields(value, ['boot_id', 'config_path', 'control_addr', 'started_at'], [], ['revision']);
+  const daemonState = requireEnum(value, 'state', DAEMON_STATES);
+  optionalString(value, 'web_addr');
+
+  const reconcile = recordField(value, 'reconcile');
+  requireStatusFields(
+    reconcile,
+    ['observed_at'],
+    ['observation_fresh', 'configuration_published'],
+    ['applied_revision', 'attempted_revision'],
+  );
+  const reconcileState = requireEnum(reconcile, 'state', RECONCILE_STATES);
+  const reconcileError = optionalString(reconcile, 'last_error');
+  const reconcileErrorCode = optionalString(reconcile, 'last_error_code');
+  optionalInteger(reconcile, 'consecutive_failures');
+  optionalString(reconcile, 'first_failure_at');
+  optionalString(reconcile, 'next_retry_at');
+  if (reconcileErrorCode !== undefined && (!reconcileError || !validPublicErrorCode(reconcileErrorCode))) {
+    throw new Error('daemon status reconcile error is invalid');
+  }
+  if (reconcileState === 'applied' && reconcile.configuration_published !== true) {
+    throw new Error('daemon status applied reconcile is not published');
+  }
+
+  const idempotency = recordField(value, 'idempotency');
+  requireStatusFields(idempotency, ['scope'], ['restart_persistent', 'provisional'], []);
+  if (idempotency.scope !== 'process_memory' || idempotency.restart_persistent !== false || idempotency.provisional !== true) {
+    throw new Error('daemon status idempotency is invalid');
+  }
+
+  const control = recordField(value, 'control');
+  requireStatusFields(control, [], [], ['command_ingress', 'command_executions', 'domain_ingress', 'domain_executions']);
+
+  const configuration = recordField(value, 'configuration');
+  requireStatusFields(configuration, [], ['migrated_at_startup'], ['schema_version', 'last_known_good_revision']);
+  if ((configuration.schema_version as number) < 1) {
+    throw new Error('daemon status configuration is invalid');
+  }
+  const lastGoodError = optionalString(configuration, 'last_known_good_error');
+  if (lastGoodError !== undefined && lastGoodError !== 'lastgood.persist_failed'
+    && lastGoodError !== 'lastgood.revision_ahead_of_applied') {
+    throw new Error('daemon status last-known-good error is invalid');
+  }
+  if (configuration.startup_rollback !== undefined) {
+    const rollback = recordField(configuration, 'startup_rollback');
+    requireStatusFields(rollback, ['error_code'], [], ['applied_revision']);
+    const configuredRevision = rollback.configured_revision;
+    const rollbackCode = rollback.error_code as string;
+    const configuredRevisionValid = rollbackCode === 'config.startup_content_invalid'
+      ? configuredRevision === -1
+      : typeof configuredRevision === 'number' && Number.isSafeInteger(configuredRevision) && configuredRevision >= 0;
+    if (!configuredRevisionValid
+      || !['degraded', 'stopping', 'stopped'].includes(daemonState)
+      || (rollback.applied_revision as number) < (configuration.last_known_good_revision as number)
+      || (rollback.applied_revision as number) > (reconcile.applied_revision as number)
+      || !validPublicErrorCode(rollbackCode)) {
+      throw new Error('daemon status startup rollback is invalid');
+    }
+  }
+
+  const rendr = recordField(value, 'rendr');
+  requireStatusFields(rendr, [], ['endpoint_owned', 'packet_supported'], []);
+  const rendrState = requireEnum(rendr, 'state', RUNTIME_STATES);
+  const instanceID = optionalString(rendr, 'instance_id');
+  for (const key of ['instance_id_source', 'last_error', 'observed_at', 'stream_factory', 'stream_carrier', 'mobility_mode']) {
+    optionalString(rendr, key);
+  }
+  for (const key of ['active_client_sessions', 'active_accepted_sessions', 'accepted_flow_ids', 'total_client_sessions', 'total_accepted_sessions']) {
+    optionalInteger(rendr, key);
+  }
+  if (instanceID && rendrState !== 'running') {
+    throw new Error('daemon status rendr instance is invalid');
+  }
+  if (rendrState !== 'unavailable' && (rendr.stream_factory !== 'xray-stream'
+    || rendr.stream_carrier !== 'unknown' || rendr.mobility_mode !== 'redial_attach'
+    || rendr.endpoint_owned !== false || rendr.packet_supported !== false)) {
+    throw new Error('daemon status rendr capability is invalid');
+  }
+
+  const xray = recordField(value, 'xray');
+  requireStatusFields(xray, [], ['fail_stopped', 'strict_stream_outbound', 'strict_packet_outbound'], []);
+  const xrayState = requireEnum(xray, 'state', RUNTIME_STATES);
+  if (!Array.isArray(xray.draining) || !Array.isArray(xray.inbounds)) {
+    throw new Error('daemon status xray collections are invalid');
+  }
+  if (xray.current !== undefined) validateGeneration(xray.current);
+  xray.draining.forEach(validateGeneration);
+  for (const item of xray.inbounds) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      throw new Error('daemon status xray inbound is invalid');
+    }
+    const inbound = item as Record<string, unknown>;
+    if (typeof inbound.tag !== 'string' || inbound.tag.length === 0) {
+      throw new Error('daemon status xray inbound tag is invalid');
+    }
+    optionalString(inbound, 'listen');
+    requireEnum(inbound, 'state', XRAY_INBOUND_STATES);
+  }
+  if (xray.strict_packet_outbound !== false
+    || (xray.fail_stopped === true && xrayState !== 'failed')
+    || (xray.current !== undefined && xrayState !== 'running' && xrayState !== 'stopping'
+      && !(xray.fail_stopped === true && xrayState === 'failed'))) {
+    throw new Error('daemon status xray runtime is invalid');
+  }
+
+  if (daemonState === 'running' && (lastGoodError !== undefined
+    || configuration.startup_rollback !== undefined
+    || configuration.last_known_good_revision !== reconcile.applied_revision
+    || reconcileState !== 'applied'
+    || reconcile.configuration_published !== true
+    || value.revision !== reconcile.applied_revision)) {
+    throw new Error('daemon status running state is inconsistent');
+  }
+}
+
+function typedDomainError(value: Record<string, unknown>, call: DomainCall): DomainErrorEnvelope {
+  if (value.ok !== false || typeof value.error_code !== 'string' || typeof value.message !== 'string') {
+    throw new Error('missing typed domain error');
+  }
+  const facts = mutationFacts(value, call, false);
+  return {
+    api_version: API_VERSION,
+    ok: false,
+    error_code: value.error_code,
+    message: value.message,
+    ...facts,
+  };
 }
 
 async function fetchJSON<T>(call: DomainCall, expectDomainOK: boolean): Promise<T> {
@@ -620,39 +930,67 @@ async function fetchJSON<T>(call: DomainCall, expectDomainOK: boolean): Promise<
     }
   }
 
-  if (parsed) {
-    const failure = typedDomainError(parsed);
-    if (failure?.outcome === 'indeterminate') {
-      throw new TransportFailure(`${failure.error_code}: ${failure.message}`, true);
-    }
-    if (failure) {
-      if (call.mutating && !call.dryRun && response.status >= 500 && failure.outcome === undefined) {
-        throw new TransportFailure(`${failure.error_code}: ${failure.message}`, true);
-      }
-      throw new CommandFailure(
-        failure.error_code,
-        failure.message,
-        1,
-        failure.outcome === 'applied' || failure.applied === true,
-      );
-    }
-  }
-  if (!response.ok) {
-    const detail = `${response.status} ${text.trim()}`.trim();
-    const unknown = response.status >= 500 && call.mutating && !call.dryRun;
-    throw new TransportFailure(`control.http_status: ${detail}`, unknown);
-  }
   if (!parsed) {
     const unknown = call.mutating && !call.dryRun;
-    throw new TransportFailure('control.response_invalid: empty JSON response', unknown);
+    const detail = response.ok
+      ? 'empty JSON response'
+      : `non-JSON HTTP ${response.status}`;
+    throw new TransportFailure(`control.response_invalid: ${detail}`, unknown);
   }
   if (parsed.api_version !== API_VERSION) {
     const unknown = call.mutating && !call.dryRun;
     throw new TransportFailure('control.response_invalid: unsupported api_version', unknown);
   }
+  if (parsed.ok === false) {
+    let failure: DomainErrorEnvelope;
+    try {
+      failure = typedDomainError(parsed, call);
+    } catch (error) {
+      const unknown = call.mutating && !call.dryRun;
+      throw new TransportFailure(
+        `control.response_invalid: ${error instanceof Error ? error.message : String(error)}`,
+        unknown,
+      );
+    }
+    if (failure.outcome === 'applied' && !response.ok) {
+      throw new TransportFailure('control.response_invalid: applied error requires HTTP success', true);
+    }
+    if (failure.outcome !== 'applied' && response.ok) {
+      throw new TransportFailure(
+        'control.response_invalid: unapplied error requires HTTP failure',
+        call.mutating && !call.dryRun,
+      );
+    }
+    if (failure.outcome === 'indeterminate') {
+      throw new TransportFailure(`${failure.error_code}: ${failure.message}`, true);
+    }
+    throw new CommandFailure(
+      failure.error_code,
+      failure.message,
+      1,
+      failure.outcome,
+      failure.preparations,
+    );
+  }
+  if (!response.ok) {
+    const detail = `${response.status} ${text.trim()}`.trim();
+    const unknown = call.mutating && !call.dryRun;
+    throw new TransportFailure(`control.response_invalid: HTTP failure lacks typed error: ${detail}`, unknown);
+  }
   if (expectDomainOK && parsed.ok !== true) {
     const unknown = call.mutating && !call.dryRun;
     throw new TransportFailure('control.response_invalid: missing typed operation outcome', unknown);
+  }
+  try {
+    mutationFacts(parsed, call, true);
+    validateMutationSuccess(parsed, call);
+    if (call.path === ROUTES.status) validateDaemonStatus(parsed);
+  } catch (error) {
+    const unknown = call.mutating && !call.dryRun;
+    throw new TransportFailure(
+      `control.response_invalid: ${error instanceof Error ? error.message : String(error)}`,
+      unknown,
+    );
   }
   return parsed as T;
 }
@@ -666,7 +1004,7 @@ async function executeJournaled<T>(entry: JournalEntry, call: DomainCall, starte
     const safeError = redactThrownError(error, call.secretValues);
     if (safeError instanceof CommandFailure) {
       closeJournal(entry, {
-        outcome: 'failed',
+        outcome: safeError.applied ? 'applied_with_error' : 'failed',
         exitCode: safeError.exitCode,
         errorCode: safeError.code,
         errorDetail: safeError.detail,

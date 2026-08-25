@@ -58,6 +58,15 @@ export function FailureNotice({ failure, actions, variant = 'banner' }: FailureN
             <span style={{ color: 'var(--stratum-text-muted)' }}> — {failure.detail}</span>
           ) : null}
         </p>
+        {failure.preparations?.map((preparation, index) => (
+          <p
+            key={`${preparation.kind}-${preparation.node_id ?? index}`}
+            style={{ margin: 0, fontSize: 'var(--stratum-text-sm)' }}
+          >
+            Prepared <Code>{preparation.kind}</Code>: {preparation.state}
+            {preparation.node_id ? <> · <Code>{preparation.node_id}</Code></> : null}
+          </p>
+        ))}
       </div>
     </Banner>
   );

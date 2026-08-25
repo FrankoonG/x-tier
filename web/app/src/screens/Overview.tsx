@@ -106,7 +106,7 @@ function identityStatus(state: IdentityState | undefined) {
 
 /** The store reports a read failure as a bare code; the catalogue turns it
  *  into the same shape every other failure on screen uses. */
-const adviseFailure = (code: string) => ({ ...adviseCode(code), code, detail: '' });
+const adviseFailure = (code: string) => ({ ...adviseCode(code), code, detail: '', applied: false });
 
 /** A card title with its subject's icon. Decorative — the text carries the name. */
 function Titled({ icon, children }: { icon: ReactNode; children: ReactNode }) {

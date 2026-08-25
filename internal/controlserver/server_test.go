@@ -28,6 +28,15 @@ func (r failingRuntimeReloader) Reload(context.Context, int64, bool) (controlapi
 	return controlapi.ReconcileStatus{}, r.err
 }
 
+type fixedRuntimeReloader struct {
+	status controlapi.ReconcileStatus
+	err    error
+}
+
+func (r fixedRuntimeReloader) Reload(context.Context, int64, bool) (controlapi.ReconcileStatus, error) {
+	return r.status, r.err
+}
+
 type fixedStatusProvider struct{ status controlapi.DaemonStatus }
 
 func (p fixedStatusProvider) Status(context.Context) (controlapi.DaemonStatus, error) {
@@ -239,6 +248,62 @@ func TestReloadResponseDoesNotExposeRawRuntimeDetails(t *testing.T) {
 	if response.ExitCode == 0 || strings.Contains(response.Stdout+response.Stderr, secret) ||
 		!strings.Contains(response.Stdout, `"error_code":"service.reload_apply"`) {
 		t.Fatalf("unsafe reload response = %+v", response)
+	}
+}
+
+func TestCLIExecuteReloadRequiresExactAppliedConfirmation(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		status controlapi.ReconcileStatus
+		err    error
+	}{
+		{
+			name:   "pending nil result",
+			status: controlapi.ReconcileStatus{State: controlapi.ReconcileStatePending, AppliedRevision: 7, AttemptedRevision: 7},
+		},
+		{
+			name:   "stale attempted revision",
+			status: controlapi.ReconcileStatus{State: controlapi.ReconcileStateApplied, AppliedRevision: 7, AttemptedRevision: 6},
+		},
+		{
+			name: "stale applied state accompanying error",
+			status: controlapi.ReconcileStatus{
+				State: controlapi.ReconcileStateApplied, AppliedRevision: 7, AttemptedRevision: 6,
+			},
+			err: publicerr.Errorf("service.reload_apply", "apply failed"),
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := &Server{ctx: context.Background()}
+			response := server.executeReload(
+				fixedRuntimeReloader{status: testCase.status, err: testCase.err},
+				controlapi.Request{JSON: true, Revision: 7},
+			)
+			if response.ExitCode != controlapi.IndeterminateExitCode || response.Applied ||
+				response.Outcome != controlapi.MutationOutcomeIndeterminate {
+				t.Fatalf("invalid reload confirmation was accepted: %+v", response)
+			}
+		})
+	}
+}
+
+func TestCLIExecuteReloadReportsPublishedConfigurationDespiteCleanupFailure(t *testing.T) {
+	server := &Server{ctx: context.Background()}
+	response := server.executeReload(
+		fixedRuntimeReloader{
+			status: controlapi.ReconcileStatus{
+				State:                  controlapi.ReconcileStateFailed,
+				AppliedRevision:        7,
+				AttemptedRevision:      7,
+				ConfigurationPublished: true,
+			},
+			err: publicerr.Errorf("service.reload_apply", "old generation cleanup remains pending"),
+		},
+		controlapi.Request{JSON: true, Revision: 7},
+	)
+	if response.ExitCode != 0 || !response.Applied || response.Outcome != controlapi.MutationOutcomeApplied ||
+		!strings.Contains(response.Stdout, `"error_code":"service.reload_apply"`) {
+		t.Fatalf("published cleanup failure outcome=%+v", response)
 	}
 }
 
@@ -466,92 +531,46 @@ func TestRequestCacheCapacityDoesNotEvictInflightRequests(t *testing.T) {
 	}
 }
 
-func TestIndeterminateCommandCacheIsProtectedUntilTTL(t *testing.T) {
-	base := time.Now()
-	srv := &Server{requests: make(map[string]*cachedResponse), now: func() time.Time { return base }}
-	request := controlapi.Request{
+func TestIndeterminateCommandCacheNeverEvicts(t *testing.T) {
+	srv := &Server{requests: make(map[string]*cachedResponse)}
+	firstRequest := controlapi.Request{
 		Args:      []string{"local", "identity", "rename", "unknown"},
 		Revision:  0,
 		RequestID: "01000000000000000000000000000000",
 	}
-	entry, leader, status := srv.claimRequest(request)
-	if entry == nil || !leader || status != 0 {
-		t.Fatalf("initial claim=(%v,%v,%d)", entry, leader, status)
+	firstEntry, leader, status := srv.claimRequest(firstRequest)
+	if firstEntry == nil || !leader || status != 0 {
+		t.Fatalf("initial claim=(%v,%v,%d)", firstEntry, leader, status)
 	}
-	srv.completeRequest(request.RequestID, entry, controlapi.Response{
+	srv.completeRequest(firstRequest.RequestID, firstEntry, controlapi.Response{
 		ExitCode: controlapi.IndeterminateExitCode,
 		Outcome:  controlapi.MutationOutcomeIndeterminate,
 	})
 	for i := 1; i < requestCacheCapacity; i++ {
-		id := fmt.Sprintf("%032x", i+1)
-		done := make(chan struct{})
-		close(done)
-		srv.requests[id] = &cachedResponse{request: controlapi.Request{RequestID: id}, done: done, completed: true}
-		srv.completedRequests = append(srv.completedRequests, id)
+		request := controlapi.Request{
+			Args:      []string{"local", "identity", "rename", fmt.Sprintf("unknown-%d", i)},
+			Revision:  0,
+			RequestID: fmt.Sprintf("%032x", i+1),
+		}
+		entry, entryLeader, entryStatus := srv.claimRequest(request)
+		if entry == nil || !entryLeader || entryStatus != 0 {
+			t.Fatalf("claim %d=(%v,%v,%d)", i, entry, entryLeader, entryStatus)
+		}
+		srv.completeRequest(request.RequestID, entry, controlapi.Response{
+			ExitCode: controlapi.IndeterminateExitCode,
+			Outcome:  controlapi.MutationOutcomeIndeterminate,
+		})
 	}
 	newRequest := controlapi.Request{RequestID: "ffffffffffffffffffffffffffffffff"}
-	if _, leader, status := srv.claimRequest(newRequest); !leader || status != 0 {
-		t.Fatalf("claim at capacity=(leader=%v,status=%d)", leader, status)
+	if entry, newLeader, newStatus := srv.claimRequest(newRequest); entry != nil || newLeader || newStatus != http.StatusServiceUnavailable {
+		t.Fatalf("claim at protected capacity=(%v,%v,%d)", entry, newLeader, newStatus)
 	}
-	if cached, leader, status := srv.claimRequest(request); cached != entry || leader || status != 0 {
-		t.Fatalf("protected replay=(%v,%v,%d)", cached, leader, status)
+	if cached, replayLeader, replayStatus := srv.claimRequest(firstRequest); cached != firstEntry || replayLeader || replayStatus != 0 {
+		t.Fatalf("protected replay=(%v,%v,%d)", cached, replayLeader, replayStatus)
 	}
-
-	base = base.Add(protectedDomainRequestTTL + time.Second)
-	replacement, leader, status := srv.claimRequest(request)
-	if replacement == nil || replacement == entry || !leader || status != 0 {
-		t.Fatalf("expired protected claim=(%v,%v,%d)", replacement, leader, status)
+	if len(srv.requests) != requestCacheCapacity {
+		t.Fatalf("protected cache size=%d, want %d", len(srv.requests), requestCacheCapacity)
 	}
-}
-
-func TestProtectedCommandCacheNeverEvictsActiveExecution(t *testing.T) {
-	srv := &Server{requests: make(map[string]*cachedResponse)}
-	activeID := "02000000000000000000000000000000"
-	activeDone := make(chan struct{})
-	srv.requests[activeID] = &cachedResponse{
-		request:       controlapi.Request{RequestID: activeID},
-		done:          closedTestChannel(),
-		executionDone: activeDone,
-		completed:     true,
-		protected:     true,
-		completedAt:   time.Now().Add(-time.Hour),
-	}
-	srv.protectedRequests = append(srv.protectedRequests, activeID)
-	for i := 0; i < protectedDomainRequestCapacity; i++ {
-		id := fmt.Sprintf("%032x", i+100)
-		srv.requests[id] = &cachedResponse{
-			request:     controlapi.Request{RequestID: id},
-			done:        closedTestChannel(),
-			completed:   true,
-			protected:   true,
-			completedAt: time.Now(),
-		}
-		srv.protectedRequests = append(srv.protectedRequests, id)
-	}
-
-	srv.requestsMu.Lock()
-	srv.trimProtectedRequestsLocked()
-	_, activeRetained := srv.requests[activeID]
-	protectedCount := len(srv.protectedRequests)
-	srv.requestsMu.Unlock()
-	if !activeRetained || protectedCount != protectedDomainRequestCapacity {
-		t.Fatalf("active retained=%v protected=%d", activeRetained, protectedCount)
-	}
-
-	close(activeDone)
-	srv.requestsMu.Lock()
-	srv.evictExpiredProtectedRequestsLocked(time.Now())
-	_, activeRetained = srv.requests[activeID]
-	srv.requestsMu.Unlock()
-	if activeRetained {
-		t.Fatal("completed expired execution remained pinned")
-	}
-}
-
-func closedTestChannel() chan struct{} {
-	done := make(chan struct{})
-	close(done)
-	return done
 }
 
 func TestCommandCannotOverrideDaemonGlobals(t *testing.T) {
@@ -682,10 +701,9 @@ func TestPanickingMutationCompletesIdempotencyEntry(t *testing.T) {
 
 	srv.requestsMu.Lock()
 	entry := srv.requests[request.RequestID]
-	protectedCount := len(srv.protectedRequests)
 	srv.requestsMu.Unlock()
-	if entry == nil || !entry.completed || !entry.protected || protectedCount == 0 {
-		t.Fatalf("panic idempotency entry remained in flight: entry=%+v protected=%d", entry, protectedCount)
+	if entry == nil || !entry.completed || !entry.protected {
+		t.Fatalf("panic idempotency entry remained in flight: entry=%+v", entry)
 	}
 }
 

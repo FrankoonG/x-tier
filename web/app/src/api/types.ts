@@ -123,6 +123,10 @@ export interface MutationResponse<T = unknown> {
   ok: true;
   changed: boolean;
   dry_run: boolean;
+  /** Present only for a non-dry-run mutation. */
+  applied?: true;
+  /** Present only for a non-dry-run mutation. */
+  outcome?: 'applied';
   before_revision: number;
   after_revision: number;
   result: T;
@@ -210,7 +214,7 @@ export interface XrayGenerationStatus {
   cleanup_error?: string;
 }
 
-export type XrayInboundState = 'bound' | 'missing' | 'unexpected';
+export type XrayInboundState = 'bound' | 'missing' | 'unexpected' | 'unavailable';
 
 export interface XrayInboundStatus {
   tag: string;
@@ -242,6 +246,7 @@ export interface ReconcileStatus {
   state: ReconcileState;
   applied_revision: number;
   attempted_revision: number;
+  configuration_published: boolean;
   last_error?: string;
   last_error_code?: string;
   observed_at: string;

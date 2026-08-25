@@ -121,6 +121,7 @@ export function Runtime() {
         * screen says so instead of choosing one. */}
       {daemonError && (
         <ErrorState
+          headingLevel={2}
           title="The daemon did not answer"
           description={
             'This means the panel could not reach the control plane. It does not mean the daemon '

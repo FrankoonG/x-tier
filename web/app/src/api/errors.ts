@@ -28,7 +28,7 @@
  *   how bad            `severity`, which drives the colour — and `blocked`,
  *                      which says whether retrying can possibly help
  * ======================================================================== */
-import { CommandFailure, TransportFailure } from './control.ts';
+import { CommandFailure, TransportFailure, type MutationPreparation } from './control.ts';
 
 export type ErrorSeverity = 'danger' | 'warning' | 'info';
 
@@ -40,8 +40,6 @@ export interface ErrorAdvice {
   severity: ErrorSeverity;
   /** True when retrying the same command cannot succeed. Suppresses Apply. */
   blocked: boolean;
-  /** The write landed. The UI must not report this as a lost change. */
-  applied?: boolean;
   /** The panel should re-read before the operator tries again. */
   needsRefresh?: boolean;
 }
@@ -67,7 +65,6 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
       + 'redoing; repeating the command would apply it twice.',
     severity: 'info',
     blocked: true,
-    applied: true,
     needsRefresh: true,
   },
   'config.revision_required': {
@@ -591,18 +588,31 @@ export interface FailureView extends ErrorAdvice {
   code: string;
   /** The daemon's own prose. Shown verbatim, never rewritten. */
   detail: string;
+  /** Comes only from the daemon's validated mutation outcome. */
+  applied: boolean;
+  /** Durable work performed before a definitely uncommitted configuration write. */
+  preparations?: readonly MutationPreparation[];
 }
 
 export function describeFailure(err: unknown): FailureView {
   if (err instanceof CommandFailure) {
-	const advice = adviseCode(err.code);
-	return { ...advice, applied: err.isAppliedDespiteError || advice.applied, code: err.code, detail: err.detail };
+    const advice = err.code === 'config.commit_visible_and_resynced' && !err.applied
+      ? unknownAdvice(err.code)
+      : adviseCode(err.code);
+    return {
+      ...advice,
+      applied: err.isAppliedDespiteError,
+      preparations: err.preparations,
+      code: err.code,
+      detail: err.detail,
+    };
   }
   if (err instanceof TransportFailure) {
     return {
       ...adviseCode('control.unreachable'),
       code: 'control.unreachable',
       detail: err.message,
+      applied: false,
     };
   }
   return {
@@ -614,6 +624,7 @@ export function describeFailure(err: unknown): FailureView {
     blocked: true,
     code: 'panel.exception',
     detail: err instanceof Error ? err.message : String(err),
+    applied: false,
   };
 }
 

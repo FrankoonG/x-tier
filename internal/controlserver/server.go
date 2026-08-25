@@ -24,15 +24,13 @@ import (
 )
 
 const (
-	requestCacheCapacity           = 512
-	protectedDomainRequestCapacity = 128
-	protectedDomainRequestTTL      = 10 * time.Minute
-	challengeReplayCapacity        = 4096
-	challengeTTL                   = 30 * time.Second
-	maxRequestBodyBytes            = 1 << 20
-	maxResponseBodyBytes           = 2 << 20
-	maxCommandOutputBytes          = 128 << 10
-	defaultShutdownTimeout         = 5 * time.Second
+	requestCacheCapacity    = 512
+	challengeReplayCapacity = 4096
+	challengeTTL            = 30 * time.Second
+	maxRequestBodyBytes     = 1 << 20
+	maxResponseBodyBytes    = 2 << 20
+	maxCommandOutputBytes   = 128 << 10
+	defaultShutdownTimeout  = 5 * time.Second
 )
 
 var ErrShutdownIncomplete = errors.New("control: server shutdown incomplete")
@@ -50,11 +48,9 @@ type Server struct {
 	requestsMu              sync.Mutex
 	requests                map[string]*cachedResponse
 	completedRequests       []string
-	protectedRequests       []string
 	domainRequestsMu        sync.Mutex
 	domainRequests          map[string]*cachedDomainResponse
 	domainCompletedRequests []string
-	domainProtectedRequests []string
 
 	challengesMu       sync.Mutex
 	usedChallenges     map[string]time.Time
@@ -76,15 +72,16 @@ type Server struct {
 	commands           sync.WaitGroup
 	execute            func(context.Context, []string, io.Writer, io.Writer) cli.ExecutionResult
 
-	shutdownOnce  sync.Once
-	serveDone     chan struct{}
-	closedDone    chan struct{}
-	serveErrMu    sync.Mutex
-	serveErr      error
-	shutdownErr   error
-	shutdownWait  time.Duration
-	mutationWait  time.Duration
-	restoreConfig func(int64, bool) (configstore.UpdateResult, error)
+	shutdownOnce   sync.Once
+	serveDone      chan struct{}
+	closedDone     chan struct{}
+	serveErrMu     sync.Mutex
+	serveErr       error
+	shutdownErr    error
+	shutdownWait   time.Duration
+	mutationWait   time.Duration
+	restoreConfig  func(int64, bool) (configstore.UpdateResult, error)
+	createIdentity domainIdentityCreator
 }
 
 type cachedResponse struct {
@@ -94,7 +91,6 @@ type cachedResponse struct {
 	executionDone <-chan struct{}
 	completed     bool
 	protected     bool
-	completedAt   time.Time
 }
 
 // StatusProvider returns a snapshot of daemon-owned state. Runtime instance
@@ -103,6 +99,8 @@ type StatusProvider = controlapi.StatusProvider
 type StatusProviderFunc = controlapi.StatusProviderFunc
 
 type RuntimeReloader interface {
+	// Reload reconciles one desired revision; it is not a force-restart API.
+	// Repeating an already healthy revision must not publish a new generation.
 	Reload(context.Context, int64, bool) (controlapi.ReconcileStatus, error)
 }
 
@@ -174,6 +172,7 @@ func start(ctx context.Context, addr, configPath, ownershipKey string, providers
 		challengeTTL:   challengeTTL,
 		now:            time.Now,
 		shutdownWait:   defaultShutdownTimeout,
+		createIdentity: createDomainIdentity,
 		execute: func(ctx context.Context, args []string, stdout, stderr io.Writer) cli.ExecutionResult {
 			if ownershipKey != "" {
 				return cli.RunOwnedDaemonContext(ctx, args, ownershipKey, stdout, stderr)
@@ -641,23 +640,19 @@ func (s *Server) executeReload(reloader RuntimeReloader, req controlapi.Request)
 }
 
 func (s *Server) executeReloadContext(ctx context.Context, reloader RuntimeReloader, req controlapi.Request) controlapi.Response {
-	status, err := reloader.Reload(ctx, req.Revision, req.DryRun)
-	if err != nil {
-		response := runtimeCommandErrorResponse(req.JSON, err)
-		if req.DryRun {
-			return response
+	status, reloadErr := reloader.Reload(ctx, req.Revision, req.DryRun)
+	if req.DryRun && reloadErr != nil {
+		return runtimeCommandErrorResponse(req.JSON, reloadErr)
+	}
+	if !req.DryRun {
+		classifiedErr, applied, outcome := classifyReloadMutation(status, reloadErr, req.Revision)
+		if classifiedErr != nil {
+			response := runtimeCommandErrorResponse(req.JSON, classifiedErr)
+			if outcome == controlapi.MutationOutcomeIndeterminate {
+				response.ExitCode = controlapi.IndeterminateExitCode
+			}
+			return withMutationOutcome(response, applied, outcome)
 		}
-		applied := status.State == controlapi.ReconcileStateApplied && status.AppliedRevision == req.Revision
-		if applied {
-			return withMutationOutcome(response, true, controlapi.MutationOutcomeApplied)
-		}
-		failureCode := runtimeCommandErrorCode(err)
-		if (status.State == controlapi.ReconcileStateFailed && status.AttemptedRevision == req.Revision) ||
-			reloadFailureWasNotAttempted(failureCode) {
-			return withMutationOutcome(response, false, controlapi.MutationOutcomeNotApplied)
-		}
-		response.ExitCode = controlapi.IndeterminateExitCode
-		return withMutationOutcome(response, false, controlapi.MutationOutcomeIndeterminate)
 	}
 	body, marshalErr := json.Marshal(map[string]any{
 		"ok":                   true,
@@ -709,7 +704,6 @@ func (s *Server) writeResponse(w http.ResponseWriter, response controlapi.Respon
 func (s *Server) claimRequest(request controlapi.Request) (*cachedResponse, bool, int) {
 	s.requestsMu.Lock()
 	defer s.requestsMu.Unlock()
-	s.evictExpiredProtectedRequestsLocked(s.cacheNow())
 	if cached, ok := s.requests[request.RequestID]; ok {
 		if !sameRequest(cached.request, request) {
 			return nil, false, http.StatusConflict
@@ -736,12 +730,8 @@ func (s *Server) completeRequest(requestID string, entry *cachedResponse, respon
 	}
 	entry.response = response
 	entry.completed = true
-	entry.protected = response.Outcome == controlapi.MutationOutcomeIndeterminate || isRuntimeReloadCommand(entry.request.Args)
-	entry.completedAt = s.cacheNow()
-	if entry.protected {
-		s.protectedRequests = append(s.protectedRequests, requestID)
-		s.trimProtectedRequestsLocked()
-	} else {
+	entry.protected = response.Outcome == controlapi.MutationOutcomeIndeterminate
+	if !entry.protected {
 		s.completedRequests = append(s.completedRequests, requestID)
 	}
 	close(entry.done)
@@ -762,8 +752,7 @@ func (s *Server) backgroundExecutionFinished(requestID string, done <-chan struc
 	if !ok || entry.executionDone != done {
 		return
 	}
-	s.evictExpiredProtectedRequestsLocked(s.cacheNow())
-	s.trimProtectedRequestsLocked()
+	entry.executionDone = nil
 }
 
 func (s *Server) evictCompletedRequestsLocked() {
@@ -778,71 +767,6 @@ func (s *Server) evictCompletedRequestsLocked() {
 	}
 	if len(s.completedRequests) == 0 {
 		s.completedRequests = nil
-	}
-	for len(s.requests) >= requestCacheCapacity && len(s.protectedRequests) > 0 {
-		if !s.evictOldestProtectedRequestLocked() {
-			break
-		}
-	}
-}
-
-func (s *Server) evictExpiredProtectedRequestsLocked(now time.Time) {
-	kept := s.protectedRequests[:0]
-	for _, requestID := range s.protectedRequests {
-		entry, ok := s.requests[requestID]
-		if !ok || !entry.completed || !entry.protected {
-			continue
-		}
-		if !now.Before(entry.completedAt.Add(protectedDomainRequestTTL)) && !requestExecutionActive(entry) {
-			delete(s.requests, requestID)
-			continue
-		}
-		kept = append(kept, requestID)
-	}
-	clear(s.protectedRequests[len(kept):])
-	s.protectedRequests = kept
-	if len(kept) == 0 {
-		s.protectedRequests = nil
-	}
-}
-
-func (s *Server) trimProtectedRequestsLocked() {
-	for len(s.protectedRequests) > protectedDomainRequestCapacity {
-		if !s.evictOldestProtectedRequestLocked() {
-			return
-		}
-	}
-}
-
-func (s *Server) evictOldestProtectedRequestLocked() bool {
-	for index, requestID := range s.protectedRequests {
-		entry, ok := s.requests[requestID]
-		if ok && entry.completed && entry.protected && requestExecutionActive(entry) {
-			continue
-		}
-		if ok && entry.completed && entry.protected {
-			delete(s.requests, requestID)
-		}
-		copy(s.protectedRequests[index:], s.protectedRequests[index+1:])
-		s.protectedRequests[len(s.protectedRequests)-1] = ""
-		s.protectedRequests = s.protectedRequests[:len(s.protectedRequests)-1]
-		if len(s.protectedRequests) == 0 {
-			s.protectedRequests = nil
-		}
-		return true
-	}
-	return false
-}
-
-func requestExecutionActive(entry *cachedResponse) bool {
-	if entry == nil || entry.executionDone == nil {
-		return false
-	}
-	select {
-	case <-entry.executionDone:
-		return false
-	default:
-		return true
 	}
 }
 

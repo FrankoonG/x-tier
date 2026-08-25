@@ -11,10 +11,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -81,16 +83,17 @@ const (
 )
 
 type ReconcileStatus struct {
-	State               ReconcileState `json:"state"`
-	AppliedRevision     int64          `json:"applied_revision"`
-	AttemptedRevision   int64          `json:"attempted_revision"`
-	LastError           string         `json:"last_error,omitempty"`
-	LastErrorCode       string         `json:"last_error_code,omitempty"`
-	ObservedAt          time.Time      `json:"observed_at"`
-	ObservationFresh    bool           `json:"observation_fresh"`
-	ConsecutiveFailures int            `json:"consecutive_failures,omitempty"`
-	FirstFailureAt      *time.Time     `json:"first_failure_at,omitempty"`
-	NextRetryAt         *time.Time     `json:"next_retry_at,omitempty"`
+	State                  ReconcileState `json:"state"`
+	AppliedRevision        int64          `json:"applied_revision"`
+	AttemptedRevision      int64          `json:"attempted_revision"`
+	ConfigurationPublished bool           `json:"configuration_published"`
+	LastError              string         `json:"last_error,omitempty"`
+	LastErrorCode          string         `json:"last_error_code,omitempty"`
+	ObservedAt             time.Time      `json:"observed_at"`
+	ObservationFresh       bool           `json:"observation_fresh"`
+	ConsecutiveFailures    int            `json:"consecutive_failures,omitempty"`
+	FirstFailureAt         *time.Time     `json:"first_failure_at,omitempty"`
+	NextRetryAt            *time.Time     `json:"next_retry_at,omitempty"`
 }
 
 type XrayGenerationStatus struct {
@@ -331,9 +334,9 @@ func AuthenticatedRequestContext(ctx context.Context, addr, tokenPath, method, p
 	if err := AuthenticateRequest(request, token, challenge, requestBody); err != nil {
 		return 0, nil, err
 	}
-	response, err := client.Do(request)
+	response, err := doTrackedAuthenticatedRequest(client, request)
 	if err != nil {
-		return 0, nil, requestDeliveryError{err: fmt.Errorf("control.unavailable: %w", err)}
+		return 0, nil, err
 	}
 	defer response.Body.Close()
 	responseBody, err := readBoundedResponse(response.Body)
@@ -344,6 +347,28 @@ func AuthenticatedRequestContext(ctx context.Context, addr, tokenPath, method, p
 		return 0, nil, requestDeliveryError{err: fmt.Errorf("control.response_auth_invalid")}
 	}
 	return response.StatusCode, responseBody, nil
+}
+
+func doTrackedAuthenticatedRequest(client *http.Client, request *http.Request) (*http.Response, error) {
+	var requestWriteStarted atomic.Bool
+	trace := &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			// net/http may report this before its buffered writer flushes. That is
+			// still a "may have arrived" boundary: a write error can be partial,
+			// so treating it as definitely not applied would be unsafe.
+			requestWriteStarted.Store(true)
+		},
+	}
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
+	response, err := client.Do(request)
+	if err == nil {
+		return response, nil
+	}
+	unavailable := fmt.Errorf("control.unavailable: %w", err)
+	if requestWriteStarted.Load() {
+		return nil, requestDeliveryError{err: unavailable}
+	}
+	return nil, unavailable
 }
 
 func decodeStrictResponse(body []byte, response *Response) error {

@@ -432,6 +432,12 @@ func (d *Daemon) Reload(ctx context.Context, expectedRevision int64, dryRun bool
 	if !appliedRuntimeHealthy(applied, cfg.Revision, configuredDigest) {
 		d.setOperationalState(true)
 		d.recordReconcileFailure(cfg.Revision, time.Now())
+		if publishedConfigurationMatches(applied, cfg.Revision, configuredDigest) {
+			return d.reconcileStatusFrom(cfg.Revision, configuredDigest, applied), publicerr.Errorf(
+				"service.reload_applied_unhealthy",
+				"runtime published the requested configuration but did not become healthy",
+			)
+		}
 		return d.reconcileStatusFrom(cfg.Revision, configuredDigest, applied), publicerr.Errorf(
 			"service.reload_not_applied",
 			"runtime did not report the requested configuration as healthy and applied",
@@ -661,13 +667,14 @@ func (d *Daemon) reconcileStatusFrom(configuredRevision int64, configuredDigest 
 		state = controlapi.ReconcileStateFailed
 	}
 	result := controlapi.ReconcileStatus{
-		State:             state,
-		AppliedRevision:   status.AppliedRevision,
-		AttemptedRevision: status.AttemptedRevision,
-		LastError:         status.LastError,
-		LastErrorCode:     status.LastErrorCode,
-		ObservedAt:        status.ObservedAt,
-		ObservationFresh:  status.ObservationFresh,
+		State:                  state,
+		AppliedRevision:        status.AppliedRevision,
+		AttemptedRevision:      status.AttemptedRevision,
+		ConfigurationPublished: publishedConfigurationMatches(status, configuredRevision, configuredDigest),
+		LastError:              status.LastError,
+		LastErrorCode:          status.LastErrorCode,
+		ObservedAt:             status.ObservedAt,
+		ObservationFresh:       status.ObservationFresh,
 	}
 	if cleanupPending && result.LastError == "" {
 		result.LastErrorCode = "runtime.xray_cleanup_failed"
@@ -1239,7 +1246,14 @@ func callRuntimeCloseBefore(plane runtimePlane, deadline time.Time) (error, bool
 }
 
 func appliedConfigurationMatches(status dataplane.Status, revision int64, digest [32]byte) bool {
-	if status.State != "running" || status.FailStopped || status.AppliedRevision != revision {
+	if status.State != "running" || status.FailStopped {
+		return false
+	}
+	return publishedConfigurationMatches(status, revision, digest)
+}
+
+func publishedConfigurationMatches(status dataplane.Status, revision int64, digest [32]byte) bool {
+	if status.AppliedRevision != revision {
 		return false
 	}
 	var unknown [32]byte

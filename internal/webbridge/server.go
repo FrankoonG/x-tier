@@ -609,31 +609,31 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, path string)
 }
 
 func (s *Server) handleDomainAction(w http.ResponseWriter, r *http.Request, route controlapi.DomainRoute) {
-	csrf, ok := s.authenticatedSession(r)
-	if !ok {
-		writeError(w, http.StatusForbidden, "webbridge.session_invalid")
-		return
-	}
-	provided, ok := exactHeader(r.Header, CSRFHeader)
-	if !ok || !constantTimeStringEqual(provided, csrf) {
-		writeError(w, http.StatusForbidden, "webbridge.csrf_invalid")
-		return
-	}
 	if !validJSONContentType(r.Header) {
-		writeError(w, http.StatusUnsupportedMediaType, "webbridge.content_type_invalid")
+		writeDomainBridgeError(w, http.StatusUnsupportedMediaType, "webbridge.content_type_invalid", nil, route.Mutating)
 		return
 	}
 	if r.ContentLength > MaxDomainBodyBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "webbridge.request_too_large")
+		writeDomainBridgeError(w, http.StatusRequestEntityTooLarge, "webbridge.request_too_large", nil, route.Mutating)
 		return
 	}
 	body, err := readBoundedBody(r.Body, MaxDomainBodyBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "webbridge.request_too_large")
+			writeDomainBridgeError(w, http.StatusRequestEntityTooLarge, "webbridge.request_too_large", nil, route.Mutating)
 		} else {
-			writeError(w, http.StatusBadRequest, "webbridge.body_invalid")
+			writeDomainBridgeError(w, http.StatusBadRequest, "webbridge.body_invalid", nil, route.Mutating)
 		}
+		return
+	}
+	csrf, ok := s.authenticatedSession(r)
+	if !ok {
+		writeDomainBridgeError(w, http.StatusForbidden, "webbridge.session_invalid", body, route.Mutating)
+		return
+	}
+	provided, ok := exactHeader(r.Header, CSRFHeader)
+	if !ok || !constantTimeStringEqual(provided, csrf) {
+		writeDomainBridgeError(w, http.StatusForbidden, "webbridge.csrf_invalid", body, route.Mutating)
 		return
 	}
 	budget := s.readUpstreamBudget
@@ -890,6 +890,24 @@ func writeError(w http.ResponseWriter, status int, code string) {
 	_, _ = fmt.Fprintf(w, "{\"error\":%q}\n", code)
 }
 
+func writeDomainBridgeError(w http.ResponseWriter, status int, code string, body []byte, mutating bool) {
+	response := controlapi.DomainError{
+		APIVersion: controlapi.DomainAPIVersion,
+		OK:         false,
+		ErrorCode:  code,
+		Message:    "the local web bridge rejected the request",
+	}
+	if mutating && mutationMayApply(body) {
+		applied := false
+		response.Applied = &applied
+		response.Outcome = controlapi.MutationOutcomeNotApplied
+	}
+	setResponseSecurityHeaders(w.Header())
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(response)
+}
+
 func writeMutationUpstreamError(w http.ResponseWriter, body []byte, err error) {
 	status := http.StatusBadGateway
 	code := "webbridge.upstream_unavailable"
@@ -906,7 +924,12 @@ func writeMutationUpstreamError(w http.ResponseWriter, body []byte, err error) {
 		Message:    message,
 	}
 	if mutationMayApply(body) {
-		response.Outcome = "indeterminate"
+		applied := false
+		response.Applied = &applied
+		response.Outcome = controlapi.MutationOutcomeNotApplied
+		if controlapi.CommandMayHaveApplied(err) {
+			response.Outcome = controlapi.MutationOutcomeIndeterminate
+		}
 	}
 	setResponseSecurityHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
