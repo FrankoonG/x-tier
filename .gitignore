@@ -12,3 +12,4 @@ xtier.json.*
 *.daemon.lock
 *.bak.*
 keystore/
+.xtier-state/
