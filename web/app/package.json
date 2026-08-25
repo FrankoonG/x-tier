@@ -1,0 +1,23 @@
+{
+  "name": "@xtier/app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test:unit": "node --experimental-strip-types --test src/api/control.test.ts src/api/errors.test.ts src/screens/diagnosticLog.test.ts src/screens/profileDraft.test.ts src/state/refreshCoordinator.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stratum/ui": "*",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.1",
+    "vite": "^8.2.1"
+  }
+}

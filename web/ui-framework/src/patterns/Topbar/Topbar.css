@@ -12,7 +12,7 @@
    * centred no matter how wide the two sides get. */
   .stratum-topbar[data-slotted] {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   }
 
   .stratum-topbar__start,
@@ -37,7 +37,7 @@
    * sides into unusable widths. */
   @container (max-width: 520px) {
     .stratum-topbar[data-slotted] {
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr) auto;
     }
     .stratum-topbar__center:empty,
     .stratum-topbar__center {

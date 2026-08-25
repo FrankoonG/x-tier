@@ -52,6 +52,8 @@ export interface LogLine {
   timestamp?: Date | number | string | null;
   /** Optional emitter tag — subsystem, worker, container. */
   source?: string;
+  /** Exact clipboard payload. Display text and diagnostic columns stay visible. */
+  copyText?: string;
 }
 
 export interface LogViewerSummary {
@@ -175,6 +177,15 @@ const FALLBACK_CHAR_WIDTH = 7.2;
 const TAIL_EPSILON = 4;
 /** Trailing slack on the computed no-wrap content width, in px. */
 const CONTENT_WIDTH_SLACK = 32;
+/**
+ * Bounds on the level column, in `ch` of content — the gutter padding is added
+ * on top by the CSS. The floor is the stylesheet's own default, so the ordinary
+ * syslog vocabulary keeps exactly the geometry it was cut for. The ceiling is
+ * the point past which a level label would start eating the message column;
+ * beyond it the cell ellipsises rather than truncating silently.
+ */
+const MIN_LEVEL_GUTTER_CH = 5.5;
+const MAX_LEVEL_GUTTER_CH = 20;
 
 interface PreparedLine {
   line: LogLine;
@@ -379,10 +390,16 @@ export const LogViewer = forwardRef<HTMLDivElement, LogViewerProps>(function Log
 
   const prepared = useMemo(() => {
     const rows: PreparedLine[] = [];
+    // Which levels actually occur, for the gutter measurement below. Collected
+    // here rather than in its own pass because this is the one loop that already
+    // walks every line; a level is one interned string, so the `add` costs
+    // nothing against the work already being done per row.
+    const levels = new Set<LogLevel>();
     let longest = 0;
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
       if (!line) continue;
+      if (line.level) levels.add(line.level);
       let entry = derivedCache.get(line);
       if (!entry) {
         const plain = needsAnsiParse(line.text) ? stripAnsi(line.text) : line.text;
@@ -398,7 +415,7 @@ export const LogViewer = forwardRef<HTMLDivElement, LogViewerProps>(function Log
       if (width > longest) longest = width;
       rows.push({ line, index: i, plain: entry.plain, lower: entry.lower });
     }
-    return { rows, longest };
+    return { rows, longest, levels };
   }, [lines]);
 
   const enabledSet = useMemo(() => new Set(levelsValue), [levelsValue]);
@@ -455,6 +472,39 @@ export const LogViewer = forwardRef<HTMLDivElement, LogViewerProps>(function Log
 
   /* -- Measurement --------------------------------------------------------- */
 
+  /**
+   * Width of the level column, published as an inline `--_gutter-level`.
+   *
+   * A log viewer is handed level vocabularies it does not control. The
+   * stylesheet's 5.5ch was cut for the syslog set — TRACE through FATAL, five
+   * characters — but `levelLabels` lets a caller relabel those levels as
+   * outcomes ("Succeeded", "Unreachable", "Outcome unknown"), which is 7-15
+   * characters. A fixed column has no reflow to make that collision obvious: it
+   * clipped the label straight onto the message. So the column is sized from the
+   * words it was actually given rather than from an assumed set.
+   *
+   * The vocabulary is the union of the levels present in the data and the levels
+   * the filter offers. Data alone would be enough to avoid clipping, but the
+   * column would then jump the first time an unseen level arrived mid-tail,
+   * reflowing the pane under someone who is reading it; folding in the declared
+   * options settles the width on the first paint. `+ 0.5` is the same
+   * letter-spacing slack the other gutters carry. With nothing measurable the
+   * property is left unset and CSS supplies its own default.
+   */
+  const levelGutter = useMemo(() => {
+    if (!showLevel) return undefined;
+    let longest = 0;
+    const measure = (level: LogLevel) => {
+      const text = levelLabels?.[level] ?? DEFAULT_LEVEL_LABELS[level];
+      if (text.length > longest) longest = text.length;
+    };
+    prepared.levels.forEach(measure);
+    levelOptions.forEach(measure);
+    if (longest === 0) return undefined;
+    const ch = Math.min(Math.max(longest + 0.5, MIN_LEVEL_GUTTER_CH), MAX_LEVEL_GUTTER_CH);
+    return `${ch}ch`;
+  }, [showLevel, prepared.levels, levelOptions, levelLabels]);
+
   const lineHeight = metrics.lineHeight || FALLBACK_LINE_HEIGHT;
   const charWidth = metrics.charWidth || FALLBACK_CHAR_WIDTH;
 
@@ -495,7 +545,12 @@ export const LogViewer = forwardRef<HTMLDivElement, LogViewerProps>(function Log
     observer.observe(probe);
     observer.observe(textCell);
     return () => observer.disconnect();
-  }, [density, showTimestamp, showLevel, timestampFormat]);
+    // Every dependency here is something that moves the gutter/message split.
+    // `levelGutter` is listed for the path with no ResizeObserver, where the
+    // message cell shrinking under a wider level column would otherwise leave
+    // `textWidth` — and so every wrapped row's height — measured against the
+    // previous layout.
+  }, [density, showTimestamp, showLevel, timestampFormat, levelGutter]);
 
   /* -- Layout -------------------------------------------------------------- */
 
@@ -613,6 +668,7 @@ export const LogViewer = forwardRef<HTMLDivElement, LogViewerProps>(function Log
 
   const composeLine = useCallback(
     (row: PreparedLine) => {
+      if (row.line.copyText !== undefined) return row.line.copyText;
       const parts: string[] = [];
       if (showTimestamp && row.line.timestamp != null) {
         parts.push(formatTimestamp(row.line.timestamp, { precision: 'millisecond' }));
@@ -996,6 +1052,7 @@ export const LogViewer = forwardRef<HTMLDivElement, LogViewerProps>(function Log
   const rootStyle = {
     ...style,
     '--_viewport-h': typeof height === 'number' ? `${height}px` : height,
+    ...(levelGutter ? { '--_gutter-level': levelGutter } : {}),
   } as CSSProperties;
 
   return (

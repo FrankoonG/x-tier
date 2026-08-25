@@ -134,10 +134,30 @@ export function useTheme(): ThemeContextValue {
  * Without it the page paints light, then corrects itself once React mounts —
  * a visible flash for dark-mode users.
  */
-export const themeInitScript = `(function(){try{
-var k='stratum-theme';var p=localStorage.getItem(k)||'system';
+/**
+ * Blocking script for `<head>`, so the first paint is already the right theme.
+ *
+ * Takes the storage key rather than hardcoding one. It used to be a plain
+ * const built around `'stratum-theme'` while `ThemeProvider` accepted a
+ * `storageKey` prop — so any consumer that named its own key got a script
+ * reading a key nothing ever writes. It ran, it threw nothing, and it left the
+ * flash exactly where it was: a silent failure with no symptom other than the
+ * bug it was added to fix.
+ *
+ * The key is JSON-encoded rather than interpolated raw, because it lands
+ * inside a `<script>` and a caller-supplied string has no business being
+ * trusted there.
+ *
+ * Usage — `dangerouslySetInnerHTML` in a framework, or a build-time inline:
+ *
+ *     <script>{themeInitScript('xtier.theme')}</script>
+ */
+export function themeInitScript(storageKey = 'stratum-theme'): string {
+  return `(function(){try{
+var p=localStorage.getItem(${JSON.stringify(storageKey)})||'system';
 var d=p==='dark'||(p==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);
 var t=d?'dark':'light';
 document.documentElement.setAttribute('data-theme',t);
 document.documentElement.style.colorScheme=t;
 }catch(e){}})();`;
+}

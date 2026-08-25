@@ -11,6 +11,8 @@ import {
 } from 'react';
 import clsx from 'clsx';
 import { ScrollArea } from '../ScrollArea/ScrollArea';
+import type { ScrollAreaOrientation } from '../ScrollArea/ScrollArea';
+import { cardRoleAllowsAutomaticLabel } from './cardA11y';
 import './Card.css';
 
 export type CardVariant = 'elevated' | 'outlined' | 'ghost';
@@ -48,9 +50,9 @@ export interface CardProps extends HTMLAttributes<HTMLDivElement> {
  * -------------------
  * - The card does not claim a landmark role. `role="region"` on every card in
  *   a dashboard floods the landmark list and makes the genuinely important
- *   regions unfindable. Instead the card wires up `aria-labelledby` to
- *   `Card.Header`'s title, so a consumer who *does* want a region only has to
- *   add `role="region"` and the name is already correct.
+ *   regions unfindable. Once a consumer supplies a semantic role, the card
+ *   wires `aria-labelledby` to `Card.Header`'s title automatically. Generic
+ *   cards remain unnamed because ARIA naming is prohibited on that role.
  * - `fill` puts the scroll on the body rather than the card, so the focus
  *   outline of a control in the header is never clipped by the scroll box.
  */
@@ -70,7 +72,9 @@ const CardRoot = forwardRef<HTMLDivElement, CardProps>(function Card(
     <CardContext.Provider value={context}>
       <div
         // Placed before the spread so a consumer-supplied label always wins.
-        aria-labelledby={hasTitle ? titleId : undefined}
+        aria-labelledby={
+          hasTitle && cardRoleAllowsAutomaticLabel(rest.role) ? titleId : undefined
+        }
         {...rest}
         ref={ref}
         data-stratum="card"
@@ -165,6 +169,8 @@ export interface CardBodyProps extends HTMLAttributes<HTMLDivElement> {
    * genuinely overflows, and brings the edge affordances with it.
    */
   scroll?: boolean;
+  /** Axes owned by the generated scroll region. Defaults to `vertical`. */
+  scrollOrientation?: ScrollAreaOrientation;
   /**
    * Accessible name for the scroll region, used only when the card has no
    * title to borrow. Default `'Content'`.
@@ -173,7 +179,15 @@ export interface CardBodyProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 export const CardBody = forwardRef<HTMLDivElement, CardBodyProps>(function CardBody(
-  { padding, scroll, scrollLabel = 'Content', className, children, ...rest },
+  {
+    padding,
+    scroll,
+    scrollOrientation = 'vertical',
+    scrollLabel = 'Content',
+    className,
+    children,
+    ...rest
+  },
   ref,
 ) {
   const context = useContext(CardContext);
@@ -192,6 +206,7 @@ export const CardBody = forwardRef<HTMLDivElement, CardBodyProps>(function CardB
       {isScrolling ? (
         <ScrollArea
           className="stratum-card__scroll"
+          orientation={scrollOrientation}
           {...(labelledBy ? { labelledBy } : { label: scrollLabel })}
         >
           {children}

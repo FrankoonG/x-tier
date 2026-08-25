@@ -5,14 +5,18 @@
   "type": "module",
   "workspaces": [
     "ui-framework",
+    "app",
     "lab"
   ],
   "scripts": {
     "dev": "npm run dev --workspace=@stratum/lab",
     "build:ui": "npm run build --workspace=@stratum/ui",
-    "build": "npm run build:ui && npm run build --workspace=@stratum/lab",
+    "build:app": "npm run build --workspace=@xtier/app",
+    "build:lab": "npm run build --workspace=@stratum/lab",
+    "build": "npm run build:ui && npm run build:app && npm run build:lab",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "dev:app": "npm run dev --workspace=@xtier/app"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

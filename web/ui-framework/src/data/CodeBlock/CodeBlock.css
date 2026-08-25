@@ -1,5 +1,5 @@
 @layer stratum.components {
-  .stratum-code {
+  .stratum-codeblock {
     --_bg: var(--stratum-code-bg);
     --_fg: var(--stratum-code-fg);
     --_border: var(--stratum-border);
@@ -18,7 +18,7 @@
 
   /* -- Header -------------------------------------------------------------- */
 
-  .stratum-code__header {
+  .stratum-codeblock__header {
     display: flex;
     align-items: center;
     gap: var(--stratum-space-4);
@@ -31,7 +31,7 @@
     border-start-end-radius: inherit;
   }
 
-  .stratum-code__title {
+  .stratum-codeblock__title {
     min-width: 0;
     overflow: hidden;
     font-size: var(--stratum-text-xs);
@@ -41,7 +41,7 @@
     white-space: nowrap;
   }
 
-  .stratum-code__language {
+  .stratum-codeblock__language {
     padding: 1px var(--stratum-space-3);
     font-family: var(--stratum-font-mono);
     font-size: var(--stratum-text-2xs);
@@ -55,13 +55,13 @@
     text-transform: lowercase;
   }
 
-  .stratum-code__actions {
+  .stratum-codeblock__actions {
     display: flex;
     gap: var(--stratum-space-1);
     margin-inline-start: auto;
   }
 
-  .stratum-code__action {
+  .stratum-codeblock__action {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -74,21 +74,21 @@
     border-radius: var(--stratum-radius-sm);
     transition: var(--stratum-transition-control);
   }
-  .stratum-code__action:hover {
+  .stratum-codeblock__action:hover {
     color: var(--stratum-text);
     background: var(--stratum-surface-hover);
   }
-  .stratum-code__action[aria-pressed='true'] {
+  .stratum-codeblock__action[aria-pressed='true'] {
     color: var(--stratum-accent-fg);
     background: var(--stratum-accent-subtle);
     border-color: var(--stratum-accent-border);
   }
-  .stratum-code__action[data-copy-state='copied'] { color: var(--stratum-success); }
-  .stratum-code__action[data-copy-state='error'] { color: var(--stratum-danger); }
+  .stratum-codeblock__action[data-copy-state='copied'] { color: var(--stratum-success); }
+  .stratum-codeblock__action[data-copy-state='error'] { color: var(--stratum-danger); }
 
   /* -- Body ---------------------------------------------------------------- */
 
-  .stratum-code__pre {
+  .stratum-codeblock__pre {
     margin: 0;
     padding: var(--stratum-space-4) 0;
     position: relative; /* containing block — keeps abspos children (a11y labels) inside this scroller */
@@ -102,27 +102,27 @@
     border-end-end-radius: inherit;
   }
 
-  .stratum-code__code {
+  .stratum-codeblock__code {
     display: block;
     min-width: max-content;
     font: inherit;
   }
-  .stratum-code[data-wrap] .stratum-code__code {
+  .stratum-codeblock[data-wrap] .stratum-codeblock__code {
     min-width: 100%;
   }
 
-  .stratum-code__line {
+  .stratum-codeblock__line {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     /* An empty line still occupies a row; without this the numbering and the
      * content visibly drift apart. */
     min-height: calc(1em * var(--_leading));
   }
-  .stratum-code[data-line-numbers] .stratum-code__line {
+  .stratum-codeblock[data-line-numbers] .stratum-codeblock__line {
     grid-template-columns: calc(var(--_num-w) + var(--stratum-space-8)) minmax(0, 1fr);
   }
 
-  .stratum-code__num {
+  .stratum-codeblock__num {
     padding-inline: var(--stratum-space-4) var(--stratum-space-4);
     color: var(--stratum-code-gutter-fg);
     text-align: end;
@@ -131,15 +131,15 @@
     user-select: none;
   }
 
-  .stratum-code__text {
+  .stratum-codeblock__text {
     padding-inline: var(--stratum-space-5);
     white-space: pre;
     tab-size: 4;
   }
-  .stratum-code[data-line-numbers] .stratum-code__text {
+  .stratum-codeblock[data-line-numbers] .stratum-codeblock__text {
     padding-inline-start: 0;
   }
-  .stratum-code[data-wrap] .stratum-code__text {
+  .stratum-codeblock[data-wrap] .stratum-codeblock__text {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
@@ -147,29 +147,29 @@
   /* Marked lines. The tint is one channel; the inset rule is the second, and a
    * hidden textual marker in the DOM is the third. Under forced colours only
    * the rule survives, which is why it exists. */
-  .stratum-code__line[data-highlight] {
+  .stratum-codeblock__line[data-highlight] {
     background: var(--stratum-code-line-highlight);
     box-shadow: inset 3px 0 0 0 var(--stratum-code-line-highlight-border);
   }
 
   @media (forced-colors: active) {
-    .stratum-code {
+    .stratum-codeblock {
       border-color: CanvasText;
     }
     /* `box-shadow` is stripped in forced colours, so the marking rule has to
      * become an outline. The hidden textual marker in the DOM is the channel
      * that survives regardless. */
-    .stratum-code__line[data-highlight] {
+    .stratum-codeblock__line[data-highlight] {
       background: Canvas;
       box-shadow: none;
       outline: 1px solid CanvasText;
       outline-offset: -1px;
     }
-    .stratum-code__action[aria-pressed='true'] {
+    .stratum-codeblock__action[aria-pressed='true'] {
       border-color: Highlight;
       color: Highlight;
     }
-    .stratum-code__language {
+    .stratum-codeblock__language {
       border-color: CanvasText;
       color: CanvasText;
     }

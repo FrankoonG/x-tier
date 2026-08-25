@@ -14,9 +14,6 @@
   .stratum-snippet[data-size='md'] { --_fs: var(--stratum-text-sm); --_pad: var(--stratum-space-8); }
 
   .stratum-snippet__scroll {
-    /* The block sits on a sunken surface, so the edge affordance has to fade
-     * into that, not into the default surface. */
-    --_fade-color: var(--stratum-surface-sunken);
     border-radius: inherit;
   }
 
@@ -62,7 +59,7 @@
     inset-block-start: var(--stratum-space-3);
     inset-inline-end: var(--stratum-space-3);
     display: inline-flex;
-    /* Above the scroll area's edge affordances, which sit at z-raised. */
+    /* Keep the pinned control above the scrolling code text. */
     z-index: var(--stratum-z-sticky);
   }
 

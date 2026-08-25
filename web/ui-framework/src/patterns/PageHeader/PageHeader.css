@@ -3,8 +3,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--_gap);
+    min-inline-size: 0;
     padding: var(--_py) var(--_px) 0;
     background: var(--stratum-bg);
+    container-type: inline-size;
+    container-name: stratum-page-header;
   }
 
   .stratum-page-header[data-size='sm'] {
@@ -43,6 +46,7 @@
   }
 
   .stratum-page-header__titles {
+    flex: 1 1 auto;
     min-width: 0;
   }
 
@@ -74,7 +78,7 @@
   .stratum-page-header__description {
     margin-top: var(--stratum-space-2);
     font-size: var(--stratum-text-xs);
-    color: var(--stratum-text-muted);
+    color: var(--stratum-text-secondary);
     /* One line's worth. A longer explanation is page content, not chrome. */
     max-width: 80ch;
   }
@@ -83,6 +87,8 @@
     display: flex;
     align-items: center;
     gap: var(--stratum-space-4);
+    max-inline-size: 100%;
+    flex-wrap: wrap;
     flex-shrink: 0;
   }
 
@@ -93,14 +99,14 @@
   }
 
   /* Narrow screens: actions drop below the title rather than squeezing it. */
-  @container (max-width: 560px) {
+  @container stratum-page-header (max-width: 560px) {
     .stratum-page-header__row {
       flex-direction: column;
       align-items: stretch;
       gap: var(--stratum-space-5);
     }
     .stratum-page-header__actions {
-      justify-content: flex-end;
+      justify-content: flex-start;
     }
   }
 

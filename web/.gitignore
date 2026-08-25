@@ -24,3 +24,8 @@ playwright-report/
 # Screenshot, scanning and codegen scripts used while building, not shipped.
 /tools/
 /.treeshake/
+
+# The fake daemon. It serves invented data over the real control-plane
+# envelope so the panel can be built and reviewed before the backend is
+# finished. It has no real behaviour and must never ship.
+/mock/

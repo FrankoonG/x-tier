@@ -1,4 +1,4 @@
-import { forwardRef, type HTMLAttributes } from 'react';
+import { forwardRef, useEffect, useState, type HTMLAttributes } from 'react';
 import clsx from 'clsx';
 import {
   UNOBSERVED,
@@ -196,6 +196,34 @@ export interface TimestampProps extends MetricBaseProps {
   precision?: 'minute' | 'second' | 'millisecond';
 }
 
+/**
+ * Re-render cadence for a relative timestamp, chosen from its own age.
+ *
+ * A relative time computed once at render is WRONG in the direction that
+ * matters: "read 3s ago" still reads "3s ago" twenty minutes later, so the
+ * data looks fresher than it is. On a panel whose whole claim is honesty about
+ * freshness, a label that silently stops aging is worse than no label.
+ *
+ * The interval tracks the granularity actually on screen, so a minute-old
+ * stamp is not re-rendered every second for a string that cannot change:
+ *
+ *   under a minute   1s     "12s ago" changes every second
+ *   under an hour    30s    "5m ago" changes every 60s; 30s halves the lag
+ *   beyond           5min   "3h ago" barely moves
+ *
+ * `null` disables the timer entirely, which is what an absent value and an
+ * absolute display both want.
+ */
+function relativeInterval(value: Date | number | string | null | undefined): number | null {
+  if (value == null) return null;
+  const then = new Date(value as never).getTime();
+  if (Number.isNaN(then)) return null;
+  const age = Math.abs(Date.now() - then);
+  if (age < 60_000) return 1_000;
+  if (age < 3_600_000) return 30_000;
+  return 300_000;
+}
+
 /** A point in time, absolute or relative. */
 export const Timestamp = forwardRef<HTMLSpanElement, TimestampProps>(function Timestamp(
   { value, display = 'absolute', locale, timeZone, precision, size = 'md', muted, className, ...rest },
@@ -206,7 +234,22 @@ export const Timestamp = forwardRef<HTMLSpanElement, TimestampProps>(function Ti
     ...(timeZone !== undefined ? { timeZone } : {}),
     ...(precision !== undefined ? { precision } : {}),
   });
-  const shown = display === 'relative' ? formatRelativeTime(value, Date.now(), locale) : absolute;
+  /*
+   * Ticks only while a relative display is actually mounted, and at a cadence
+   * proportional to the age it is showing. `now` is state rather than a ref so
+   * the change is a render; the interval is re-derived on every tick because
+   * the right cadence changes as the value ages past a minute and past an hour.
+   */
+  const [now, setNow] = useState(() => Date.now());
+  const interval = display === 'relative' ? relativeInterval(value) : null;
+
+  useEffect(() => {
+    if (interval == null) return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), interval);
+    return () => window.clearInterval(id);
+  }, [interval, now]);
+
+  const shown = display === 'relative' ? formatRelativeTime(value, now, locale) : absolute;
   const iso = value != null ? new Date(value as never).toISOString?.() : undefined;
 
   return (

@@ -219,22 +219,22 @@ export const CodeBlock = forwardRef<HTMLDivElement, CodeBlockProps>(function Cod
       data-language={language}
       data-wrap={wrapValue || undefined}
       data-line-numbers={showLineNumbers || undefined}
-      className={clsx('stratum-code', className)}
+      className={clsx('stratum-codeblock', className)}
       style={style}
     >
       {showHeader && (
-        <div className="stratum-code__header">
-          {title != null && <span className="stratum-code__title">{title}</span>}
+        <div className="stratum-codeblock__header">
+          {title != null && <span className="stratum-codeblock__title">{title}</span>}
           {language && (
-            <span className="stratum-code__language" aria-hidden="true">
+            <span className="stratum-codeblock__language" aria-hidden="true">
               {language}
             </span>
           )}
-          <div className="stratum-code__actions">
+          <div className="stratum-codeblock__actions">
             {wrappable && (
               <button
                 type="button"
-                className="stratum-code__action"
+                className="stratum-codeblock__action"
                 aria-pressed={wrapValue}
                 aria-label={labelWrap}
                 title={labelWrap}
@@ -246,7 +246,7 @@ export const CodeBlock = forwardRef<HTMLDivElement, CodeBlockProps>(function Cod
             {copyable && (
               <button
                 type="button"
-                className="stratum-code__action"
+                className="stratum-codeblock__action"
                 data-copy-state={copy.status}
                 aria-label={
                   copy.status === 'copied'
@@ -266,13 +266,13 @@ export const CodeBlock = forwardRef<HTMLDivElement, CodeBlockProps>(function Cod
       )}
 
       <pre
-        className="stratum-code__pre stratum-focus-inset"
+        className="stratum-codeblock__pre stratum-focus-inset"
         style={preStyle}
         tabIndex={0}
         role="group"
         aria-label={label}
       >
-        <code className="stratum-code__code">
+        <code className="stratum-codeblock__code">
           {lines.map((line, index) => {
             const number = startLineNumber + index;
             const isMarked = highlighted.has(number);
@@ -281,15 +281,15 @@ export const CodeBlock = forwardRef<HTMLDivElement, CodeBlockProps>(function Cod
             return (
               <span
                 key={index}
-                className="stratum-code__line"
+                className="stratum-codeblock__line"
                 data-highlight={isMarked || undefined}
               >
                 {showLineNumbers && (
-                  <span className="stratum-code__num" aria-hidden="true">
+                  <span className="stratum-codeblock__num" aria-hidden="true">
                     {number}
                   </span>
                 )}
-                <span className="stratum-code__text">
+                <span className="stratum-codeblock__text">
                   {isMarked && (
                     <span className="stratum-visually-hidden">{labelHighlighted} </span>
                   )}

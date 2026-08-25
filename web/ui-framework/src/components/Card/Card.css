@@ -118,13 +118,6 @@
   .stratum-card__body[data-scroll] > .stratum-card__scroll {
     flex: 1 1 auto;
     min-block-size: 0;
-    /* Cards sit on the elevated surface, so the edge fade has to match it. */
-    --_fade-color: var(--stratum-surface-elevated);
-  }
-
-  .stratum-card[data-variant='outlined'] > .stratum-card__body > .stratum-card__scroll,
-  .stratum-card[data-variant='ghost'] > .stratum-card__body > .stratum-card__scroll {
-    --_fade-color: var(--stratum-surface);
   }
 
   /* Child combinators the whole way down, so this reaches the card's OWN scroll

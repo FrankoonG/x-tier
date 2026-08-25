@@ -12,13 +12,39 @@
     flex-flow: row wrap;
     align-items: center;
   }
+  /* A definition grid, not a column of independently-spread rows: the tracks
+   * live here on the container so every label starts on one x and every value
+   * on the next, whatever the card is doing around them.
+   *
+   * `fit-content()` rather than `max-content` for the label track. The track
+   * still follows the longest label, but stops: one runaway axis name would
+   * otherwise push every value on the card to the right, which is the same
+   * disease as the one below in a politer form. Past the cap the label wraps
+   * and the value column holds still. */
   .stratum-state-matrix[data-layout='stack'] {
-    flex-direction: column;
-    gap: var(--stratum-space-3);
+    display: grid;
+    grid-template-columns: fit-content(10rem) minmax(0, 1fr);
+    align-items: baseline;
+    /* Floor on the label-to-value distance — it applies at the longest label,
+     * where the text reaches the track edge; a shorter one simply leaves the
+     * rest of its track empty. Wider than the 6px items used to carry so the
+     * longest label does not butt against the status dot. */
+    column-gap: var(--stratum-space-6);
+    row-gap: var(--stratum-space-3);
+
+    /* Own query container, so the collapse below answers to the card the matrix
+     * was dropped into — a 300px sidebar and a 1140px panel on one screen —
+     * rather than to the window. A container cannot query itself, hence that
+     * rule targets the item. */
+    container-type: inline-size;
+    container-name: stratum-state-matrix;
   }
   .stratum-state-matrix[data-layout='grid'] {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    /* Column gap must exceed the label-to-value gap inside an item, or the eye
+     * groups one item's value with the next item's label. */
+    column-gap: var(--stratum-space-8);
   }
 
   .stratum-state-matrix__item {
@@ -28,9 +54,73 @@
     min-width: 0;
     font-size: var(--_fs);
   }
-  .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__item,
+
+  /* Stack had the failure the grid layout diagnoses below, and now has the same
+   * answer. `justify-content: space-between` threw the label to one edge of the
+   * card and its value to the other — measured at 219px and 1180px in a 1140px
+   * card — so the value sat nearer the row below than the label it belonged to
+   * and stopped reading as an answer to anything. Neither layout spreads to the
+   * width it happens to be handed any more.
+   *
+   * `display: contents` rather than a nested grid: the item's children are
+   * exactly the <dt> and <dd>, so dropping its box promotes them to grid items
+   * of the <dl> and every row shares ONE label track — the entire point, and
+   * something a per-item grid cannot do, since each item would size its own
+   * label column and the values would step. Subgrid would also do it but buys
+   * nothing here, because the item has no border, background or padding to
+   * keep. Nothing else is lost with the box either: `--_fg`/`--_mark`,
+   * `font-size` and `cursor: help` are inherited and still reach the <dt>/<dd>,
+   * the `[data-status]` descendant selectors still match, and the `title`
+   * tooltip still resolves up the DOM. */
+  .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__item {
+    display: contents;
+  }
+  /* Pinned rather than auto-placed, so a dimension that ever renders one half
+   * of the pair cannot shift every following row by a track. */
+  .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__label {
+    grid-column: 1;
+  }
+  .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__value {
+    grid-column: 2;
+  }
+
+  /* Narrow enough that a bounded label track leaves the mono value with nothing
+   * to be read in — a 300px sidebar card is the case — so the pair stops
+   * sharing a line. The item takes its box back, spans both tracks and stacks
+   * on the same geometry the grid layout uses. The gap inside a pair is
+   * deliberately tighter than the row-gap between pairs; that difference is the
+   * only thing binding a value to its own label once they are no longer
+   * side by side. */
+  @container stratum-state-matrix (max-width: 22rem) {
+    .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__item {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--stratum-space-1);
+      grid-column: 1 / -1;
+    }
+    .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__label {
+      align-self: flex-start;
+    }
+    .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__value {
+      inline-size: 100%;
+      max-inline-size: 100%;
+    }
+    .stratum-state-matrix[data-layout='stack'] .stratum-state-matrix__text {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  /* Grid items stack rather than spreading. In a wide auto-fit column,
+   * `space-between` throws the label and its value to opposite ends, and at
+   * that distance the value sits closer to the NEXT column's label than to its
+   * own — so the reading order silently inverts. Stacking removes the
+   * ambiguity without needing the column width to cooperate. */
   .stratum-state-matrix[data-layout='grid'] .stratum-state-matrix__item {
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--stratum-space-1);
   }
 
   .stratum-state-matrix__label {
@@ -59,6 +149,7 @@
   }
 
   .stratum-state-matrix__text {
+    min-inline-size: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -126,9 +217,19 @@
     font-style: italic;
   }
 
-  /* Explicit configuration marker — this value was chosen, not fallen back to. */
+  /* Explicit configuration marker — this value was chosen, not fallen back to.
+   *
+   * The gap is load-bearing, not cosmetic. At 10px hard against the last letter
+   * of its value the pin stopped reading as a mark and started reading as a
+   * character: "enforced" plus a stray glyph, which invites the operator to
+   * wonder what is broken about the word. It is a separate claim about the
+   * value and needs to look like one. `align-self` keeps it centred on the
+   * text's box rather than sitting on the baseline, where a 10px glyph
+   * otherwise hangs low against a 12px word. */
   .stratum-state-matrix__explicit {
     display: inline-flex;
+    align-self: center;
+    margin-inline-start: var(--stratum-space-3);
     color: var(--stratum-accent);
     opacity: 0.75;
   }

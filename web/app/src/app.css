@@ -1,0 +1,92 @@
+/* ---------------------------------------------------------------------------
+ * APP STYLES
+ *
+ * Almost nothing. The framework owns the reset, the tokens and every component
+ * surface; this file exists for the three things a consuming app legitimately
+ * owns — the document background, the page rhythm, and the transition between
+ * its own screens, which no component can author for it.
+ *
+ * Anything longer than this belongs in the framework, because a rule written
+ * here is one the next consumer of `@stratum/ui` has to write again.
+ * ------------------------------------------------------------------------- */
+@layer stratum.overrides {
+  html,
+  body,
+  #root {
+    block-size: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--stratum-bg);
+    color: var(--stratum-text);
+    font-family: var(--stratum-font-sans);
+  }
+
+  /* -- The screen transition ------------------------------------------------
+   * Modelled on `TabPanel.css`, which solves the same problem: a region whose
+   * contents are replaced wholesale.
+   *
+   * Entry only, and no `display` transition. `transition-behavior:
+   * allow-discrete` would defer `display: none` to the end of the animation,
+   * leaving both screens in flow and summing the container height — the page
+   * would grow to the height of two screens and snap back. React unmounts the
+   * outgoing screen immediately, which is exactly the behaviour that avoids it.
+   *
+   * The tokens carry `--stratum-motion-distance`, so reduced motion zeroes the
+   * travel and halves the fade with no kill switch here. */
+  /* The wrapper is also the height chain, because nothing else can be. `Screen`
+   * asks its root for `min-height: 100%`, and a percentage against a block box
+   * of automatic height resolves to zero — so that request has always been
+   * inert and a screen has always stopped at its content, leaving the window
+   * below it empty. `main` does have a definite height (the shell's `1fr` row
+   * of a `100dvh` grid), so the percentage resolves HERE.
+   *
+   * `block-size`, not `min-block-size`, and `minmax(0, 1fr)` rather than the
+   * default auto row: both are what make the height DEFINITE. An auto row grows
+   * to its content, which leaves a `Screen fill` no ceiling to shrink against —
+   * a table longer than the window would push the page taller instead of
+   * scrolling inside its own card, and the sticky header would have no
+   * scrollport to pin to. The `0` floor is the usual one: a grid item's `auto`
+   * minimum refuses to shrink below its content.
+   *
+   * A screen that is NOT filling still overflows this box exactly as before and
+   * `main` scrolls it — grid items are free to exceed their area, and nothing
+   * in this chain clips. */
+  .xtier-screen {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    block-size: 100%;
+    opacity: 1;
+    translate: 0 0;
+    transition:
+      opacity var(--stratum-duration-sm) var(--stratum-ease-out),
+      translate var(--stratum-duration-lg) var(--stratum-ease-signature);
+  }
+
+  @starting-style {
+    .xtier-screen {
+      opacity: 0;
+      /* Down the nav order enters from below, up from above. `--_dy` is set
+       * per render from the index delta, so the movement matches the direction
+       * the operator travelled rather than being a decorative constant. */
+      translate: 0 calc(var(--_dy, 1) * var(--stratum-slide));
+    }
+  }
+
+  /* -- Content that appears in place ---------------------------------------
+   * A result card, a failure notice, a form that opens inline. Several hundred
+   * pixels currently pop in and shove everything below them; a fade over
+   * `duration-xs` is enough to make the arrival legible without being a
+   * performance. */
+  .xtier-appear {
+    opacity: 1;
+    transition: opacity var(--stratum-duration-xs) var(--stratum-ease-signature);
+  }
+
+  @starting-style {
+    .xtier-appear {
+      opacity: 0;
+    }
+  }
+}

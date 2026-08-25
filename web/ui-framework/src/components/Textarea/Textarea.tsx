@@ -9,6 +9,7 @@ import {
 import clsx from 'clsx';
 import { useControllableState } from '../../hooks/useControllableState';
 import { isAriaInvalid, useMergedRefs } from '../Input/Input';
+import { useFieldControl } from '../Field/Field';
 import './Textarea.css';
 
 export type TextareaSize = 'sm' | 'md' | 'lg';
@@ -59,9 +60,9 @@ const useIsomorphicLayoutEffect = typeof document === 'undefined' ? useEffect : 
  */
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
   {
-    size = 'md',
+    size: sizeProp,
     variant = 'default',
-    invalid = false,
+    invalid: invalidProp,
     monospace = false,
     autoResize = false,
     minRows = 3,
@@ -75,11 +76,21 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     disabled = false,
     readOnly = false,
     rows,
+    required: requiredProp,
+    id: idProp,
     'aria-invalid': ariaInvalidProp,
+    'aria-required': ariaRequiredProp,
+    'aria-describedby': ariaDescribedByProp,
     ...rest
   },
   ref,
 ) {
+  const field = useFieldControl();
+  const size = sizeProp ?? field.size;
+  const invalid = invalidProp ?? field.invalid;
+  const id = idProp ?? field.id;
+  const describedBy = clsx(field.describedBy, ariaDescribedByProp) || undefined;
+  const ariaRequired = ariaRequiredProp ?? (requiredProp || field.required || undefined);
   const innerRef = useRef<HTMLTextAreaElement | null>(null);
   const mergedRef = useMergedRefs<HTMLTextAreaElement>(innerRef, ref);
   const lastWidthRef = useRef<number | null>(null);
@@ -166,6 +177,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     <textarea
       {...rest}
       ref={mergedRef}
+      id={id}
       data-stratum="textarea"
       data-size={size}
       data-variant={variant}
@@ -179,7 +191,10 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       rows={rows ?? lowRows}
       disabled={disabled}
       readOnly={readOnly}
+      required={requiredProp}
       aria-invalid={ariaInvalidProp ?? (invalid || undefined)}
+      aria-required={ariaRequired}
+      aria-describedby={describedBy}
       onChange={(event) => {
         setValue(event.target.value);
         onChange?.(event);

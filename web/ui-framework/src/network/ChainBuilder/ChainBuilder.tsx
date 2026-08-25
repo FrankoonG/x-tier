@@ -310,19 +310,35 @@ export const ChainBuilder = forwardRef<HTMLDivElement, ChainBuilderProps>(functi
   // Not memoised: a chain is a handful of steps, and the label props this reads
   // change identity on every render anyway, so a memo would never hit.
   const hops: PathHop[] = resolved.map((step, i) => {
-    const broken = step.validity === 'invalid' || step.validity === 'empty';
     const hop: PathHop = {
       id: `${uid}hop${i}`,
       label: step.value === '' ? UNSET_HOP : optionLabel(step.option ?? { value: step.value }),
-      // An unchosen or unavailable step is a hole in the path, and PathChain's
-      // tail-dye then correctly reports everything after it as unreachable
-      // through this chain — which is exactly true.
-      status: broken ? 'broken' : (step.option?.status ?? 'unknown'),
+      /*
+       * An unchosen step is UNKNOWN, not broken.
+       *
+       * Both are holes in the path and PathChain's tail-dye correctly reports
+       * everything after either as unreachable through this chain. But they are
+       * not the same claim: `invalid` says the operator picked something that
+       * cannot work, while `empty` says they have not picked yet. Painting a
+       * blank step in the failure colour tells them they have made a mistake
+       * before they have made a choice — and this component already knows the
+       * difference, since `labelEmptyStep` reads "Not chosen yet." while
+       * `labelInvalidStep` names the value that failed.
+       */
+      status:
+        step.validity === 'invalid'
+          ? 'broken'
+          : step.validity === 'empty'
+            ? 'unknown'
+            : (step.option?.status ?? 'unknown'),
     };
     const detail = reasonFor(step) ?? step.option?.detail;
     if (detail !== undefined) hop.detail = detail;
     return hop;
   });
+
+  /** Has the operator committed to anything yet? Drives the preview below. */
+  const hasChosenStep = resolved.some((step) => step.value !== '');
 
   const atCeiling = maxSteps !== undefined && total >= maxSteps;
   const atFloor = total <= minSteps;
@@ -366,7 +382,18 @@ export const ChainBuilder = forwardRef<HTMLDivElement, ChainBuilderProps>(functi
       {showPreview && (
         <div className="stratum-chain-builder__preview">
           <span className="stratum-chain-builder__preview-label">{labelPreview}</span>
-          {total === 0 ? (
+          {/*
+            * Nothing chosen anywhere reads as an EMPTY chain, not as a chain of
+            * holes. `total === 0` alone was not enough: the component opens with
+            * one blank step, so the preview rendered a lone `UNSET_HOP` beside
+            * the "Resulting chain" label — a bare `?` floating on the strip,
+            * which reads as a missing glyph rather than as a placeholder.
+            *
+            * Once ANY step has a value the full chain is worth showing, holes
+            * included: `nrt / ? / fra` is exactly the picture an operator needs,
+            * because the gap is the thing they still have to fill.
+            */}
+          {total === 0 || !hasChosenStep ? (
             <span className="stratum-chain-builder__empty">{labelEmptyChain}</span>
           ) : (
             <PathChain

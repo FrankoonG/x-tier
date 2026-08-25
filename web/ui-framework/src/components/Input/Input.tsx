@@ -10,6 +10,7 @@ import {
 } from 'react';
 import clsx from 'clsx';
 import { useControllableState } from '../../hooks/useControllableState';
+import { useFieldControl } from '../Field/Field';
 import './Input.css';
 
 export type InputSize = 'sm' | 'md' | 'lg';
@@ -162,9 +163,9 @@ const IconClear = () => (
  */
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   {
-    size = 'md',
+    size: sizeProp,
     variant = 'default',
-    invalid = false,
+    invalid: invalidProp,
     prefix,
     suffix,
     clearable = false,
@@ -181,13 +182,23 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     style,
     disabled = false,
     readOnly = false,
+    required: requiredProp,
+    id: idProp,
     type = 'text',
     'data-stratum': dataStratum = 'input',
     'aria-invalid': ariaInvalidProp,
+    'aria-required': ariaRequiredProp,
+    'aria-describedby': ariaDescribedByProp,
     ...rest
   },
   ref,
 ) {
+  const field = useFieldControl();
+  const size = sizeProp ?? field.size;
+  const invalid = invalidProp ?? field.invalid;
+  const id = idProp ?? field.id;
+  const describedBy = clsx(field.describedBy, ariaDescribedByProp) || undefined;
+  const ariaRequired = ariaRequiredProp ?? (requiredProp || field.required || undefined);
   const innerRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useMergedRefs<HTMLInputElement>(innerRef, ref);
 
@@ -254,12 +265,16 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       <input
         {...rest}
         ref={inputRef}
+        id={id}
         type={type}
         className={clsx('stratum-input__control', inputClassName)}
         value={value}
         disabled={disabled}
         readOnly={readOnly}
+        required={requiredProp}
         aria-invalid={ariaInvalidProp ?? (invalid || undefined)}
+        aria-required={ariaRequired}
+        aria-describedby={describedBy}
         onChange={(event) => {
           setValue(event.target.value);
           onChange?.(event);

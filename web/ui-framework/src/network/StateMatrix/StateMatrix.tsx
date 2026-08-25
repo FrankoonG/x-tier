@@ -18,6 +18,15 @@ export interface StateDimension {
   /**
    * Observed value. `null` or `undefined` means NOT OBSERVED and forces the
    * unobserved presentation regardless of `status`.
+   *
+   * Pass a RAW value wherever one exists. This component decides
+   * observed-vs-unobserved by inspecting what it is given, so a wrapper
+   * element is always truthy — `<Count value={null} />` renders a dash while
+   * the row it sits in claims an observation. Guard the element instead:
+   * `x != null ? <Count value={x} /> : null`. The value text is already set in
+   * the mono face with tabular figures, so wrapping a metric gains little; a
+   * node is still right for something genuinely composite, like a `<Tag>`
+   * naming a profile.
    */
   value?: ReactNode;
   status?: DimensionStatus;
@@ -39,6 +48,29 @@ export interface StateMatrixProps extends Omit<HTMLAttributes<HTMLDListElement>,
   unobservedLabel?: string;
   /** Accessible caption for the whole matrix. */
   label?: string;
+}
+
+/**
+ * An element that will paint its own unobserved dash while the row it sits in
+ * claims an observation.
+ *
+ * Detected from the element's OWN `value` prop rather than from its type: the
+ * whole `Metric` family — and any consumer component following the same
+ * convention — renders a dash when handed nothing. That is precise in both
+ * directions, which matters because a warning that fires on correct code is
+ * one people learn to scroll past:
+ *
+ *   `<Count value={null} />`            warns   — dash under an "observed" row
+ *   `n != null ? <Count value={n}/> : null`  silent — the guard already did it
+ *   `<Tag>relay</Tag>`                  silent  — no `value`, nothing to check
+ */
+function rendersUnobserved(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const el = value as { $$typeof?: unknown; props?: Record<string, unknown> };
+  if (el.$$typeof === undefined || el.props === null || typeof el.props !== 'object') return false;
+  if (!('value' in el.props)) return false;
+  const inner = el.props.value;
+  return inner === null || inner === undefined || inner === '';
 }
 
 /**
@@ -99,6 +131,31 @@ export const StateMatrix = forwardRef<HTMLDListElement, StateMatrixProps>(functi
     >
       {dimensions.map((d) => {
         const observed = d.value !== null && d.value !== undefined && d.value !== '';
+
+        /*
+         * The one way to defeat this component's contract.
+         *
+         * "null means unobserved" can only be honoured on a value this
+         * component can inspect. Hand it `<Count value={null} />` and the test
+         * above sees a React element, marks the row OBSERVED, draws the solid
+         * marker — and the `Count` inside independently prints the unobserved
+         * dash. The row then asserts an observation next to a value that
+         * denies one, which is precisely the collapse this component exists to
+         * prevent.
+         *
+         * Pass the raw value: the CSS already sets the mono face and tabular
+         * figures on `__text` (StateMatrix.css), so wrapping a metric buys
+         * nothing and costs the contract.
+         */
+        if (import.meta.env?.DEV && rendersUnobserved(d.value)) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[stratum] <StateMatrix> dimension "${d.key}" was given an element whose own `
+              + '`value` is empty, so it will render "not observed" inside a row this '
+              + 'component has already marked as observed — an element is always truthy. '
+              + `Pass the raw value, or guard the element: {x != null ? <…value={x}/> : null}.`,
+          );
+        }
         const status: DimensionStatus = observed ? (d.status ?? 'info') : 'unknown';
 
         return (
@@ -119,8 +176,26 @@ export const StateMatrix = forwardRef<HTMLDListElement, StateMatrixProps>(functi
               {d.explicit && observed && (
                 <span className="stratum-state-matrix__explicit" title="Explicitly configured">
                   <span className="stratum-visually-hidden">, explicitly configured</span>
-                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                    <path d="M6 1.5v9M1.5 6h9" transform="rotate(45 6 6)" />
+                  {/* A map pin — "an operator pinned this value here".
+                    *
+                    * Two earlier glyphs were rejected against the rendered
+                    * pixels rather than the source. A plus rotated 45° is an
+                    * ✕, so "relay ✕" read as a negation of the very thing the
+                    * marker was affirming. A dot-plus-stem collapses into an
+                    * arrow at 10px and reads as a link. The teardrop survives
+                    * the size because its silhouette is asymmetric: nothing
+                    * else in a status row is round on top and pointed at the
+                    * bottom.
+                    *
+                    * `evenodd` punches the hole rather than filling it with a
+                    * background colour, so the mark stays correct on any
+                    * surface and under forced colours. */}
+                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+                    <path
+                      fill="currentColor"
+                      fillRule="evenodd"
+                      d="M6 11.2S2.3 7.4 2.3 4.7a3.7 3.7 0 1 1 7.4 0C9.7 7.4 6 11.2 6 11.2Zm0-5.1a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8Z"
+                    />
                   </svg>
                 </span>
               )}

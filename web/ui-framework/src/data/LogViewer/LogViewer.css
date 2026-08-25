@@ -13,6 +13,8 @@
      * the last glyph — the column must fit its widest rendering, because a
      * fixed-width column gives no reflow to make the collision obvious. */
     --_gutter-time: 12.5ch;
+    /* Syslog's widest word, and only the fallback: the component republishes
+     * this inline, sized to the level labels it was actually handed. */
     --_gutter-level: 5.5ch;
     --_gutter-actions: 20px;
     --_viewport-h: 24rem;
@@ -162,6 +164,11 @@
     position: relative;
     height: var(--_viewport-h);
     overflow: auto;
+    /* The scrolling element owns the code surface. In no-wrap mode its text
+     * can extend to `scrollWidth`, beyond the fixed-width outer shell; keeping
+     * this layer transparent makes contrast tooling associate that text with
+     * the narrower shell and report it as partially obscured. */
+    background: var(--_bg);
     /* `overscroll-behavior` keeps a tailing pane from chaining its scroll to
      * the page, which is the fastest way to lose your place in a long log. */
     overscroll-behavior: contain;
@@ -279,8 +286,12 @@
   .stratum-log__level {
     width: calc(var(--_gutter-level) + var(--stratum-space-4));
     padding-inline-end: var(--stratum-space-4);
+    /* The same safety net as `__time`, and this one does get used: the inline
+     * width is clamped, so a label past the clamp has to show that it was cut
+     * rather than run its remaining glyphs under the message. */
     overflow: hidden;
     white-space: nowrap;
+    text-overflow: ellipsis;
     font-weight: var(--stratum-weight-medium);
     text-align: end;
     text-transform: uppercase;

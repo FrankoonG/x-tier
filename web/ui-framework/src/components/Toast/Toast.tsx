@@ -1017,15 +1017,19 @@ function ToastViewport({
   return (
     <ol
       ref={regionRef}
-      tabIndex={-1}
+      tabIndex={ordered.length > 0 ? -1 : undefined}
       // `list-style: none` strips list semantics in Safari/VoiceOver, so the
-      // role is restored explicitly rather than relying on the element.
-      role="list"
+      // role is restored explicitly while items exist. An empty ARIA list is
+      // invalid because it cannot own a listitem, so the persistent viewport
+      // becomes presentational until the first toast arrives.
+      role={ordered.length > 0 ? 'list' : 'presentation'}
       data-stratum="toast-viewport"
       data-placement={placement}
       data-empty={ordered.length === 0 || undefined}
       className="stratum-toast-viewport"
-      aria-label={hotkey.length > 0 ? `${label} (${labelHotkey})` : label}
+      aria-label={
+        ordered.length > 0 ? (hotkey.length > 0 ? `${label} (${labelHotkey})` : label) : undefined
+      }
       // `pointerover`/`pointerout` rather than the enter/leave pair: the
       // viewport itself is `pointer-events: none` so that clicks fall through
       // to the page, and only natively-bubbling events are guaranteed to

@@ -8,31 +8,20 @@ import {
   type Ref,
 } from 'react';
 import clsx from 'clsx';
+import {
+  measureScrollArea,
+  NO_SCROLL_AREA_OVERFLOW,
+  type ScrollAreaEdgeState,
+} from './scrollAreaState';
 import './ScrollArea.css';
 
 export type ScrollAreaOrientation = 'vertical' | 'horizontal' | 'both';
-
-interface EdgeState {
-  scrollable: boolean;
-  top: boolean;
-  bottom: boolean;
-  start: boolean;
-  end: boolean;
-}
-
-const NO_OVERFLOW: EdgeState = {
-  scrollable: false,
-  top: false,
-  bottom: false,
-  start: false,
-  end: false,
-};
 
 export interface ScrollAreaProps extends HTMLAttributes<HTMLDivElement> {
   orientation?: ScrollAreaOrientation;
   /** Caps the viewport height. A number is treated as pixels. */
   maxHeight?: number | string;
-  /** Fade affordances on any edge with content beyond it. Default `true`. */
+  /** Edge affordances on any side with content beyond it. Default `true`. */
   fade?: boolean;
   /**
    * Accessible name for the scroll region. Supply it whenever the area can
@@ -106,7 +95,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
   // State rather than a ref: the effect below must re-run when the node
   // mounts, and a ref never triggers that.
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
-  const [edges, setEdges] = useState<EdgeState>(NO_OVERFLOW);
+  const [edges, setEdges] = useState<ScrollAreaEdgeState>(NO_SCROLL_AREA_OVERFLOW);
 
   const setViewportNode = useCallback(
     (node: HTMLDivElement | null) => {
@@ -118,7 +107,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
 
   useEffect(() => {
     if (!viewport) {
-      setEdges(NO_OVERFLOW);
+      setEdges(NO_SCROLL_AREA_OVERFLOW);
       return;
     }
 
@@ -136,18 +125,11 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
         clientWidth,
       } = viewport;
 
-      const overflowY = scrollHeight - clientHeight > SLACK;
-      const overflowX = scrollWidth - clientWidth > SLACK;
-      const inlineOffset = Math.abs(scrollLeft);
-      const maxInline = scrollWidth - clientWidth;
-
-      const next: EdgeState = {
-        scrollable: overflowY || overflowX,
-        top: overflowY && scrollTop > SLACK,
-        bottom: overflowY && scrollTop + clientHeight < scrollHeight - SLACK,
-        start: overflowX && inlineOffset > SLACK,
-        end: overflowX && inlineOffset < maxInline - SLACK,
-      };
+      const next = measureScrollArea(
+        { scrollTop, scrollLeft, scrollHeight, scrollWidth, clientHeight, clientWidth },
+        orientation,
+        SLACK,
+      );
 
       setEdges((prev) =>
         prev.scrollable === next.scrollable &&
@@ -229,14 +211,6 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
         <div className="stratum-scroll-area__content">{children}</div>
       </div>
 
-      {fade && (
-        <>
-          <span className="stratum-scroll-area__fade" data-edge="top" aria-hidden="true" />
-          <span className="stratum-scroll-area__fade" data-edge="bottom" aria-hidden="true" />
-          <span className="stratum-scroll-area__fade" data-edge="start" aria-hidden="true" />
-          <span className="stratum-scroll-area__fade" data-edge="end" aria-hidden="true" />
-        </>
-      )}
     </div>
   );
 });

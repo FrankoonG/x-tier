@@ -2,13 +2,29 @@ import {
   forwardRef,
   useEffect,
   useId,
-  useState,
+  useRef,
   type HTMLAttributes,
   type ReactNode,
 } from 'react';
 import clsx from 'clsx';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import './AppShell.css';
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function focusableWithin(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true',
+  );
+}
 
 export interface AppShellProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title'> {
   /** Persistent primary navigation. Collapses to an overlay on narrow screens. */
@@ -78,34 +94,60 @@ export const AppShell = forwardRef<HTMLDivElement, AppShellProps>(function AppSh
 ) {
   const contentId = useId();
   const isMobile = useMediaQuery(`(max-width: ${mobileBreakpoint - 1}px)`);
-  const [restoreTo, setRestoreTo] = useState<HTMLElement | null>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const restoreToRef = useRef<HTMLElement | null>(null);
 
   const overlayOpen = isMobile && sidebarOpen;
 
   // Remember what had focus when the overlay opened so it can be handed back.
   useEffect(() => {
     if (overlayOpen) {
-      setRestoreTo(document.activeElement as HTMLElement | null);
-    } else if (restoreTo) {
-      restoreTo.focus?.();
-      setRestoreTo(null);
+      restoreToRef.current = document.activeElement as HTMLElement | null;
+      const frame = window.requestAnimationFrame(() => {
+        const first = focusableWithin(sidebarRef.current)[0] ?? sidebarRef.current;
+        first?.focus();
+      });
+      return () => window.cancelAnimationFrame(frame);
+    } else if (restoreToRef.current) {
+      restoreToRef.current.focus?.();
+      restoreToRef.current = null;
     }
-    // `restoreTo` is intentionally not a dependency: including it would re-run
-    // on the state update this effect itself performs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayOpen]);
 
   useEffect(() => {
     if (!overlayOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onSidebarOpenChange?.(false);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onSidebarOpenChange?.(false);
+        return;
+      }
+      if (e.key !== 'Tab') return;
+
+      const focusable = focusableWithin(sidebarRef.current);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        sidebarRef.current?.focus();
+        return;
+      }
+
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !sidebarRef.current?.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !sidebarRef.current?.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     // Lock the underlying page while the overlay is up.
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
-      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
       document.body.style.overflow = prev;
     };
   }, [overlayOpen, onSidebarOpenChange]);
@@ -131,9 +173,10 @@ export const AppShell = forwardRef<HTMLDivElement, AppShellProps>(function AppSh
       {sidebar && (
         <>
           <div
+            ref={sidebarRef}
             className="stratum-app-shell__sidebar"
             {...(overlayOpen
-              ? { role: 'dialog', 'aria-modal': true, 'aria-label': 'Navigation' }
+              ? { role: 'dialog', 'aria-modal': true, 'aria-label': 'Navigation', tabIndex: -1 }
               : {})}
             // Hidden from the a11y tree and from tab order when off-canvas, so
             // a keyboard user never tabs into an invisible drawer. React 19
@@ -148,6 +191,8 @@ export const AppShell = forwardRef<HTMLDivElement, AppShellProps>(function AppSh
               type="button"
               className="stratum-app-shell__scrim"
               aria-label={closeNavigationLabel}
+              aria-hidden="true"
+              tabIndex={-1}
               onClick={() => onSidebarOpenChange?.(false)}
             />
           )}

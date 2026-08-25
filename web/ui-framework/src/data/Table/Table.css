@@ -28,7 +28,8 @@
     /* Retheming hooks. A consumer can flatten the header onto a coloured panel
      * with `--_head-bg: transparent` and never touch a selector. */
     --_head-bg: var(--stratum-surface);
-    --_pinned-bg: var(--stratum-surface);
+    --_body-bg: var(--stratum-surface);
+    --_pinned-bg: var(--_body-bg);
 
     inline-size: 100%;
     border-collapse: separate;
@@ -65,11 +66,18 @@
     border-radius: var(--stratum-radius-md);
   }
 
-  /* -- Caption -------------------------------------------------------------- */
+  /* -- Caption -------------------------------------------------------------
+   * `padding-inline` matches the cells, so the caption starts on the same
+   * vertical as the first column it describes. Without it the caption is the
+   * only thing in the table flush to the container edge, and inside a
+   * `padding="none"` card — which is how a table is meant to be composed —
+   * it visibly hangs off the left of everything beneath it. */
   .stratum-table__caption {
     caption-side: top;
+    padding-inline: var(--_pad-inline);
     padding-block-end: var(--stratum-space-4);
     color: var(--stratum-text-secondary);
+    background-color: var(--_body-bg);
     font-size: var(--stratum-text-xs);
     text-align: start;
   }
@@ -81,7 +89,7 @@
     padding-inline: var(--_pad-inline);
     background: var(--_head-bg);
     border-block-end: 1px solid var(--stratum-border);
-    color: var(--stratum-text-subtle);
+    color: var(--stratum-text-muted);
     font-size: var(--stratum-text-2xs);
     font-weight: var(--stratum-weight-medium);
     letter-spacing: 0.04em;
@@ -109,7 +117,11 @@
   /* -- Rows ----------------------------------------------------------------- */
   .stratum-table__row {
     --_row-bg: transparent;
-    background: var(--_row-bg);
+    /* A real base belongs to the full-width row. Besides making the paint
+     * model explicit, this lets contrast tooling resolve text that is only
+     * partly visible inside a horizontal scroller: the row still encompasses
+     * the complete cell while an outer card often does not. */
+    background-color: var(--_body-bg);
   }
 
   .stratum-table[data-zebra] .stratum-table__body .stratum-table__row[data-row-index]:nth-child(even) {
@@ -149,6 +161,10 @@
     position: relative;
     padding-block: var(--_pad-block);
     padding-inline: var(--_pad-inline);
+    /* State tints live on the cell over the opaque row base. Opaque zebra and
+     * hover colours stop here; translucent dark-theme selection colours are
+     * accurately composed with --_body-bg by the browser and by axe-core. */
+    background-color: var(--_row-bg);
     border-block-end: 1px solid var(--stratum-divider);
     vertical-align: middle;
     text-align: start;
@@ -538,6 +554,8 @@
    * Fills and shadows are discarded by the OS, so every boundary that carries
    * meaning here is restated as a real border. */
   @media (forced-colors: active) {
+    .stratum-table__caption,
+    .stratum-table__row,
     .stratum-table__header-cell,
     .stratum-table__cell[data-sticky] {
       background: Canvas;

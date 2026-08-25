@@ -1,0 +1,250 @@
+@layer stratum.components {
+  .stratum-stat {
+    /* Two grades, deliberately separate — the same split `StateMatrix` and
+     * `CapabilityGrid` make. `--_fg` paints the value TEXT and answers to
+     * SC 1.4.3's 4.5:1, so it takes the `-fg` tokens. `--_mark` paints the tone
+     * marker, a meaningful graphic, which SC 1.4.11 puts at 3:1 and which looks
+     * washed out at text contrast. One token for both is what puts a coloured
+     * stat below AA. */
+    --_fg: var(--stratum-text);
+    --_mark: var(--stratum-unknown);
+
+    display: flex;
+    flex-direction: column;
+    /* One gap for label -> value -> hint. The three lines are a single block;
+     * spacing them differently makes the hint look like it belongs to whatever
+     * comes next. */
+    gap: var(--stratum-space-2);
+    min-width: 0;
+    margin: 0;
+  }
+
+  /* `md` is the 22px value the type scale reserves for stats; `sm` is one step
+   * down. The unobserved size is one step below whichever is in play — see the
+   * note on `__number[data-unobserved]`. */
+  .stratum-stat[data-size='md'] {
+    --_fs: var(--stratum-text-2xl);
+    --_fs-unobserved: var(--stratum-text-xl);
+  }
+  .stratum-stat[data-size='sm'] {
+    --_fs: var(--stratum-text-xl);
+    --_fs-unobserved: var(--stratum-text-lg);
+  }
+
+  .stratum-stat[data-tone='ok'] {
+    --_fg: var(--stratum-success-fg);  --_mark: var(--stratum-success);
+  }
+  .stratum-stat[data-tone='warn'] {
+    --_fg: var(--stratum-warning-fg);  --_mark: var(--stratum-warning);
+  }
+  .stratum-stat[data-tone='danger'] {
+    --_fg: var(--stratum-danger-fg);   --_mark: var(--stratum-danger);
+  }
+  .stratum-stat[data-tone='info'] {
+    --_fg: var(--stratum-info-fg);     --_mark: var(--stratum-info);
+  }
+
+  /* -- Label -----------------------------------------------------------------
+   * Identical to the StateMatrix axis label, on purpose: an operator reading
+   * both on one screen should not have to learn that two differently-set
+   * micro-labels mean the same kind of thing. The axis name is chrome; the
+   * number is the content. */
+  .stratum-stat__label {
+    color: var(--stratum-text-subtle);
+    font-size: var(--stratum-text-2xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  /* -- Value ---------------------------------------------------------------- */
+
+  .stratum-stat__value {
+    display: flex;
+    /* Baseline, so a value built from mixed type sizes stays locked to one
+     * line; the glyph and the marker opt out below because an svg's baseline is
+     * its bottom edge and would sit low against the digits. */
+    align-items: baseline;
+    gap: var(--stratum-space-3);
+    min-width: 0;
+    margin: 0;
+    color: var(--_fg);
+    font-size: var(--_fs);
+    font-weight: var(--stratum-weight-semibold);
+    line-height: var(--stratum-leading-none);
+    /* Tabular figures, matching every other live reading in the framework. A
+     * column of stats repolls, and proportional digits make each value shift
+     * horizontally on every update; `tnum` is also what keeps two stacked
+     * stats' digits in the same vertical rhythm. */
+    font-variant-numeric: var(--stratum-numeric);
+    font-feature-settings: 'tnum' 1;
+  }
+
+  .stratum-stat__number {
+    min-width: 0;
+    /* Never truncated. An ellipsised number is a wrong number — "20…" for 2000
+     * is a worse failure than a value that wraps — so a long reading is allowed
+     * to break rather than be hidden. Values are short by contract; this is the
+     * safety net, not the layout. */
+    overflow-wrap: anywhere;
+  }
+
+  /* NOT OBSERVED.
+   *
+   * The words, not a dash. At this size a lone em dash reads as a rendering
+   * failure rather than a statement — `Gauge` can use one because it sits in a
+   * dial with a dashed track explaining it, and a bare stat has no such frame.
+   * The treatment otherwise matches StateMatrix exactly: sans face, italic,
+   * `unknown-fg` (the text grade, 4.5:1 — not the graphic-grade `unknown`).
+   *
+   * Also a size and weight step down, as the Gauge readout does. "not observed"
+   * is a phrase, and a phrase set at 22px semibold shouts louder than the
+   * measured values it sits beside — which would make the missing data the
+   * loudest thing on the page. */
+  .stratum-stat__number[data-unobserved] {
+    color: var(--stratum-unknown-fg);
+    font-family: var(--stratum-font-sans);
+    font-size: var(--_fs-unobserved);
+    font-style: italic;
+    font-weight: var(--stratum-weight-normal);
+  }
+
+  /* Leading glyph. Sized in `em` so it tracks the value's type size across both
+   * `size` variants and any consumer zoom, and left on `currentColor` so a
+   * toned stat tints its glyph with it rather than drifting neutral. */
+  .stratum-stat__icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-self: center;
+    font-size: 0.78em;
+    line-height: 0;
+  }
+  .stratum-stat__icon > svg {
+    inline-size: 1em;
+    block-size: 1em;
+  }
+
+  /* -- Tone marker -----------------------------------------------------------
+   * The non-colour channel. Each tone gets a distinct SHAPE as well as a
+   * distinct hue, reusing the StateMatrix vocabulary — filled dot, hollow ring,
+   * square — so an operator does not have to learn a second shape language.
+   * `neutral` renders no marker at all: there is nothing to say, and a marker
+   * that is always present stops carrying meaning. */
+  .stratum-stat__tone {
+    flex-shrink: 0;
+    align-self: center;
+    /* `em`, not px: at `sm` a 7px dot that suited 22px digits reads as a speck. */
+    inline-size: 0.34em;
+    block-size: 0.34em;
+    border-radius: var(--stratum-radius-full);
+    background: var(--_mark);
+  }
+
+  /* warn — hollow ring */
+  .stratum-stat[data-tone='warn'] .stratum-stat__tone {
+    background: transparent;
+    box-shadow: inset 0 0 0 0.1em var(--_mark);
+  }
+  /* danger — square */
+  .stratum-stat[data-tone='danger'] .stratum-stat__tone {
+    border-radius: var(--stratum-radius-none);
+  }
+
+  .stratum-stat__hint {
+    margin: 0;
+    color: var(--stratum-text-muted);
+    font-size: var(--stratum-text-2xs);
+    line-height: var(--stratum-leading-snug);
+  }
+
+  /* Forced colours drop every author colour, so the tone hue is gone and the
+   * marker shape plus the visually-hidden tone word are the only channels left
+   * — which is exactly why both exist. The marker needs the adjust opt-out or
+   * its background is forced to Canvas and it disappears entirely. */
+  @media (forced-colors: active) {
+    .stratum-stat__value {
+      color: CanvasText;
+    }
+    .stratum-stat__number[data-unobserved] {
+      color: GrayText;
+    }
+    .stratum-stat__tone {
+      background: CanvasText;
+      forced-color-adjust: none;
+    }
+    /* The ring's inset shadow is discarded here, so the hollow shape has to be
+     * rebuilt from a border or `warn` collapses to an invisible box. */
+    .stratum-stat[data-tone='warn'] .stratum-stat__tone {
+      background: Canvas;
+      border: 1px solid CanvasText;
+      box-shadow: none;
+    }
+  }
+
+  /* -- Group ---------------------------------------------------------------- */
+
+  .stratum-stat-group {
+    /* The track minimum is a property of the type size, not of the page, so it
+     * lives here in `rem` — it grows with a zoomed root where a px minimum
+     * would keep packing columns that no longer fit their digits. Override
+     * `--_min` to force a column count. */
+    --_min: 8.5rem;
+    --_col-gap: var(--stratum-space-12);
+    --_row-gap: var(--stratum-space-16);
+    --_rule: var(--stratum-divider);
+    --_rule-w: 1px;
+
+    display: grid;
+    /* `min(100%, --_min)`: a container narrower than one column collapses to a
+     * single full-width track instead of overflowing it. */
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--_min)), 1fr));
+    column-gap: var(--_col-gap);
+    /* Rows sit further apart than columns. Wrapped stats scan vertically, and
+     * the extra separation is what keeps a hint attached to its own value
+     * rather than to the label below it. */
+    row-gap: var(--_row-gap);
+    min-width: 0;
+  }
+
+  /* -- Separators ------------------------------------------------------------
+   * OFF BY DEFAULT. Space is the separator; a rule between every stat is the
+   * point at which the discipline turns into decoration. Turn it on for the one
+   * case space cannot handle: stats sitting edge-to-edge inside a card where
+   * the column gap alone is ambiguous about which hint belongs to which value.
+   *
+   * Drawn as a pseudo-element parked half a gap to the item's inline-start, so
+   * the rule is centred in the gap rather than hugging one column. The first
+   * item of EVERY row puts its rule half a gap outside the grid, where
+   * `overflow: clip` removes it — which is the whole reason this is not
+   * `:first-child`: that would unrule the first item of the first row only and
+   * leave a stray leading rule at the start of every row after it, the exact
+   * artefact that makes bordered grids look broken when they wrap.
+   *
+   * `clip` rather than `hidden`: it establishes no scroll container, so it
+   * cannot produce a scrollbar or swallow a focus ring scrolled into view.
+   *
+   * The one constraint: the group must not carry inline padding, or the rule
+   * lands inside the padding instead of outside the clip edge and becomes
+   * visible at the start of each row. Pad the container around it instead. */
+  .stratum-stat-group[data-separated] {
+    overflow: clip;
+  }
+
+  .stratum-stat-group[data-separated] > * {
+    position: relative;
+  }
+
+  .stratum-stat-group[data-separated] > *::before {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: calc(var(--_col-gap) / -2);
+    inline-size: var(--_rule-w);
+    background: var(--_rule);
+  }
+
+  @media (forced-colors: active) {
+    .stratum-stat-group[data-separated] > *::before {
+      background: CanvasText;
+    }
+  }
+}

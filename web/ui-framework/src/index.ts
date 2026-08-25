@@ -32,6 +32,13 @@ export { useReducedMotion } from './hooks/useReducedMotion';
 export { useScrollLock } from './hooks/useScrollLock';
 
 /* ------------------------------------------------------------------------ */
+/* Icons */
+/* ------------------------------------------------------------------------ */
+
+export { ICON_ATTRS, IconAlert, IconArrowBoth, IconArrowLeft, IconArrowRight, IconBook, IconCheck, IconChevronDown, IconChevronLeft, IconChevronRight, IconChevronUp, IconClock, IconClose, IconCopy, IconDaemon, IconDiagnostics, IconEdit, IconExternal, IconEye, IconFilter, IconGlobe, IconIdentity, IconInbound, IconInfo, IconLink, IconLock, IconMenu, IconMinus, IconMoon, IconMore, IconOverview, IconPath, IconPeers, IconPlay, IconPlug, IconPlus, IconRefresh, IconRelay, IconSearch, IconSettings, IconShield, IconSun, IconSystem, IconTerminal, IconTopology, IconTrash, IconUnlock } from './icons/Icon';
+export type { IconProps } from './icons/Icon';
+
+/* ------------------------------------------------------------------------ */
 /* Primitives */
 /* ------------------------------------------------------------------------ */
 
@@ -96,6 +103,8 @@ export { Kbd } from './components/Kbd/Kbd';
 export type { KbdProps, KbdSize } from './components/Kbd/Kbd';
 export { KeyValueEditor, parseKeyValueText, serializeKeyValuePairs } from './components/KeyValueEditor/KeyValueEditor';
 export type { KeyValueEditorMode, KeyValueEditorProps, KeyValueField, KeyValueLineIssue, KeyValuePair, KeyValueRowIssue } from './components/KeyValueEditor/KeyValueEditor';
+export { Mark } from './components/Mark/Mark';
+export type { MarkLoading, MarkProps, MarkTone } from './components/Mark/Mark';
 export { Menu, MenuCheckboxItem, MenuContext, MenuItem, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator } from './components/Menu/Menu';
 export type { MenuCheckboxItemProps, MenuContextValue, MenuGetItemProps, MenuItemProps, MenuLabelProps, MenuProps, MenuRadioGroupProps, MenuRadioItemProps, MenuSeparatorProps } from './components/Menu/Menu';
 export { Meter, meterLevel } from './components/Meter/Meter';
@@ -125,6 +134,8 @@ export { ScrollArea } from './components/ScrollArea/ScrollArea';
 export type { ScrollAreaOrientation, ScrollAreaProps } from './components/ScrollArea/ScrollArea';
 export { SearchInput } from './components/SearchInput/SearchInput';
 export type { SearchInputProps } from './components/SearchInput/SearchInput';
+export { Hint, SectionLabel } from './components/SectionLabel/SectionLabel';
+export type { HintProps, SectionLabelProps } from './components/SectionLabel/SectionLabel';
 export { SegmentedControl } from './components/SegmentedControl/SegmentedControl';
 export type { SegmentedControlItem, SegmentedControlProps, SegmentedControlSize } from './components/SegmentedControl/SegmentedControl';
 export { Select } from './components/Select/Select';
@@ -137,8 +148,6 @@ export { Slider } from './components/Slider/Slider';
 export type { SliderMark, SliderProps, SliderSize, SliderTooltipMode, SliderValue } from './components/Slider/Slider';
 export { Snippet } from './components/Snippet/Snippet';
 export type { SnippetProps, SnippetSize } from './components/Snippet/Snippet';
-export { Mark } from './components/Mark/Mark';
-export type { MarkLoading, MarkProps, MarkTone } from './components/Mark/Mark';
 export { Spinner } from './components/Spinner/Spinner';
 export type { SpinnerProps, SpinnerSize } from './components/Spinner/Spinner';
 export { Steps } from './components/Steps/Steps';
@@ -188,6 +197,8 @@ export { ansi256, needsAnsiParse, parseAnsi, stripAnsi } from './data/LogViewer/
 export type { AnsiSpan, AnsiStyle } from './data/LogViewer/ansi';
 export { Sparkline } from './data/Sparkline/Sparkline';
 export type { SparklineDatum, SparklineProps, SparklineSeries } from './data/Sparkline/Sparkline';
+export { Stat, StatGroup } from './data/Stat/Stat';
+export type { StatGroupProps, StatProps, StatTone } from './data/Stat/Stat';
 export { Table, computeColumnLayout } from './data/Table/Table';
 export type { TableAlign, TableCSSVars, TableColumn, TableDensity, TableProps, TableSelection, TableStickySide } from './data/Table/Table';
 export { DisclosureGlyph, SELECT_COLUMN_WIDTH, SelectionCheckbox, SkeletonRows, SortGlyph, resolvePxWidth, stopRowPropagation } from './data/Table/parts';
@@ -268,6 +279,8 @@ export { AppShell } from './patterns/AppShell/AppShell';
 export type { AppShellProps } from './patterns/AppShell/AppShell';
 export { PageHeader } from './patterns/PageHeader/PageHeader';
 export type { PageHeaderProps } from './patterns/PageHeader/PageHeader';
+export { Columns, Row, Screen } from './patterns/Screen/Screen';
+export type { ColumnsProps, RowProps, ScreenProps } from './patterns/Screen/Screen';
 export { Sidebar } from './patterns/Sidebar/Sidebar';
 export type { SidebarItem, SidebarItemRenderProps, SidebarProps, SidebarSection } from './patterns/Sidebar/Sidebar';
 export { Topbar } from './patterns/Topbar/Topbar';

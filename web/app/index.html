@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>X-Tier</title>
+
+    <!--
+      Blocking, and first in <head> on purpose.
+
+      React resolves the theme on hydration, which is one paint too late: the
+      document has already been painted light, so anyone on dark gets a white
+      flash on every load. This runs before the first paint and sets the same
+      two things ThemeProvider sets.
+
+      The key must match `storageKey` in main.tsx. This is a classic blocking
+      script rather than a module so it still runs before first paint, while
+      remaining compatible with the production `script-src 'self'` policy.
+    -->
+    <script src="/theme-init.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
