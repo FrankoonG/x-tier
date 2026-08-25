@@ -1,6 +1,6 @@
 module github.com/FrankoonG/x-tier
 
-go 1.26.3
+go 1.26.7
 
 require (
 	github.com/FrankoonG/rendr v0.0.0-20260821041829-5426c235c520
