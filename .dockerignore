@@ -6,6 +6,7 @@ docs
 node_modules
 playwright-report
 test-results
+test/final-regression/.build
 web/.formlab-tmp
 web/.shots
 web/.tmp-display-check
