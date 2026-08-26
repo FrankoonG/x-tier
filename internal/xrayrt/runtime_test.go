@@ -181,10 +181,8 @@ func TestRuntimeCloseContextDeadlineIncludesCloseGateWait(t *testing.T) {
 }
 
 func TestReplaceInboundsPartialRemovalRestoresCompleteOldSet(t *testing.T) {
-	oldA := reserveRuntimeAddress(t)
-	oldB := reserveRuntimeAddress(t)
-	newA := reserveRuntimeAddress(t)
-	newB := reserveRuntimeAddress(t)
+	addresses := reserveRuntimeAddresses(t, 4)
+	oldA, oldB, newA, newB := addresses[0], addresses[1], addresses[2], addresses[3]
 	oldConfigs := []*core.InboundHandlerConfig{
 		testSOCKSInbound("old-a", oldA),
 		testSOCKSInbound("old-b", oldB),
@@ -211,8 +209,8 @@ func TestReplaceInboundsPartialRemovalRestoresCompleteOldSet(t *testing.T) {
 }
 
 func TestReplaceInboundsRestoreFailureFailStopsAndCanRecover(t *testing.T) {
-	oldAddress := reserveRuntimeAddress(t)
-	newAddress := reserveRuntimeAddress(t)
+	addresses := reserveRuntimeAddresses(t, 2)
+	oldAddress, newAddress := addresses[0], addresses[1]
 	oldConfigs := []*core.InboundHandlerConfig{testSOCKSInbound("managed", oldAddress)}
 	runtime, err := StartRuntime(context.Background(), StartOptions{Inbounds: oldConfigs})
 	if err != nil {
@@ -312,15 +310,35 @@ func testSOCKSInbound(tag, address string) *core.InboundHandlerConfig {
 
 func reserveRuntimeAddress(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	return reserveRuntimeAddresses(t, 1)[0]
+}
+
+func reserveRuntimeAddresses(t *testing.T, count int) []string {
+	t.Helper()
+	if count <= 0 {
+		t.Fatalf("reservation count = %d, want positive", count)
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	listeners := make([]net.Listener, 0, count)
+	addresses := make([]string, 0, count)
+	for range count {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
+			t.Fatal(err)
+		}
+		listeners = append(listeners, listener)
+		addresses = append(addresses, listener.Addr().String())
 	}
-	return address
+	var closeErr error
+	for _, listener := range listeners {
+		closeErr = errors.Join(closeErr, listener.Close())
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	return addresses
 }
 
 func assertRuntimePortState(t *testing.T, address string, wantOpen bool) {
