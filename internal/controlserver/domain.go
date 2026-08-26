@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/FrankoonG/x-tier/internal/configops"
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/identity"
@@ -189,6 +190,13 @@ func (s *Server) handleDomainRead(w http.ResponseWriter, r *http.Request) {
 		payload = map[string]any{"ok": true, "revision": cfg.Revision, "settings": cfg.System}
 	case controlapi.DomainPeersPath:
 		payload = map[string]any{"ok": true, "revision": cfg.Revision, "target_local_node_id": cfg.Node.NodeID, "peers": cfg.Peers}
+	case controlapi.DomainNodeEgressGrantsPath:
+		payload = map[string]any{
+			"ok":                   true,
+			"revision":             cfg.Revision,
+			"target_local_node_id": cfg.Node.NodeID,
+			"node_egress_grants":   domainNodeEgressGrantViews(cfg.NodeEgressGrants),
+		}
 	case controlapi.DomainInboundsPath:
 		payload = map[string]any{"ok": true, "revision": cfg.Revision, "target_local_node_id": cfg.Node.NodeID, "inbounds": cfg.NodeInbound}
 	case controlapi.DomainXrayProfilesPath:
@@ -423,6 +431,16 @@ func (s *Server) handleDomainMutation(w http.ResponseWriter, r *http.Request) {
 		raw, err = decodeDomainBody(r.Body, &request)
 		meta = request.DomainMutationRequest
 		mutation = peerStateMutation(request)
+	case r.URL.Path == controlapi.DomainNodeEgressGrantsPath && r.Method == http.MethodPut:
+		var request controlapi.NodeEgressGrantPutRequest
+		raw, err = decodeDomainBody(r.Body, &request)
+		meta = request.DomainMutationRequest
+		mutation = nodeEgressGrantPutMutation(request)
+	case r.URL.Path == controlapi.DomainNodeEgressGrantsPath && r.Method == http.MethodDelete:
+		var request controlapi.NodeEgressGrantRevokeRequest
+		raw, err = decodeDomainBody(r.Body, &request)
+		meta = request.DomainMutationRequest
+		mutation = nodeEgressGrantRevokeMutation(request)
 	case r.URL.Path == controlapi.DomainXrayProfilesPath && r.Method == http.MethodPut:
 		var request controlapi.XrayProfilePutRequest
 		raw, err = decodeDomainBody(r.Body, &request)
@@ -820,16 +838,43 @@ func peerCreateMutation(request controlapi.PeerCreateRequest) domainMutation {
 
 func peerUpdateMutation(request controlapi.PeerUpdateRequest) domainMutation {
 	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
-		peer, index, ok := configstore.FindPeer(cfg.Peers, request.Name)
+		var (
+			peer    configstore.PeerConfig
+			revoked bool
+		)
+		if request.Patch.Direction != nil {
+			result, err := configops.UpdatePeerDirection(
+				*cfg,
+				request.Name,
+				route.Direction(*request.Patch.Direction),
+				request.Patch.RevokeNodeEgressGrant,
+			)
+			if err != nil {
+				return nil, err
+			}
+			*cfg = result.Config
+			peer = result.Peer
+			revoked = result.NodeEgressGrantRevoked
+		} else {
+			if request.Patch.RevokeNodeEgressGrant {
+				return nil, domainFailure{
+					code: "domain.request_invalid",
+					err:  fmt.Errorf("revoke_node_egress_grant requires direction"),
+				}
+			}
+			var ok bool
+			peer, _, ok = configstore.FindPeer(cfg.Peers, request.Name)
+			if !ok {
+				return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
+			}
+		}
+		_, index, ok := configstore.FindPeer(cfg.Peers, peer.NodeID)
 		if !ok {
 			return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
 		}
 		if request.Patch.Addr != nil {
 			peer.Addr = *request.Patch.Addr
 			peer.GatewayAddr = *request.Patch.Addr
-		}
-		if request.Patch.Direction != nil {
-			peer.Direction = route.Direction(*request.Patch.Direction)
 		}
 		if request.Patch.XrayProfileID != nil {
 			peer.XrayProfileID = *request.Patch.XrayProfileID
@@ -838,39 +883,127 @@ func peerUpdateMutation(request controlapi.PeerUpdateRequest) domainMutation {
 			peer.NestedEnabled = *request.Patch.NestedEnabled
 		}
 		cfg.Peers[index] = peer
-		return map[string]any{"peer": peer}, nil
+		return map[string]any{
+			"peer":                      peer,
+			"node_egress_grant_revoked": revoked,
+		}, nil
 	}
 }
 
 func peerStateMutation(request controlapi.PeerStateRequest) domainMutation {
 	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
-		peer, index, ok := configstore.FindPeer(cfg.Peers, request.Name)
-		if !ok {
-			return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
+		result, err := configops.SetPeerEnabled(*cfg, request.Name, request.Enabled, request.Reason)
+		if err != nil {
+			return nil, err
 		}
-		peer.Enabled = request.Enabled
-		if request.Enabled {
-			peer.DisabledCause = ""
-		} else {
-			peer.DisabledCause = request.Reason
-			if peer.DisabledCause == "" {
-				peer.DisabledCause = "disabled"
-			}
-		}
-		cfg.Peers[index] = peer
-		return map[string]any{"peer": peer}, nil
+		*cfg = result.Config
+		return map[string]any{"peer": result.Peer}, nil
 	}
 }
 
 func peerRemoveMutation(request controlapi.PeerRemoveRequest) domainMutation {
 	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
-		_, index, ok := configstore.FindPeer(cfg.Peers, request.Name)
-		if !ok {
-			return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
+		result, err := configops.RemovePeer(*cfg, request.Name)
+		if err != nil {
+			return nil, err
 		}
-		cfg.Peers = append(cfg.Peers[:index], cfg.Peers[index+1:]...)
-		return map[string]any{"removed": request.Name}, nil
+		*cfg = result.Config
+		return map[string]any{
+			"removed":                   result.Peer.Name,
+			"node_id":                   result.Peer.NodeID,
+			"node_egress_grant_revoked": result.NodeEgressGrantRevoked,
+		}, nil
 	}
+}
+
+func nodeEgressGrantPutMutation(request controlapi.NodeEgressGrantPutRequest) domainMutation {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
+		if request.SourceNodeID == "" {
+			return nil, domainFailure{
+				code: "config.node_egress_grant_source_required",
+				err:  fmt.Errorf("source_node_id is required"),
+			}
+		}
+		peer, found := domainDirectPeerByNodeID(cfg.Peers, request.SourceNodeID)
+		if !found {
+			return nil, domainFailure{
+				code: "config.node_egress_grant_peer_unknown",
+				err:  fmt.Errorf("source peer was not found"),
+			}
+		}
+		if !peer.Direction.CanAcceptInbound() {
+			return nil, domainFailure{
+				code: "config.node_egress_grant_peer_inbound_required",
+				err:  fmt.Errorf("source peer cannot accept inbound traffic"),
+			}
+		}
+		grant := configstore.NodeEgressGrant{
+			SourceNodeID:      request.SourceNodeID,
+			Network:           request.Network,
+			AllowCIDRs:        append([]string{}, request.AllowCIDRs...),
+			AllowPrivateCIDRs: append([]string{}, request.AllowPrivateCIDRs...),
+			DenyCIDRs:         append([]string{}, request.DenyCIDRs...),
+			AllowPorts:        domainConfigEgressPortRanges(request.AllowPorts),
+		}
+		if cfg.NodeEgressGrants == nil {
+			cfg.NodeEgressGrants = make(map[string]configstore.NodeEgressGrant)
+		}
+		cfg.NodeEgressGrants[request.SourceNodeID] = grant
+		return map[string]any{"node_egress_grant": domainNodeEgressGrantView(grant)}, nil
+	}
+}
+
+func nodeEgressGrantRevokeMutation(request controlapi.NodeEgressGrantRevokeRequest) domainMutation {
+	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
+		if _, found := cfg.NodeEgressGrants[request.SourceNodeID]; !found {
+			return nil, domainFailure{
+				code: "config.node_egress_grant_unknown",
+				err:  fmt.Errorf("node egress grant was not found"),
+			}
+		}
+		delete(cfg.NodeEgressGrants, request.SourceNodeID)
+		return map[string]any{"source_node_id": request.SourceNodeID}, nil
+	}
+}
+
+func domainDirectPeerByNodeID(peers []configstore.PeerConfig, nodeID string) (configstore.PeerConfig, bool) {
+	for _, peer := range peers {
+		if peer.NodeID == nodeID {
+			return peer, true
+		}
+	}
+	return configstore.PeerConfig{}, false
+}
+
+func domainNodeEgressGrantViews(grants map[string]configstore.NodeEgressGrant) map[string]controlapi.NodeEgressGrant {
+	views := make(map[string]controlapi.NodeEgressGrant, len(grants))
+	for nodeID, grant := range grants {
+		views[nodeID] = domainNodeEgressGrantView(grant)
+	}
+	return views
+}
+
+func domainNodeEgressGrantView(grant configstore.NodeEgressGrant) controlapi.NodeEgressGrant {
+	ports := make([]controlapi.EgressPortRange, len(grant.AllowPorts))
+	for index, portRange := range grant.AllowPorts {
+		ports[index] = controlapi.EgressPortRange{From: portRange.From, To: portRange.To}
+	}
+	return controlapi.NodeEgressGrant{
+		SourceNodeID:      grant.SourceNodeID,
+		Network:           grant.Network,
+		AllowCIDRs:        append([]string{}, grant.AllowCIDRs...),
+		AllowPrivateCIDRs: append([]string{}, grant.AllowPrivateCIDRs...),
+		DenyCIDRs:         append([]string{}, grant.DenyCIDRs...),
+		AllowPorts:        ports,
+	}
+}
+
+func domainConfigEgressPortRanges(ranges []controlapi.EgressPortRange) []configstore.EgressPortRange {
+	ports := make([]configstore.EgressPortRange, len(ranges))
+	for index, portRange := range ranges {
+		ports[index] = configstore.EgressPortRange{From: portRange.From, To: portRange.To}
+	}
+	return ports
 }
 
 func profilePutMutation(request controlapi.XrayProfilePutRequest) domainMutation {
@@ -1188,7 +1321,8 @@ func classifyDomainError(err error) (string, string) {
 
 func domainErrorStatus(code string) int {
 	switch {
-	case code == "config.revision_conflict", code == "config.peer_exists", code == "config.in_use", code == "domain.request_id_conflict":
+	case code == "config.revision_conflict", code == "config.peer_exists", code == "config.in_use",
+		code == configops.CodeNodeEgressGrantRevokeRequired, code == "domain.request_id_conflict":
 		return http.StatusConflict
 	case strings.HasSuffix(code, "_unknown"), code == "domain.not_found":
 		return http.StatusNotFound

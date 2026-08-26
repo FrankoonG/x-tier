@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/FrankoonG/x-tier/internal/configops"
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/identity"
@@ -918,6 +919,9 @@ func localPeer(g globals, args []string, out io.Writer) error {
 	if args[0] == "trust" {
 		return localPeerTrust(g, args[1:], out)
 	}
+	if args[0] == "egress" {
+		return localPeerEgress(g, args[1:], out)
+	}
 	switch args[0] {
 	case "add":
 		if len(args) < 2 {
@@ -970,18 +974,30 @@ func localPeer(g globals, args []string, out io.Writer) error {
 		nested := fs.Bool("nested", false, "")
 		addr := fs.String("addr", "", "")
 		profile := fs.String("profile", "", "")
+		revokeEgressGrant := fs.Bool("revoke-egress-grant", false, "")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
 		visited := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+		if visited["revoke-egress-grant"] && !visited["direction"] {
+			return commandError{"cli.option_dependency", fmt.Errorf("--revoke-egress-grant requires --direction")}
+		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
 			p, i, ok := configstore.FindPeer(cfg.Peers, name)
 			if !ok {
 				return nil, commandError{"config.peer_unknown", fmt.Errorf("%s", name)}
 			}
+			grantRevoked := false
 			if visited["direction"] {
-				p.Direction = route.Direction(*direction)
+				result, err := configops.UpdatePeerDirection(*cfg, name, route.Direction(*direction), *revokeEgressGrant)
+				if err != nil {
+					return nil, err
+				}
+				*cfg = result.Config
+				p = result.Peer
+				grantRevoked = result.NodeEgressGrantRevoked
+				_, i, _ = configstore.FindPeer(cfg.Peers, p.NodeID)
 			}
 			if visited["nested"] {
 				p.NestedEnabled = *nested
@@ -994,7 +1010,10 @@ func localPeer(g globals, args []string, out io.Writer) error {
 				p.XrayProfileID = *profile
 			}
 			cfg.Peers[i] = p
-			return map[string]any{"peer": p}, nil
+			return map[string]any{
+				"peer":                      p,
+				"node_egress_grant_revoked": grantRevoked,
+			}, nil
 		})
 	case "disable", "enable":
 		if len(args) < 2 {
@@ -1004,21 +1023,12 @@ func localPeer(g globals, args []string, out io.Writer) error {
 		reason := flagValue(args[2:], "reason")
 		enable := args[0] == "enable"
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
-			p, i, ok := configstore.FindPeer(cfg.Peers, name)
-			if !ok {
-				return nil, commandError{"config.peer_unknown", fmt.Errorf("%s", name)}
+			result, err := configops.SetPeerEnabled(*cfg, name, enable, reason)
+			if err != nil {
+				return nil, err
 			}
-			p.Enabled = enable
-			if enable {
-				p.DisabledCause = ""
-			} else {
-				if reason == "" {
-					reason = "disabled"
-				}
-				p.DisabledCause = reason
-			}
-			cfg.Peers[i] = p
-			return map[string]any{"peer": p}, nil
+			*cfg = result.Config
+			return map[string]any{"peer": result.Peer, "node_egress_grant_revoked": false}, nil
 		})
 	case "remove":
 		if len(args) < 2 {
@@ -1026,12 +1036,16 @@ func localPeer(g globals, args []string, out io.Writer) error {
 		}
 		name := args[1]
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
-			_, i, ok := configstore.FindPeer(cfg.Peers, name)
-			if !ok {
-				return nil, commandError{"config.peer_unknown", fmt.Errorf("%s", name)}
+			result, err := configops.RemovePeer(*cfg, name)
+			if err != nil {
+				return nil, err
 			}
-			cfg.Peers = append(cfg.Peers[:i], cfg.Peers[i+1:]...)
-			return map[string]any{"removed": name}, nil
+			*cfg = result.Config
+			return map[string]any{
+				"removed":                   result.Peer.Name,
+				"node_id":                   result.Peer.NodeID,
+				"node_egress_grant_revoked": result.NodeEgressGrantRevoked,
+			}, nil
 		})
 	}
 	return commandError{"cli.unknown_command", fmt.Errorf("peer %s", strings.Join(args, " "))}
@@ -1532,6 +1546,9 @@ func commandMutates(args []string) bool {
 		return action == "set" || action == "enable" || action == "disable"
 	case "peer":
 		if action == "trust" && len(args) >= 4 {
+			return args[3] == "set" || args[3] == "revoke"
+		}
+		if action == "egress" && len(args) >= 4 {
 			return args[3] == "set" || args[3] == "revoke"
 		}
 		return action == "add" || action == "set" || action == "enable" || action == "disable" || action == "remove"

@@ -439,10 +439,18 @@ func TestRevokingInboundPeerClosesExistingCarrierAndRejectsNewFlows(t *testing.T
 		{name: "remove inbound direction", mutate: func(cfg *configstore.Config) {
 			cfg.Peers[0].Direction = route.DirectionOutbound
 			cfg.Peers[0].GatewayAddr = "127.0.0.1:2443"
+			delete(cfg.NodeEgressGrants, cfg.Peers[0].NodeID)
 		}},
-		{name: "delete peer", mutate: func(cfg *configstore.Config) { cfg.Peers = nil }},
+		{name: "delete peer", mutate: func(cfg *configstore.Config) {
+			delete(cfg.NodeEgressGrants, cfg.Peers[0].NodeID)
+			cfg.Peers = nil
+		}},
 		{name: "reassign peer and credential", mutate: func(cfg *configstore.Config) {
+			grant := cfg.NodeEgressGrants[cfg.Peers[0].NodeID]
+			delete(cfg.NodeEgressGrants, cfg.Peers[0].NodeID)
 			cfg.Peers[0].NodeID = "node-0000000000000000000000000000000c"
+			grant.SourceNodeID = cfg.Peers[0].NodeID
+			cfg.NodeEgressGrants[grant.SourceNodeID] = grant
 			profile := cfg.XrayProfiles["carrier-in"]
 			profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
 			cfg.XrayProfiles["carrier-in"] = profile
@@ -2392,11 +2400,12 @@ func entryConfig(socksAddress, peerAddress string) configstore.Config {
 func terminalConfig(carrierAddress string) configstore.Config {
 	cfg := configstore.DefaultConfig()
 	cfg.Revision = 1
+	sourceNodeID := "node-0000000000000000000000000000000a"
 	cfg.XrayProfiles = map[string]configstore.XrayProfile{
 		"carrier-in": vlessProfile("carrier-in"),
 	}
 	cfg.Peers = []configstore.PeerConfig{{
-		Name: "A", NodeID: "node-0000000000000000000000000000000a",
+		Name: "A", NodeID: sourceNodeID,
 		Direction: route.DirectionInbound, XrayProfileID: "carrier-in",
 		Enabled: true, RendrCapable: true,
 	}}
@@ -2406,6 +2415,18 @@ func terminalConfig(carrierAddress string) configstore.Config {
 		Listen:  carrierAddress,
 		Enabled: true,
 	}}
+	cfg.NodeEgressGrants[sourceNodeID] = configstore.NodeEgressGrant{
+		SourceNodeID: sourceNodeID,
+		Network:      "tcp",
+		AllowCIDRs:   []string{"0.0.0.0/0"},
+		AllowPrivateCIDRs: []string{
+			"10.0.0.0/8",
+			"100.64.0.0/10",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+		},
+		AllowPorts: []configstore.EgressPortRange{{From: 1, To: 65535}},
+	}
 	return cfg
 }
 
@@ -2656,6 +2677,7 @@ type fakeRendrRuntime struct {
 	mu              sync.Mutex
 	state           string
 	setDialersCalls int
+	egressDialer    rendradapter.EgressDialer
 	setDialersErr   error
 	setDialersStart chan struct{}
 	setDialersOnce  sync.Once
@@ -2688,9 +2710,10 @@ func newFakeRendrRuntime(state string) *fakeRendrRuntime {
 	return &fakeRendrRuntime{state: state, closeStarted: make(chan struct{})}
 }
 
-func (r *fakeRendrRuntime) SetDialers(rendradapter.StreamDialer, rendradapter.EgressDialer) error {
+func (r *fakeRendrRuntime) SetDialers(_ rendradapter.StreamDialer, egress rendradapter.EgressDialer) error {
 	r.mu.Lock()
 	r.setDialersCalls++
+	r.egressDialer = egress
 	err := r.setDialersErr
 	started := r.setDialersStart
 	wait := r.setDialersWait
@@ -2702,6 +2725,12 @@ func (r *fakeRendrRuntime) SetDialers(rendradapter.StreamDialer, rendradapter.Eg
 		<-wait
 	}
 	return err
+}
+
+func (r *fakeRendrRuntime) boundEgressDialer() rendradapter.EgressDialer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.egressDialer
 }
 
 func (r *fakeRendrRuntime) Dial(ctx context.Context, _ string, _ rendradapter.Destination) (net.Conn, error) {

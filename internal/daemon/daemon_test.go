@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1506,13 +1507,21 @@ func TestXrayStatusRedactsCleanupDiagnostics(t *testing.T) {
 
 func TestXrayStatusReflectsObservedRuntimeAndFailStop(t *testing.T) {
 	generation := &xrayrt.GenerationStatus{Generation: 3}
+	authorizationDigest := [32]byte{1, 2, 3}
 	observed := xrayrt.Status{
 		Current: generation, StrictStreamOutbound: true, StrictPacketOutbound: false,
 		Draining: []xrayrt.GenerationStatus{},
 	}
-	running := xrayStatusFrom(dataplane.Status{State: "running", Xray: observed})
+	running := xrayStatusFrom(dataplane.Status{
+		State: "running", Xray: observed,
+		EgressAuthorizationRevision: 9,
+		EgressAuthorizationDigest:   authorizationDigest,
+		EgressAuthorizationSources:  2,
+	})
 	if running.State != controlapi.RuntimeStateRunning || running.FailStopped ||
-		!running.StrictStreamOutbound || running.StrictPacketOutbound {
+		!running.StrictStreamOutbound || running.StrictPacketOutbound ||
+		running.EgressAuthorizationRevision != 9 || running.EgressAuthorizationSources != 2 ||
+		running.EgressAuthorizationDigest != hex.EncodeToString(authorizationDigest[:]) {
 		t.Fatalf("running Xray status = %+v", running)
 	}
 	failStopped := xrayStatusFrom(dataplane.Status{State: "running", FailStopped: true, Xray: observed})
@@ -2256,7 +2265,8 @@ func TestDaemonMigratesKnownUnversionedConfigBeforeStarting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(payload, []byte(`"schema_version": 1`)) {
+	wantSchema := []byte(fmt.Sprintf(`"schema_version": %d`, configstore.CurrentSchemaVersion))
+	if !bytes.Contains(payload, wantSchema) || bytes.Contains(payload, []byte(`"schema_version": 1`)) {
 		t.Fatalf("daemon did not version the migrated config: %s", payload)
 	}
 	migratedBacking, err := identity.LoadStore(d.stateStore)

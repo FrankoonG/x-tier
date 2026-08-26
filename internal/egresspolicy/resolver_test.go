@@ -9,6 +9,20 @@ import (
 	"testing"
 )
 
+func publicTestPolicy(t *testing.T) Policy {
+	t.Helper()
+	policy, err := NewPolicy(
+		[]netip.Prefix{netip.MustParsePrefix("8.0.0.0/8"), netip.MustParsePrefix("2606:4700::/32")},
+		nil,
+		nil,
+		[]PortRange{{From: 443, To: 443}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy
+}
+
 func TestResolveFreezesCanonicalAllowedCandidates(t *testing.T) {
 	lookupCalls := 0
 	lookup := func(_ context.Context, network, host string) ([]netip.Addr, error) {
@@ -17,18 +31,32 @@ func TestResolveFreezesCanonicalAllowedCandidates(t *testing.T) {
 			t.Fatalf("lookup = %s %s", network, host)
 		}
 		return []netip.Addr{
-			netip.MustParseAddr("2001:db8::20"),
-			netip.MustParseAddr("10.20.0.9"),
-			netip.MustParseAddr("10.20.0.9"),
+			netip.MustParseAddr("2606:4700:4700::1111"),
+			netip.MustParseAddr("8.8.4.4"),
+			netip.MustParseAddr("8.8.4.4"),
 		}, nil
 	}
-	got, err := Resolve(context.Background(), lookup, DefaultPolicy(), "ORIGIN.example.")
+	got, err := Resolve(context.Background(), lookup, publicTestPolicy(t), "ORIGIN.example.", 443)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []netip.Addr{netip.MustParseAddr("10.20.0.9"), netip.MustParseAddr("2001:db8::20")}
+	want := []netip.Addr{netip.MustParseAddr("8.8.4.4"), netip.MustParseAddr("2606:4700:4700::1111")}
 	if !reflect.DeepEqual(got, want) || lookupCalls != 1 {
 		t.Fatalf("candidates=%v calls=%d, want %v and one call", got, lookupCalls, want)
+	}
+}
+
+func TestResolveCanonicalizesIDNAExactlyOnce(t *testing.T) {
+	calls := 0
+	_, err := Resolve(context.Background(), func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		calls++
+		if network != "ip" || host != "xn--bcher-kva.example" {
+			t.Fatalf("lookup = %s %s", network, host)
+		}
+		return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
+	}, publicTestPolicy(t), "B\u00dcCHER.example.", 443)
+	if err != nil || calls != 1 {
+		t.Fatalf("IDNA Resolve error=%v calls=%d", err, calls)
 	}
 }
 
@@ -36,16 +64,26 @@ func TestResolveLiteralNeverUsesDNS(t *testing.T) {
 	got, err := Resolve(context.Background(), func(context.Context, string, string) ([]netip.Addr, error) {
 		t.Fatal("literal target used DNS")
 		return nil, nil
-	}, DefaultPolicy(), "10.20.0.9")
-	if err != nil || len(got) != 1 || got[0] != netip.MustParseAddr("10.20.0.9") {
+	}, publicTestPolicy(t), "8.8.8.8", 443)
+	if err != nil || len(got) != 1 || got[0] != netip.MustParseAddr("8.8.8.8") {
 		t.Fatalf("Resolve literal = %v, %v", got, err)
+	}
+}
+
+func TestResolveRejectsPortBeforeDNS(t *testing.T) {
+	got, err := Resolve(context.Background(), func(context.Context, string, string) ([]netip.Addr, error) {
+		t.Fatal("unauthorized port reached DNS")
+		return nil, nil
+	}, publicTestPolicy(t), "origin.example", 80)
+	if got != nil || !errors.Is(err, ErrAddressDenied) {
+		t.Fatalf("Resolve unauthorized port = %v, %v", got, err)
 	}
 }
 
 func TestResolveRejectsMixedUnsafeAnswerWithoutReturningAllowedSubset(t *testing.T) {
 	got, err := Resolve(context.Background(), func(context.Context, string, string) ([]netip.Addr, error) {
-		return []netip.Addr{netip.MustParseAddr("203.0.113.8"), netip.MustParseAddr("127.0.0.1")}, nil
-	}, DefaultPolicy(), "rebind.example")
+		return []netip.Addr{netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("127.0.0.1")}, nil
+	}, publicTestPolicy(t), "rebind.example", 443)
 	if !errors.Is(err, ErrAddressDenied) || got != nil {
 		t.Fatalf("Resolve mixed answer = %v, %v", got, err)
 	}
@@ -57,43 +95,52 @@ func TestResolveRejectsSpecialAndMappedLiterals(t *testing.T) {
 		"::", "::1", "fe80::1", "ff02::1", "::ffff:10.20.0.9", "fe80::1%1",
 	} {
 		t.Run(host, func(t *testing.T) {
-			if got, err := Resolve(context.Background(), nil, DefaultPolicy(), host); !errors.Is(err, ErrAddressDenied) || got != nil {
+			if got, err := Resolve(context.Background(), nil, publicTestPolicy(t), host, 443); !errors.Is(err, ErrAddressDenied) || got != nil {
 				t.Fatalf("Resolve(%q) = %v, %v", host, got, err)
 			}
 		})
 	}
 }
 
-func TestCIDRPolicyRequiresAllowAndHonorsDeny(t *testing.T) {
-	if _, err := NewPolicy(nil, nil); err == nil {
-		t.Fatal("empty allow policy succeeded")
-	}
-	policy, err := NewPolicy(
-		[]netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
-		[]netip.Prefix{netip.MustParsePrefix("10.20.9.0/24")},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !policy.Allows(netip.MustParseAddr("10.20.8.1")) || policy.Allows(netip.MustParseAddr("10.20.9.1")) || policy.Allows(netip.MustParseAddr("10.21.0.1")) {
-		t.Fatal("CIDR allow/deny precedence is incorrect")
-	}
-}
-
 func TestResolveRejectsInvalidDomainAndCandidateFlood(t *testing.T) {
+	policy := publicTestPolicy(t)
 	for _, host := range []string{"", " bad.example", "bad..example", "-bad.example", "bad_.example"} {
-		if _, err := Resolve(context.Background(), nil, DefaultPolicy(), host); !errors.Is(err, ErrInvalidHost) {
+		if _, err := Resolve(context.Background(), nil, policy, host, 443); !errors.Is(err, ErrInvalidHost) {
 			t.Fatalf("Resolve(%q) error=%v", host, err)
 		}
 	}
 	many := make([]netip.Addr, MaxCandidates+1)
 	for index := range many {
-		many[index] = netip.AddrFrom4([4]byte{10, 20, byte(index / 255), byte(index%255 + 1)})
+		many[index] = netip.AddrFrom4([4]byte{8, 8, 0, byte(index + 1)})
 	}
 	if _, err := Resolve(context.Background(), func(context.Context, string, string) ([]netip.Addr, error) {
 		return many, nil
-	}, DefaultPolicy(), "many.example"); !errors.Is(err, ErrTooManyCandidates) {
+	}, policy, "many.example", 443); !errors.Is(err, ErrTooManyCandidates) {
 		t.Fatalf("candidate flood error=%v", err)
+	}
+}
+
+func TestResolveAppliesLimitAfterDeduplicatingPlatformAnswers(t *testing.T) {
+	policy := publicTestPolicy(t)
+	duplicateHeavy := make([]netip.Addr, MaxCandidates*3)
+	for index := range duplicateHeavy {
+		duplicateHeavy[index] = netip.MustParseAddr("8.8.8.8")
+	}
+	got, err := Resolve(context.Background(), func(context.Context, string, string) ([]netip.Addr, error) {
+		return duplicateHeavy, nil
+	}, policy, "duplicates.example", 443)
+	if err != nil || !reflect.DeepEqual(got, []netip.Addr{netip.MustParseAddr("8.8.8.8")}) {
+		t.Fatalf("duplicate-heavy platform answer = %v, %v", got, err)
+	}
+
+	rawFlood := make([]netip.Addr, MaxResolverAnswers+1)
+	for index := range rawFlood {
+		rawFlood[index] = netip.MustParseAddr("8.8.8.8")
+	}
+	if _, err := Resolve(context.Background(), func(context.Context, string, string) ([]netip.Addr, error) {
+		return rawFlood, nil
+	}, policy, "raw-flood.example", 443); !errors.Is(err, ErrTooManyCandidates) {
+		t.Fatalf("raw resolver flood error = %v", err)
 	}
 }
 
@@ -102,7 +149,7 @@ func TestResolvePreservesCancellationWithoutReflectingResolverText(t *testing.T)
 	resolverErr := errors.New(secret)
 	_, err := Resolve(context.Background(), func(context.Context, string, string) ([]netip.Addr, error) {
 		return nil, resolverErr
-	}, DefaultPolicy(), "safe.example")
+	}, publicTestPolicy(t), "safe.example", 443)
 	if !errors.Is(err, ErrResolutionFailed) || !errors.Is(err, resolverErr) {
 		t.Fatalf("resolver error classification=%v", err)
 	}

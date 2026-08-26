@@ -1,11 +1,175 @@
 package configstore
 
 import (
+	"bytes"
+	"fmt"
+	"math"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/FrankoonG/x-tier/internal/statestore"
 )
+
+func TestObjectStoreMigratesExplicitV1ToV2ExactlyOnceWithoutGrants(t *testing.T) {
+	store := openConfigObjectStore(t)
+	defer store.Close()
+	v1 := []byte(`{"schema_version":1,"revision":7,"node":{},"system":{}}`)
+	if err := store.CreateConfigExclusive(v1); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, migrated, err := LoadStoreOrMigrate(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated || cfg.SchemaVersion != CurrentSchemaVersion || cfg.Revision != 8 {
+		t.Fatalf("first migration = %+v migrated=%v", cfg, migrated)
+	}
+	if cfg.NodeEgressGrants == nil || len(cfg.NodeEgressGrants) != 0 {
+		t.Fatalf("v1 migration forged grants: %#v", cfg.NodeEgressGrants)
+	}
+
+	second, migratedAgain, err := LoadStoreOrMigrate(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migratedAgain || second.SchemaVersion != CurrentSchemaVersion || second.Revision != 8 {
+		t.Fatalf("second load = %+v migrated=%v", second, migratedAgain)
+	}
+	if second.NodeEgressGrants == nil || len(second.NodeEgressGrants) != 0 {
+		t.Fatalf("second load forged grants: %#v", second.NodeEgressGrants)
+	}
+	backups, err := store.BackupNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backup count=%d, want exactly one migration write", len(backups))
+	}
+}
+
+func TestObjectStoreV1MigrationRejectsUnknownFieldsWithoutWriting(t *testing.T) {
+	fixtures := map[string][]byte{
+		"top level": []byte(`{"schema_version":1,"revision":7,"node":{},"system":{},"future":true}`),
+		"nested":    []byte(`{"schema_version":1,"revision":7,"node":{"future":true},"system":{}}`),
+		"v2 grant":  []byte(`{"schema_version":1,"revision":7,"node":{},"system":{},"node_egress_grants":{}}`),
+	}
+	for name, payload := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			store := openConfigObjectStore(t)
+			defer store.Close()
+			if err := store.CreateConfigExclusive(payload); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, migrated, err := LoadStoreOrMigrate(store, false); err == nil || migrated || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("migration result migrated=%v err=%v", migrated, err)
+			}
+			assertObjectStoreConfigUnchanged(t, store, payload)
+		})
+	}
+}
+
+func TestObjectStoreV1MigrationRejectsRevisionExhaustionWithoutWriting(t *testing.T) {
+	store := openConfigObjectStore(t)
+	defer store.Close()
+	payload := []byte(fmt.Sprintf(
+		`{"schema_version":1,"revision":%d,"node":{},"system":{}}`,
+		int64(math.MaxInt64),
+	))
+	if err := store.CreateConfigExclusive(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, migrated, err := LoadStoreOrMigrate(store, false); err == nil || migrated || !strings.Contains(err.Error(), "config.revision_exhausted") {
+		t.Fatalf("migration result migrated=%v err=%v", migrated, err)
+	}
+	assertObjectStoreConfigUnchanged(t, store, payload)
+}
+
+func TestObjectStoreConcurrentV1MigrationPublishesOneRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	first, err := statestore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := statestore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	v1 := []byte(`{"schema_version":1,"revision":41,"node":{},"system":{}}`)
+	if err := first.CreateConfigExclusive(v1); err != nil {
+		t.Fatal(err)
+	}
+
+	type migrationResult struct {
+		cfg      Config
+		migrated bool
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan migrationResult, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for _, store := range []*statestore.Store{first, second} {
+		go func(store *statestore.Store) {
+			ready.Done()
+			<-start
+			cfg, migrated, err := LoadStoreOrMigrate(store, false)
+			results <- migrationResult{cfg: cfg, migrated: migrated, err: err}
+		}(store)
+	}
+	ready.Wait()
+	close(start)
+
+	migrationWinners := 0
+	successes := 0
+	lockRejections := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			if !strings.Contains(result.err.Error(), "config.locked") {
+				t.Fatal(result.err)
+			}
+			lockRejections++
+			continue
+		}
+		successes++
+		if result.migrated {
+			migrationWinners++
+		}
+		if result.cfg.SchemaVersion != CurrentSchemaVersion || result.cfg.Revision != 42 {
+			t.Fatalf("concurrent migration result = %+v migrated=%v", result.cfg, result.migrated)
+		}
+		if len(result.cfg.NodeEgressGrants) != 0 {
+			t.Fatalf("concurrent migration forged grants: %#v", result.cfg.NodeEgressGrants)
+		}
+	}
+	if migrationWinners != 1 {
+		t.Fatalf("migration winners=%d, want exactly one", migrationWinners)
+	}
+	if successes+lockRejections != 2 || successes == 0 {
+		t.Fatalf("successes=%d lock rejections=%d", successes, lockRejections)
+	}
+	stored, err := LoadStoreExisting(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SchemaVersion != CurrentSchemaVersion || stored.Revision != 42 {
+		t.Fatalf("stored config after concurrent migration = %+v", stored)
+	}
+	backups, err := first.BackupNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backup count=%d, want one committed migration", len(backups))
+	}
+}
 
 func TestObjectStorePersistsConfigCASBackupsAndCheckpoint(t *testing.T) {
 	store := openConfigObjectStore(t)
@@ -124,4 +288,22 @@ func openConfigObjectStore(t *testing.T) *statestore.Store {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func assertObjectStoreConfigUnchanged(t *testing.T, store *statestore.Store, want []byte) {
+	t.Helper()
+	got, err := store.ReadConfig(maxConfigFileBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("rejected config was rewritten: before=%s after=%s", want, got)
+	}
+	backups, err := store.BackupNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("rejected config created backups: %v", backups)
+	}
 }

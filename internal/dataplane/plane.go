@@ -61,24 +61,28 @@ type rendrRetirement struct {
 }
 
 type routeTable struct {
-	users        map[string]string
-	carrierPeers map[string]string
+	users               map[string]string
+	carrierPeers        map[string]string
+	egressAuthorization *egressAuthorizationSnapshot
 }
 
 type Status struct {
-	State             string
-	AppliedRevision   int64
-	AttemptedRevision int64
-	AppliedDigest     [32]byte
-	AttemptedDigest   [32]byte
-	LastError         string
-	LastErrorCode     string
-	ObservedAt        time.Time
-	ObservationFresh  bool
-	FailStopped       bool
-	Rendr             rendradapter.RuntimeStatus
-	Xray              xrayrt.Status
-	Listeners         []ListenerStatus
+	State                       string
+	AppliedRevision             int64
+	AttemptedRevision           int64
+	AppliedDigest               [32]byte
+	AttemptedDigest             [32]byte
+	EgressAuthorizationRevision int64
+	EgressAuthorizationDigest   [32]byte
+	EgressAuthorizationSources  int
+	LastError                   string
+	LastErrorCode               string
+	ObservedAt                  time.Time
+	ObservationFresh            bool
+	FailStopped                 bool
+	Rendr                       rendradapter.RuntimeStatus
+	Xray                        xrayrt.Status
+	Listeners                   []ListenerStatus
 }
 
 type ListenerStatus struct {
@@ -108,7 +112,6 @@ type Plane struct {
 	bridge               *xraybridge.Handler
 	routes               atomic.Pointer[routeTable]
 	egressLookup         egresspolicy.LookupNetIP
-	egressPolicy         egresspolicy.Policy
 
 	reconcileMu    sync.Mutex
 	applyMu        sync.RWMutex
@@ -143,6 +146,10 @@ func Start(ctx context.Context, cfg configstore.Config) (*Plane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dataplane: digest initial configuration: %w", err)
 	}
+	egressAuthorization, err := compileEgressAuthorization(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("dataplane: compile initial egress authorization: %w", err)
+	}
 
 	planeCtx, cancel := context.WithCancel(ctx)
 	p := &Plane{
@@ -160,10 +167,9 @@ func Start(ctx context.Context, cfg configstore.Config) (*Plane, error) {
 			AttemptedRevision: cfg.Revision,
 			ObservedAt:        time.Now().UTC(),
 		},
-		listeners:    make(map[string]string),
-		egressPolicy: egresspolicy.DefaultPolicy(),
+		listeners: make(map[string]string),
 	}
-	p.routes.Store(&routeTable{users: map[string]string{}, carrierPeers: map[string]string{}})
+	p.routes.Store(newEmptyRouteTable())
 	p.activeCarriers = make(map[*closeObservedConn]carrierAuthorization)
 	p.carrierCounts = make(map[string]int)
 
@@ -212,13 +218,13 @@ func Start(ctx context.Context, cfg configstore.Config) (*Plane, error) {
 			closeStartedPlane(p),
 		)
 	}
-	if err := runtime.SetDialers(p.dialCarrier, p.dialEgress); err != nil {
+	if err := p.bindRendrDialers(runtime, egressAuthorization); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("dataplane: bind Rendr dialers: %w", err),
 			closeStartedPlane(p),
 		)
 	}
-	p.routes.Store(routesFrom(compiled))
+	p.routes.Store(routesFrom(compiled, egressAuthorization))
 	if err := xrayRuntime.ReplaceInbounds(planeCtx, compiled.Inbounds); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("dataplane: install initial Xray inbounds: %w", err),
@@ -320,7 +326,7 @@ func (p *Plane) ensureRendrRunning(ctx context.Context) error {
 
 	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, rendrRevocationTimeout)
 	defer cancelRecovery()
-	replacement, err := p.callPreparedRendrRuntime(recoveryCtx)
+	replacement, err := p.callPreparedRendrRuntime(recoveryCtx, p.activeEgressAuthorization())
 	if err != nil {
 		return fmt.Errorf("dataplane: restart rendr runtime: %w", err)
 	}
@@ -362,7 +368,10 @@ type rendrFactoryResult struct {
 	err     error
 }
 
-func (p *Plane) callPreparedRendrRuntime(waitCtx context.Context) (rendrRuntime, error) {
+func (p *Plane) callPreparedRendrRuntime(
+	waitCtx context.Context,
+	egressAuthorization *egressAuthorizationSnapshot,
+) (rendrRuntime, error) {
 	if waitCtx == nil {
 		return nil, errors.New("dataplane: nil rendr factory wait context")
 	}
@@ -389,7 +398,7 @@ func (p *Plane) callPreparedRendrRuntime(waitCtx context.Context) (rendrRuntime,
 			err = errors.New("dataplane: rendr runtime factory returned nil")
 		}
 		if err == nil {
-			if bindErr := runtime.SetDialers(p.dialCarrier, p.dialEgress); bindErr != nil {
+			if bindErr := p.bindRendrDialers(runtime, egressAuthorization); bindErr != nil {
 				err = fmt.Errorf("dataplane: bind prepared rendr runtime: %w", bindErr)
 			}
 		}
@@ -502,14 +511,23 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 			cfg.Revision,
 		))
 	}
+	previousEgressAuthorization := p.activeEgressAuthorization()
 	var compiled xrayconfig.Compiled
+	var candidateEgressAuthorization *egressAuthorizationSnapshot
 	authorizationRevocation := false
 	if candidateRequired {
 		compiled, err = xrayconfig.Compile(cfg)
 		if err != nil {
 			return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: compile: %w", err))
 		}
-		authorizationRevocation = carrierRevocationRequired(p.routes.Load(), routesFrom(compiled))
+		candidateEgressAuthorization, err = compileEgressAuthorization(cfg)
+		if err != nil {
+			return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: compile egress authorization: %w", err))
+		}
+		activeRoutes := p.routes.Load()
+		candidateRoutes := routesFrom(compiled, candidateEgressAuthorization)
+		authorizationRevocation = carrierRevocationRequired(activeRoutes, candidateRoutes) ||
+			!sameEgressAuthorization(activeEgressAuthorization(activeRoutes), candidateEgressAuthorization)
 	}
 	if err := p.ensureRendrRunning(ctx); err != nil {
 		if errors.Is(err, ErrRendrRevocationIncomplete) || authorizationRevocation {
@@ -540,7 +558,7 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 		return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: compare Xray inbounds: %w", err))
 	}
 	if inboundsUnchanged && !wasFailStopped {
-		if err := p.publishOutboundAndRoutes(ctx, &compiled); err != nil {
+		if err := p.publishOutboundAndRoutes(ctx, &compiled, candidateEgressAuthorization); err != nil {
 			if errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) {
 				return p.failStopRevocationApply(cfg.Revision, err)
 			}
@@ -554,7 +572,7 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 	if err := p.xray.ReplaceInbounds(ctx, nil); err != nil {
 		return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: quiesce Xray inbounds: %w", err))
 	}
-	if err := p.publishOutboundAndRoutes(ctx, &compiled); err != nil {
+	if err := p.publishOutboundAndRoutes(ctx, &compiled, candidateEgressAuthorization); err != nil {
 		if errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) {
 			return p.failStopRevocationApply(cfg.Revision, err)
 		}
@@ -574,15 +592,16 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 		}
 		restoreErr := p.xray.ReplaceInbounds(recoveryCtx, previous.Inbounds)
 		if restoreErr != nil {
-			restoreErr = errors.Join(
+			failStopErr := errors.Join(
 				fmt.Errorf("dataplane: restore previous Xray inbounds: %w", restoreErr),
 				p.failStopRoutes(recoveryCtx),
 			)
+			return p.failStopRevocationApply(cfg.Revision, errors.Join(
+				fmt.Errorf("dataplane: apply Xray generation: %w", err),
+				failStopErr,
+			))
 		}
-		return p.setFailed(cfg.Revision, errors.Join(
-			fmt.Errorf("dataplane: apply Xray generation: %w", err),
-			restoreErr,
-		))
+		return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: apply Xray generation: %w", err))
 	}
 	// Authorization removal is intentionally irreversible at the session
 	// layer. A later inbound-install rollback restores configuration and new
@@ -599,14 +618,14 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 			}
 			return p.setFailed(cfg.Revision, errors.Join(inboundErr, routeStopErr, failStopErr))
 		}
-		rollbackErr := p.publishOutboundAndRoutes(recoveryCtx, previous)
+		rollbackErr := p.publishOutboundAndRoutes(recoveryCtx, previous, previousEgressAuthorization)
 		if rollbackErr != nil {
 			routeStopErr := p.failStopRoutes(recoveryCtx)
 			failStopErr := p.xray.ReplaceInbounds(recoveryCtx, nil)
 			if failStopErr != nil {
 				failStopErr = fmt.Errorf("dataplane: fail-stop managed inbounds: %w", failStopErr)
 			}
-			return p.setFailed(cfg.Revision, errors.Join(
+			return p.failStopRevocationApply(cfg.Revision, errors.Join(
 				inboundErr,
 				rollbackErr,
 				routeStopErr,
@@ -615,12 +634,13 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 		}
 		restoreErr := p.xray.ReplaceInbounds(recoveryCtx, previous.Inbounds)
 		if restoreErr != nil {
-			restoreErr = errors.Join(
+			return p.failStopRevocationApply(cfg.Revision, errors.Join(
+				inboundErr,
 				fmt.Errorf("dataplane: restore previous Xray inbounds: %w", restoreErr),
 				p.failStopRoutes(recoveryCtx),
-			)
+			))
 		}
-		return p.setFailed(cfg.Revision, errors.Join(inboundErr, restoreErr))
+		return p.setFailed(cfg.Revision, inboundErr)
 	}
 	return p.commitApplied(&compiled, cfg.Revision, digest)
 }
@@ -957,17 +977,44 @@ func (p *Plane) dialCarrier(ctx context.Context, peerTag, innerTarget string) (n
 	return p.xray.Dial(ctx, peerTag, innerTarget)
 }
 
+func (p *Plane) bindRendrDialers(runtime rendrRuntime, authorization *egressAuthorizationSnapshot) error {
+	if runtime == nil || authorization == nil {
+		return errors.New("dataplane: incomplete rendr dialer authorization")
+	}
+	return runtime.SetDialers(p.dialCarrier, func(ctx context.Context, request rendradapter.EgressRequest) (net.Conn, error) {
+		return p.dialEgressAuthorized(ctx, authorization, request)
+	})
+}
+
 func (p *Plane) dialEgress(ctx context.Context, request rendradapter.EgressRequest) (net.Conn, error) {
-	if p == nil || p.xray == nil || request.Validate() != nil || !p.egressClaimAuthorized(request.Claim.Origin) {
+	return p.dialEgressAuthorized(ctx, p.activeEgressAuthorization(), request)
+}
+
+func (p *Plane) dialEgressAuthorized(
+	ctx context.Context,
+	authorization *egressAuthorizationSnapshot,
+	request rendradapter.EgressRequest,
+) (net.Conn, error) {
+	if p == nil || p.xray == nil || request.Validate() != nil {
 		return nil, errors.New("dataplane: egress flow claim is not authorized")
 	}
-	candidates, err := egresspolicy.Resolve(ctx, p.egressLookup, p.egressPolicy, request.Destination.Host)
+	policy, authorized := p.egressPolicyFor(authorization, request.Claim.Origin)
+	if !authorized {
+		return nil, errors.New("dataplane: egress flow claim is not authorized")
+	}
+	candidates, err := egresspolicy.Resolve(
+		ctx,
+		p.egressLookup,
+		policy,
+		request.Destination.Host,
+		request.Destination.Port,
+	)
 	if err != nil {
 		return nil, err
 	}
 	var dialErr error
 	for _, candidate := range candidates {
-		if !p.egressClaimAuthorized(request.Claim.Origin) {
+		if !p.egressClaimAuthorized(authorization, request.Claim.Origin) {
 			return nil, errors.New("dataplane: egress flow claim was revoked")
 		}
 		address := net.JoinHostPort(candidate.String(), fmt.Sprint(request.Destination.Port))
@@ -986,7 +1033,7 @@ func (p *Plane) dialEgress(ctx context.Context, request rendradapter.EgressReque
 			}
 			continue
 		}
-		if !p.egressClaimAuthorized(request.Claim.Origin) {
+		if !p.egressClaimAuthorized(authorization, request.Claim.Origin) {
 			_ = conn.Close()
 			return nil, errors.New("dataplane: egress flow claim was revoked")
 		}
@@ -998,23 +1045,46 @@ func (p *Plane) dialEgress(ctx context.Context, request rendradapter.EgressReque
 	return nil, dialErr
 }
 
-func (p *Plane) egressClaimAuthorized(claim rendradapter.OriginClaim) bool {
+func (p *Plane) egressPolicyFor(
+	authorization *egressAuthorizationSnapshot,
+	claim rendradapter.OriginClaim,
+) (egresspolicy.Policy, bool) {
 	if p == nil || claim.Validate() != nil || claim.InboundTag != xrayconfig.NodeVLESSTag {
-		return false
+		return egresspolicy.Policy{}, false
 	}
-	p.applyMu.RLock()
 	routes := p.routes.Load()
-	authorized := routes != nil && routes.carrierPeers[claim.PrincipalHandle] == claim.ClaimedPeerNodeID
-	p.applyMu.RUnlock()
+	if routes == nil || authorization == nil || routes.egressAuthorization != authorization ||
+		routes.carrierPeers[claim.PrincipalHandle] != claim.ClaimedPeerNodeID {
+		return egresspolicy.Policy{}, false
+	}
+	policy, allowed := authorization.policies[claim.ClaimedPeerNodeID]
+	return policy, allowed
+}
+
+func (p *Plane) egressClaimAuthorized(
+	authorization *egressAuthorizationSnapshot,
+	claim rendradapter.OriginClaim,
+) bool {
+	_, authorized := p.egressPolicyFor(authorization, claim)
 	return authorized
 }
 
-func (p *Plane) publishOutboundAndRoutes(ctx context.Context, compiled *xrayconfig.Compiled) error {
-	if compiled == nil {
+func (p *Plane) publishOutboundAndRoutes(
+	ctx context.Context,
+	compiled *xrayconfig.Compiled,
+	egressAuthorization *egressAuthorizationSnapshot,
+) error {
+	if compiled == nil || egressAuthorization == nil {
 		return errors.New("dataplane: no compiled configuration to publish")
 	}
-	routes := routesFrom(*compiled)
-	rotate := carrierRevocationRequired(p.routes.Load(), routes)
+	previousRoutes := p.routes.Load()
+	previousEgressAuthorization := activeEgressAuthorization(previousRoutes)
+	if sameEgressAuthorization(previousEgressAuthorization, egressAuthorization) {
+		egressAuthorization = previousEgressAuthorization
+	}
+	routes := routesFrom(*compiled, egressAuthorization)
+	rotate := carrierRevocationRequired(previousRoutes, routes) ||
+		previousEgressAuthorization != egressAuthorization
 	operationCtx := ctx
 	var cancelOperation context.CancelFunc
 	if rotate {
@@ -1024,7 +1094,7 @@ func (p *Plane) publishOutboundAndRoutes(ctx context.Context, compiled *xrayconf
 	var current, replacement rendrRuntime
 	var err error
 	if rotate {
-		current, replacement, err = p.prepareRendrRotation(operationCtx)
+		current, replacement, err = p.prepareRendrRotation(operationCtx, egressAuthorization)
 		if err != nil {
 			stopErr := p.failStopRoutes(operationCtx)
 			return errors.Join(
@@ -1174,7 +1244,10 @@ func (p *Plane) FailStop(ctx context.Context, errorCode string) error {
 	return markErr
 }
 
-func (p *Plane) prepareRendrRotation(ctx context.Context) (rendrRuntime, rendrRuntime, error) {
+func (p *Plane) prepareRendrRotation(
+	ctx context.Context,
+	egressAuthorization *egressAuthorizationSnapshot,
+) (rendrRuntime, rendrRuntime, error) {
 	p.lifecycleMu.RLock()
 	if p.closing || p.ctx == nil || p.ctx.Err() != nil {
 		p.lifecycleMu.RUnlock()
@@ -1185,7 +1258,7 @@ func (p *Plane) prepareRendrRotation(ctx context.Context) (rendrRuntime, rendrRu
 	if current == nil {
 		return nil, nil, errors.New("dataplane: rendr runtime unavailable")
 	}
-	replacement, err := p.callPreparedRendrRuntime(ctx)
+	replacement, err := p.callPreparedRendrRuntime(ctx, egressAuthorization)
 	if err != nil {
 		return current, nil, fmt.Errorf("dataplane: rotate rendr runtime: %w", err)
 	}
@@ -1239,10 +1312,14 @@ func (p *Plane) observeRuntime() {
 	xrayStatus := p.xray.Status()
 	managedTags := p.xray.ManagedInboundTags()
 	routes := p.routes.Load()
+	authorization := activeEgressAuthorization(routes)
 	p.stateMu.Lock()
 	p.status.Rendr = rendrStatus
 	p.status.Xray = xrayStatus
 	p.status.Listeners = listenerStatuses(p.listeners, managedTags, routes)
+	p.status.EgressAuthorizationRevision = authorization.sourceRevision
+	p.status.EgressAuthorizationDigest = authorization.digest
+	p.status.EgressAuthorizationSources = len(authorization.policies)
 	if retirementErr != nil && p.status.State == "running" {
 		p.status.State = "degraded"
 		p.status.LastErrorCode = "runtime.rendr_retirement_failed"
@@ -1384,9 +1461,14 @@ func (p *Plane) setState(state string) {
 	p.stateMu.Unlock()
 }
 
-func routesFrom(compiled xrayconfig.Compiled) *routeTable {
+func routesFrom(
+	compiled xrayconfig.Compiled,
+	egressAuthorization *egressAuthorizationSnapshot,
+) *routeTable {
 	routes := &routeTable{
-		users: make(map[string]string), carrierPeers: make(map[string]string, len(compiled.CarrierPeers)),
+		users:               make(map[string]string),
+		carrierPeers:        make(map[string]string, len(compiled.CarrierPeers)),
+		egressAuthorization: egressAuthorization,
 	}
 	for tag, route := range compiled.Routes {
 		if route.Kind == xrayconfig.RouteUser {
@@ -1400,7 +1482,25 @@ func routesFrom(compiled xrayconfig.Compiled) *routeTable {
 }
 
 func newEmptyRouteTable() *routeTable {
-	return &routeTable{users: map[string]string{}, carrierPeers: map[string]string{}}
+	return &routeTable{
+		users:               map[string]string{},
+		carrierPeers:        map[string]string{},
+		egressAuthorization: newDenyEgressAuthorization(-1),
+	}
+}
+
+func activeEgressAuthorization(routes *routeTable) *egressAuthorizationSnapshot {
+	if routes == nil || routes.egressAuthorization == nil {
+		return newDenyEgressAuthorization(-1)
+	}
+	return routes.egressAuthorization
+}
+
+func (p *Plane) activeEgressAuthorization() *egressAuthorizationSnapshot {
+	if p == nil {
+		return newDenyEgressAuthorization(-1)
+	}
+	return activeEgressAuthorization(p.routes.Load())
 }
 
 func carrierRevocationRequired(previous, next *routeTable) bool {

@@ -5,19 +5,20 @@ import "net/http"
 const (
 	DomainAPIVersion = 1
 
-	DomainLocalPath           = "/v1/domain/local"
-	DomainIdentityPath        = "/v1/domain/identity"
-	DomainIdentityInitPath    = "/v1/domain/identity/init"
-	DomainSettingsPath        = "/v1/domain/settings"
-	DomainPeersPath           = "/v1/domain/peers"
-	DomainPeerStatePath       = "/v1/domain/peers/state"
-	DomainInboundsPath        = "/v1/domain/inbounds"
-	DomainInboundStatePath    = "/v1/domain/inbounds/state"
-	DomainXrayProfilesPath    = "/v1/domain/xray-profiles"
-	DomainProfileValidatePath = "/v1/domain/xray-profiles/validate"
-	DomainPathCompilePath     = "/v1/domain/paths/compile"
-	DomainRuntimeReloadPath   = "/v1/domain/runtime/reload"
-	DomainConfigRestorePath   = "/v1/domain/config/restore-last-good"
+	DomainLocalPath            = "/v1/domain/local"
+	DomainIdentityPath         = "/v1/domain/identity"
+	DomainIdentityInitPath     = "/v1/domain/identity/init"
+	DomainSettingsPath         = "/v1/domain/settings"
+	DomainPeersPath            = "/v1/domain/peers"
+	DomainPeerStatePath        = "/v1/domain/peers/state"
+	DomainNodeEgressGrantsPath = "/v1/domain/node-egress-grants"
+	DomainInboundsPath         = "/v1/domain/inbounds"
+	DomainInboundStatePath     = "/v1/domain/inbounds/state"
+	DomainXrayProfilesPath     = "/v1/domain/xray-profiles"
+	DomainProfileValidatePath  = "/v1/domain/xray-profiles/validate"
+	DomainPathCompilePath      = "/v1/domain/paths/compile"
+	DomainRuntimeReloadPath    = "/v1/domain/runtime/reload"
+	DomainConfigRestorePath    = "/v1/domain/config/restore-last-good"
 )
 
 // DomainRoute is the exact, closed route set shared by the authenticated
@@ -41,6 +42,9 @@ var domainRoutes = []DomainRoute{
 	{Path: DomainPeersPath, Method: http.MethodPatch, Mutating: true},
 	{Path: DomainPeersPath, Method: http.MethodDelete, Mutating: true},
 	{Path: DomainPeerStatePath, Method: http.MethodPatch, Mutating: true},
+	{Path: DomainNodeEgressGrantsPath, Method: http.MethodGet},
+	{Path: DomainNodeEgressGrantsPath, Method: http.MethodPut, Mutating: true},
+	{Path: DomainNodeEgressGrantsPath, Method: http.MethodDelete, Mutating: true},
 	{Path: DomainInboundsPath, Method: http.MethodGet},
 	{Path: DomainInboundsPath, Method: http.MethodPut, Mutating: true},
 	{Path: DomainInboundStatePath, Method: http.MethodPatch, Mutating: true},
@@ -153,10 +157,11 @@ type PeerCreateRequest struct {
 }
 
 type PeerPatch struct {
-	Addr          *string `json:"addr,omitempty"`
-	Direction     *string `json:"direction,omitempty"`
-	XrayProfileID *string `json:"xray_profile_id,omitempty"`
-	NestedEnabled *bool   `json:"nested_enabled,omitempty"`
+	Addr                  *string `json:"addr,omitempty"`
+	Direction             *string `json:"direction,omitempty"`
+	XrayProfileID         *string `json:"xray_profile_id,omitempty"`
+	NestedEnabled         *bool   `json:"nested_enabled,omitempty"`
+	RevokeNodeEgressGrant bool    `json:"revoke_node_egress_grant,omitempty"`
 }
 
 type PeerUpdateRequest struct {
@@ -175,6 +180,43 @@ type PeerStateRequest struct {
 type PeerRemoveRequest struct {
 	DomainMutationRequest
 	Name string `json:"name"`
+}
+
+type EgressPortRange struct {
+	From uint16 `json:"from"`
+	To   uint16 `json:"to"`
+}
+
+type NodeEgressGrant struct {
+	SourceNodeID      string            `json:"source_node_id"`
+	Network           string            `json:"network"`
+	AllowCIDRs        []string          `json:"allow_cidrs"`
+	AllowPrivateCIDRs []string          `json:"allow_private_cidrs"`
+	DenyCIDRs         []string          `json:"deny_cidrs"`
+	AllowPorts        []EgressPortRange `json:"allow_ports"`
+}
+
+type NodeEgressGrantsResponse struct {
+	APIVersion        int                        `json:"api_version"`
+	OK                bool                       `json:"ok"`
+	Revision          int64                      `json:"revision"`
+	TargetLocalNodeID string                     `json:"target_local_node_id"`
+	NodeEgressGrants  map[string]NodeEgressGrant `json:"node_egress_grants"`
+}
+
+type NodeEgressGrantPutRequest struct {
+	DomainMutationRequest
+	SourceNodeID      string            `json:"source_node_id"`
+	Network           string            `json:"network"`
+	AllowCIDRs        []string          `json:"allow_cidrs"`
+	AllowPrivateCIDRs []string          `json:"allow_private_cidrs"`
+	DenyCIDRs         []string          `json:"deny_cidrs"`
+	AllowPorts        []EgressPortRange `json:"allow_ports"`
+}
+
+type NodeEgressGrantRevokeRequest struct {
+	DomainMutationRequest
+	SourceNodeID string `json:"source_node_id"`
 }
 
 type XrayProfilePutRequest struct {

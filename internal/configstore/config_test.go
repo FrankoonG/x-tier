@@ -51,6 +51,98 @@ func TestDocumentCodecIsStrictAndCanonical(t *testing.T) {
 	}
 }
 
+func TestConfigJSONRejectsDuplicateObjectFieldsRecursively(t *testing.T) {
+	tests := []struct {
+		name      string
+		payload   string
+		sensitive []string
+	}{
+		{
+			name:      "schema version",
+			payload:   `{"schema_version":2,"schema_version":1,"revision":0,"node":{},"system":{}}`,
+			sensitive: []string{"schema_version"},
+		},
+		{
+			name: "top-level grants field",
+			payload: `{"schema_version":2,"revision":0,"node":{},"system":{},` +
+				`"node_egress_grants":{},"node_egress_grants":{"secret-peer":{}}}`,
+			sensitive: []string{"node_egress_grants", "secret-peer"},
+		},
+		{
+			name: "grant map key",
+			payload: `{"schema_version":2,"revision":0,"node":{},"system":{},"node_egress_grants":{` +
+				`"secret-peer":{"source_node_id":"secret-peer","network":"tcp","allow_ports":[]},` +
+				`"secret-peer":{"source_node_id":"secret-peer","network":"tcp","allow_ports":[]}}}`,
+			sensitive: []string{"secret-peer"},
+		},
+		{
+			name: "nested grant field",
+			payload: `{"schema_version":2,"revision":0,"node":{},"system":{},"node_egress_grants":{` +
+				`"node-a":{"source_node_id":"node-a","network":"tcp","network":"secret-network","allow_ports":[]}}}`,
+			sensitive: []string{"network", "secret-network"},
+		},
+		{
+			name: "grant port field in array",
+			payload: `{"schema_version":2,"revision":0,"node":{},"system":{},"node_egress_grants":{` +
+				`"node-a":{"source_node_id":"node-a","network":"tcp","allow_ports":[{"from":443,"\u0066rom":8443,"to":443}]}}}`,
+			sensitive: []string{"from", "8443"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := DecodeDocument([]byte(test.payload))
+			assertDuplicateConfigFieldError(t, err, test.sensitive...)
+		})
+	}
+}
+
+func TestDuplicateFieldPreflightCoversSchemaAndVersionedDecoders(t *testing.T) {
+	current := []byte(`{"schema_version":2,"revision":0,"node":{"display_name":"first","display_name":"secret-current"},"system":{}}`)
+	legacy := []byte(`{"schema_version":1,"revision":0,"node":{"display_name":"first","display_name":"secret-legacy"},"system":{}}`)
+
+	if _, _, err := configSchemaFromJSON(current); err == nil {
+		t.Fatal("configSchemaFromJSON accepted duplicate nested field")
+	} else {
+		assertDuplicateConfigFieldError(t, err, "display_name", "secret-current")
+	}
+	if _, err := decodeConfig(current); err == nil {
+		t.Fatal("decodeConfig accepted duplicate nested field")
+	} else {
+		assertDuplicateConfigFieldError(t, err, "display_name", "secret-current")
+	}
+	if _, err := decodeConfigV1(legacy); err == nil {
+		t.Fatal("decodeConfigV1 accepted duplicate nested field")
+	} else {
+		assertDuplicateConfigFieldError(t, err, "display_name", "secret-legacy")
+	}
+}
+
+func assertDuplicateConfigFieldError(t *testing.T, err error, sensitive ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("duplicate field was accepted")
+	}
+	if !IsContentError(err) {
+		t.Fatalf("error %T = %v, want content error", err, err)
+	}
+	var coded interface{ PublicErrorCode() string }
+	if !errors.As(err, &coded) {
+		t.Fatalf("error %T = %v, want public error code", err, err)
+	}
+	if got := coded.PublicErrorCode(); got != "config.json_duplicate_field" {
+		t.Fatalf("public error code = %q, want config.json_duplicate_field", got)
+	}
+	if got := err.Error(); got != "config.json_duplicate_field" {
+		t.Fatalf("error text = %q, want stable duplicate-field error", got)
+	}
+	for _, value := range sensitive {
+		if strings.Contains(err.Error(), value) {
+			t.Fatalf("error text leaked sensitive JSON content %q: %v", value, err)
+		}
+	}
+}
+
 func TestLoadExistingRejectsMissingConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 	if _, err := LoadExisting(path); !errors.Is(err, os.ErrNotExist) {
@@ -62,6 +154,9 @@ func TestLoadExistingRejectsMissingConfig(t *testing.T) {
 	}
 	if cfg.Revision != 0 || cfg.SchemaVersion != CurrentSchemaVersion {
 		t.Fatalf("Load default = %+v", cfg)
+	}
+	if cfg.NodeEgressGrants == nil || len(cfg.NodeEgressGrants) != 0 {
+		t.Fatalf("default node egress grants = %#v, want non-nil deny-all map", cfg.NodeEgressGrants)
 	}
 }
 
@@ -607,15 +702,113 @@ func TestLoadOrMigrateVersionsUnversionedConfigWithoutUnknownFields(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(payload, []byte(`"schema_version": 1`)) {
+	if !bytes.Contains(payload, []byte(`"schema_version": 2`)) {
 		t.Fatalf("migrated file is not versioned: %s", payload)
+	}
+}
+
+func TestLoadOrMigrateStrictlyMigratesExplicitV1ExactlyOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	v1 := []byte(`{"schema_version":1,"revision":7,"node":{},"system":{}}`)
+	if err := writeFileAtomic(path, v1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, migrated, err := LoadOrMigrate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated || cfg.SchemaVersion != 2 || cfg.Revision != 8 {
+		t.Fatalf("first migration = %+v migrated=%v", cfg, migrated)
+	}
+	if cfg.NodeEgressGrants == nil || len(cfg.NodeEgressGrants) != 0 {
+		t.Fatalf("v1 migration forged grants: %#v", cfg.NodeEgressGrants)
+	}
+
+	second, migratedAgain, err := LoadOrMigrate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migratedAgain || second.SchemaVersion != 2 || second.Revision != 8 || len(second.NodeEgressGrants) != 0 {
+		t.Fatalf("second migration = %+v migrated=%v", second, migratedAgain)
+	}
+}
+
+func TestLoadOrMigrateV1RejectsEveryUnknownExtensionWithoutRewrite(t *testing.T) {
+	fixtures := map[string][]byte{
+		"top level": []byte(`{"schema_version":1,"revision":7,"node":{},"system":{},"future":true}`),
+		"nested":    []byte(`{"schema_version":1,"revision":7,"node":{"future":true},"system":{}}`),
+		"v2 grant":  []byte(`{"schema_version":1,"revision":7,"node":{},"system":{},"node_egress_grants":{}}`),
+	}
+	for name, payload := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := writeFileAtomic(path, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, migrated, err := LoadOrMigrate(path); err == nil || migrated || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("migration result migrated=%v err=%v", migrated, err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, payload) {
+				t.Fatalf("rejected v1 was rewritten: before=%s after=%s", payload, after)
+			}
+		})
+	}
+}
+
+func TestLoadOrMigrateV1RevisionExhaustionDoesNotRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload := []byte(fmt.Sprintf(`{"schema_version":1,"revision":%d,"node":{},"system":{}}`, int64(math.MaxInt64)))
+	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, migrated, err := LoadOrMigrate(path); err == nil || migrated || !strings.Contains(err.Error(), "config.revision_exhausted") {
+		t.Fatalf("migration result migrated=%v err=%v", migrated, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, payload) {
+		t.Fatalf("revision-exhausted v1 was rewritten: before=%s after=%s", payload, after)
+	}
+}
+
+func TestLoadOrMigrateUnversionedStrictlyPreservesKnownV2Grant(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload := []byte(`{
+  "revision": 4,
+  "node": {},
+  "system": {},
+  "peers": [{"name":"A","node_id":"node-a","direction":"inbound","nested_enabled":false,"enabled":false,"rendr_capable":false}],
+  "node_egress_grants": {
+    "node-a": {
+      "source_node_id":"node-a",
+      "network":"tcp",
+      "allow_cidrs":["8.0.0.0/8"],
+      "allow_ports":[{"from":443,"to":443}]
+    }
+  }
+}`)
+	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, migrated, err := LoadOrMigrate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated || cfg.SchemaVersion != 2 || cfg.Revision != 5 || len(cfg.NodeEgressGrants) != 1 {
+		t.Fatalf("migration = %+v migrated=%v", cfg, migrated)
 	}
 }
 
 func TestLoadOrMigrateNeverRewritesCurrentUnknownOrNewerSchema(t *testing.T) {
 	for name, payload := range map[string][]byte{
-		"current unknown": []byte(`{"schema_version":1,"revision":7,"node":{},"system":{},"typo":true}`),
-		"newer schema":    []byte(`{"schema_version":2,"revision":7,"node":{},"system":{},"future":true}`),
+		"current unknown": []byte(`{"schema_version":2,"revision":7,"node":{},"system":{},"typo":true}`),
+		"newer schema":    []byte(`{"schema_version":3,"revision":7,"node":{},"system":{},"future":true}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
@@ -1100,6 +1293,226 @@ func TestValidateRejectsNodeInboundProfileEvenWhileDisabled(t *testing.T) {
 	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.inbound_profile_forbidden") {
 		t.Fatalf("error = %v, want node listener profile rejection", err)
 	}
+}
+
+func TestValidateAcceptsExplicitNodeEgressGrantForDirectInboundPeer(t *testing.T) {
+	cfg := validNodeEgressGrantConfig()
+	if err := Validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Peers[0].Enabled {
+		t.Fatal("fixture no longer proves a grant may survive a temporarily disabled inbound peer")
+	}
+}
+
+func TestValidateRejectsInvalidNodeEgressGrant(t *testing.T) {
+	tests := map[string]struct {
+		want   string
+		mutate func(*Config)
+	}{
+		"key source mismatch": {
+			want: "config.node_egress_grant_source_mismatch",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.SourceNodeID = "node-b"
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"noncanonical source": {
+			want: "config.node_egress_grant_source_mismatch",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				delete(cfg.NodeEgressGrants, "node-a")
+				grant.SourceNodeID = " node-a"
+				cfg.NodeEgressGrants[" node-a"] = grant
+			},
+		},
+		"unknown peer": {
+			want: "config.node_egress_grant_peer_unknown",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				delete(cfg.NodeEgressGrants, "node-a")
+				grant.SourceNodeID = "node-missing"
+				cfg.NodeEgressGrants["node-missing"] = grant
+			},
+		},
+		"nested peer": {
+			want: "config.node_egress_grant_peer_unknown",
+			mutate: func(cfg *Config) {
+				cfg.Peers[0].Children = []PeerConfig{{Name: "child", NodeID: "node-child", Direction: route.DirectionInbound}}
+				grant := cfg.NodeEgressGrants["node-a"]
+				delete(cfg.NodeEgressGrants, "node-a")
+				grant.SourceNodeID = "node-child"
+				cfg.NodeEgressGrants["node-child"] = grant
+			},
+		},
+		"outbound only": {
+			want: "config.node_egress_grant_peer_inbound_required",
+			mutate: func(cfg *Config) {
+				cfg.Peers[0].Direction = route.DirectionOutbound
+				cfg.Peers[0].GatewayAddr = "127.0.0.1:2443"
+			},
+		},
+		"network required": {
+			want: "config.node_egress_grant_network_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.Network = "udp"
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"no allow": {
+			want: "config.node_egress_grant_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowCIDRs = nil
+				grant.AllowPrivateCIDRs = nil
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"no ports": {
+			want: "config.node_egress_grant_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowPorts = nil
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"noncanonical CIDR": {
+			want: "config.node_egress_grant_cidr_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowCIDRs = []string{"8.8.8.1/24"}
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"mapped CIDR": {
+			want: "config.node_egress_grant_cidr_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowCIDRs = []string{"::ffff:0:0/96"}
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"duplicate CIDR": {
+			want: "config.node_egress_grant_cidr_duplicate",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowCIDRs = []string{"8.0.0.0/8", "8.0.0.0/8"}
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"private in public list": {
+			want: "config.node_egress_grant_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowCIDRs = []string{"10.0.0.0/8"}
+				grant.AllowPrivateCIDRs = nil
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"public in private list": {
+			want: "config.node_egress_grant_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowCIDRs = nil
+				grant.AllowPrivateCIDRs = []string{"8.0.0.0/8"}
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"zero port": {
+			want: "config.node_egress_grant_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowPorts = []EgressPortRange{{From: 0, To: 443}}
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"reverse port": {
+			want: "config.node_egress_grant_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowPorts = []EgressPortRange{{From: 444, To: 443}}
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+		"overlapping ports": {
+			want: "config.node_egress_grant_invalid",
+			mutate: func(cfg *Config) {
+				grant := cfg.NodeEgressGrants["node-a"]
+				grant.AllowPorts = []EgressPortRange{{From: 400, To: 500}, {From: 443, To: 443}}
+				cfg.NodeEgressGrants["node-a"] = grant
+			},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg := validNodeEgressGrantConfig()
+			test.mutate(&cfg)
+			if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %s", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNodeEgressGrantCanonicalEncodingSortsRuleLists(t *testing.T) {
+	cfg := validNodeEgressGrantConfig()
+	grant := cfg.NodeEgressGrants["node-a"]
+	grant.AllowCIDRs = []string{"9.0.0.0/8", "8.0.0.0/8"}
+	grant.AllowPrivateCIDRs = []string{"192.168.0.0/16", "10.0.0.0/8"}
+	grant.DenyCIDRs = []string{"9.9.0.0/16", "8.8.0.0/16"}
+	grant.AllowPorts = []EgressPortRange{{From: 8000, To: 8099}, {From: 443, To: 443}}
+	cfg.NodeEgressGrants["node-a"] = grant
+
+	payload, err := EncodeDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeDocument(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decoded.NodeEgressGrants["node-a"]
+	if fmt.Sprint(got.AllowCIDRs) != "[8.0.0.0/8 9.0.0.0/8]" ||
+		fmt.Sprint(got.AllowPrivateCIDRs) != "[10.0.0.0/8 192.168.0.0/16]" ||
+		fmt.Sprint(got.DenyCIDRs) != "[8.8.0.0/16 9.9.0.0/16]" ||
+		len(got.AllowPorts) != 2 || got.AllowPorts[0].From != 443 || got.AllowPorts[1].From != 8000 {
+		t.Fatalf("grant was not canonically sorted: %+v", got)
+	}
+	if cfg.NodeEgressGrants["node-a"].AllowCIDRs[0] != "9.0.0.0/8" {
+		t.Fatal("EncodeDocument mutated caller-owned configuration")
+	}
+}
+
+func TestNodeEgressGrantDecodeRejectsUnknownNestedField(t *testing.T) {
+	payload := []byte(`{
+  "schema_version":2,
+  "revision":0,
+  "node":{},
+  "system":{},
+  "peers":[{"name":"A","node_id":"node-a","direction":"inbound","nested_enabled":false,"enabled":false,"rendr_capable":false}],
+  "node_egress_grants":{"node-a":{"source_node_id":"node-a","network":"tcp","allow_cidrs":["8.0.0.0/8"],"allow_ports":[{"from":443,"to":443}],"future":true}}
+}`)
+	if _, err := DecodeDocument(payload); err == nil || !IsContentError(err) || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("unknown grant field error=%v", err)
+	}
+}
+
+func validNodeEgressGrantConfig() Config {
+	cfg := DefaultConfig()
+	cfg.Peers = []PeerConfig{{
+		Name: "A", NodeID: "node-a", Direction: route.DirectionInbound, Enabled: false,
+	}}
+	cfg.NodeEgressGrants["node-a"] = NodeEgressGrant{
+		SourceNodeID:      "node-a",
+		Network:           "tcp",
+		AllowCIDRs:        []string{"8.0.0.0/8"},
+		AllowPrivateCIDRs: []string{"10.20.0.0/16"},
+		DenyCIDRs:         []string{"8.8.8.0/24", "10.20.9.0/24"},
+		AllowPorts:        []EgressPortRange{{From: 443, To: 443}, {From: 8000, To: 8099}},
+	}
+	return cfg
 }
 
 func validRuntimeConfigForValidation() Config {

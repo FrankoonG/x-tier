@@ -113,13 +113,16 @@ type XrayInboundStatus struct {
 }
 
 type XrayStatus struct {
-	State                RuntimeState           `json:"state"`
-	FailStopped          bool                   `json:"fail_stopped"`
-	Current              *XrayGenerationStatus  `json:"current,omitempty"`
-	Draining             []XrayGenerationStatus `json:"draining"`
-	StrictStreamOutbound bool                   `json:"strict_stream_outbound"`
-	StrictPacketOutbound bool                   `json:"strict_packet_outbound"`
-	Inbounds             []XrayInboundStatus    `json:"inbounds"`
+	State                       RuntimeState           `json:"state"`
+	FailStopped                 bool                   `json:"fail_stopped"`
+	Current                     *XrayGenerationStatus  `json:"current,omitempty"`
+	Draining                    []XrayGenerationStatus `json:"draining"`
+	StrictStreamOutbound        bool                   `json:"strict_stream_outbound"`
+	StrictPacketOutbound        bool                   `json:"strict_packet_outbound"`
+	EgressAuthorizationRevision int64                  `json:"egress_authorization_revision"`
+	EgressAuthorizationDigest   string                 `json:"egress_authorization_digest"`
+	EgressAuthorizationSources  int                    `json:"egress_authorization_sources"`
+	Inbounds                    []XrayInboundStatus    `json:"inbounds"`
 }
 
 type StartupRollbackStatus struct {

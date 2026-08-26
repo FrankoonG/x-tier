@@ -7,8 +7,8 @@ import (
 
 func TestDomainRouteSetIsClosedAndVersioned(t *testing.T) {
 	routes := DomainRoutes()
-	if len(routes) != 21 {
-		t.Fatalf("domain route count=%d, want 21", len(routes))
+	if len(routes) != 24 {
+		t.Fatalf("domain route count=%d, want 24", len(routes))
 	}
 	seen := make(map[string]bool)
 	for _, route := range routes {
@@ -29,5 +29,15 @@ func TestDomainRouteSetIsClosedAndVersioned(t *testing.T) {
 	}
 	if IsDomainPath(CommandPath) {
 		t.Fatal("CLI command endpoint was classified as a domain path")
+	}
+	for method, mutating := range map[string]bool{
+		http.MethodGet:    false,
+		http.MethodPut:    true,
+		http.MethodDelete: true,
+	} {
+		route, ok := LookupDomainRoute(DomainNodeEgressGrantsPath, method)
+		if !ok || route.Mutating != mutating {
+			t.Fatalf("node egress grant route %s = %+v found=%t", method, route, ok)
+		}
 	}
 }

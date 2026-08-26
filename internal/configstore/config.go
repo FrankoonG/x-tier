@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FrankoonG/x-tier/internal/egresspolicy"
 	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/settings"
@@ -24,18 +26,19 @@ import (
 )
 
 type Config struct {
-	SchemaVersion int                       `json:"schema_version"`
-	Revision      int64                     `json:"revision"`
-	Node          NodeConfig                `json:"node"`
-	System        settings.Config           `json:"system"`
-	NodeInbound   []InboundConfig           `json:"node_inbound,omitempty"`
-	Peers         []PeerConfig              `json:"peers,omitempty"`
-	XrayProfiles  map[string]XrayProfile    `json:"xray_profiles,omitempty"`
-	PeerTrust     map[string]PeerTrustGrant `json:"peer_trust,omitempty"`
+	SchemaVersion    int                        `json:"schema_version"`
+	Revision         int64                      `json:"revision"`
+	Node             NodeConfig                 `json:"node"`
+	System           settings.Config            `json:"system"`
+	NodeInbound      []InboundConfig            `json:"node_inbound,omitempty"`
+	Peers            []PeerConfig               `json:"peers,omitempty"`
+	XrayProfiles     map[string]XrayProfile     `json:"xray_profiles,omitempty"`
+	PeerTrust        map[string]PeerTrustGrant  `json:"peer_trust,omitempty"`
+	NodeEgressGrants map[string]NodeEgressGrant `json:"node_egress_grants,omitempty"`
 }
 
 const (
-	CurrentSchemaVersion = 1
+	CurrentSchemaVersion = 2
 	maxConfigBackups     = 5
 )
 
@@ -103,6 +106,33 @@ type PeerTrustGrant struct {
 	Allow      []string `json:"allow"`
 	ExpiresAt  string   `json:"expires_at,omitempty"`
 	Audit      bool     `json:"audit"`
+}
+
+type NodeEgressGrant struct {
+	SourceNodeID      string            `json:"source_node_id"`
+	Network           string            `json:"network"`
+	AllowCIDRs        []string          `json:"allow_cidrs,omitempty"`
+	AllowPrivateCIDRs []string          `json:"allow_private_cidrs,omitempty"`
+	DenyCIDRs         []string          `json:"deny_cidrs,omitempty"`
+	AllowPorts        []EgressPortRange `json:"allow_ports"`
+}
+
+type EgressPortRange struct {
+	From uint16 `json:"from"`
+	To   uint16 `json:"to"`
+}
+
+// configV1 is deliberately frozen. Keeping a separate wire shape makes an
+// explicit v1 migration reject fields that did not exist in that schema.
+type configV1 struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Revision      int64                     `json:"revision"`
+	Node          NodeConfig                `json:"node"`
+	System        settings.Config           `json:"system"`
+	NodeInbound   []InboundConfig           `json:"node_inbound,omitempty"`
+	Peers         []PeerConfig              `json:"peers,omitempty"`
+	XrayProfiles  map[string]XrayProfile    `json:"xray_profiles,omitempty"`
+	PeerTrust     map[string]PeerTrustGrant `json:"peer_trust,omitempty"`
 }
 
 // UpdateResult identifies the committed revision transition of one CAS update.
@@ -174,10 +204,11 @@ func CommitVisible(err error) bool {
 
 func DefaultConfig() Config {
 	return Config{
-		SchemaVersion: CurrentSchemaVersion,
-		System:        settings.Defaults(),
-		XrayProfiles:  map[string]XrayProfile{},
-		PeerTrust:     map[string]PeerTrustGrant{},
+		SchemaVersion:    CurrentSchemaVersion,
+		System:           settings.Defaults(),
+		XrayProfiles:     map[string]XrayProfile{},
+		PeerTrust:        map[string]PeerTrustGrant{},
+		NodeEgressGrants: map[string]NodeEgressGrant{},
 	}
 }
 
@@ -193,8 +224,8 @@ func LoadExisting(path string) (Config, error) {
 }
 
 // LoadOrMigrate versions an unversioned file only when every field is known to
-// this binary. Older versioned schemas require a dedicated migrator. Unknown
-// fields and newer schemas fail closed so migration cannot erase operator data.
+// this binary. Versioned v1 documents use their frozen decoder. Unknown fields
+// and newer schemas fail closed so migration cannot erase operator data.
 func LoadOrMigrate(path string) (Config, bool, error) {
 	canonical, err := CanonicalPath(path)
 	if err != nil {
@@ -273,19 +304,60 @@ func loadOrMigrateWithLock(path string, persistMissing bool, withLock func(func(
 
 func decodeMigratableConfig(payload []byte, schemaVersion int, versioned bool) (Config, error) {
 	if versioned {
-		return Config{}, markContentError(fmt.Errorf(
+		if schemaVersion == 1 {
+			return decodeConfigV1(payload)
+		}
+		return Config{}, markContentError(configErrorf(
 			"config.schema_migration_unavailable: have %d support %d",
-			schemaVersion,
-			CurrentSchemaVersion,
+			schemaVersion, CurrentSchemaVersion,
 		))
 	}
-	// Missing schema_version is the only legacy shape currently supported. A
-	// strict decode proves the file contains no extension this binary would
-	// silently discard before the schema marker is added.
+	// A strict current-shape decode proves an unversioned file contains no field
+	// this binary would silently discard before the schema marker is added.
 	return decodeConfig(payload)
 }
 
+func decodeConfigV1(payload []byte) (Config, error) {
+	if err := preflightConfigJSON(payload); err != nil {
+		return Config{}, err
+	}
+	var legacy configV1
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&legacy); err != nil {
+		return Config{}, markContentError(err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return Config{}, markContentError(err)
+	}
+	if legacy.SchemaVersion != 1 {
+		return Config{}, markContentError(configErrorf(
+			"config.schema_migration_unavailable: have %d support %d",
+			legacy.SchemaVersion, CurrentSchemaVersion,
+		))
+	}
+	cfg := Config{
+		SchemaVersion:    CurrentSchemaVersion,
+		Revision:         legacy.Revision,
+		Node:             legacy.Node,
+		System:           legacy.System,
+		NodeInbound:      legacy.NodeInbound,
+		Peers:            legacy.Peers,
+		XrayProfiles:     legacy.XrayProfiles,
+		PeerTrust:        legacy.PeerTrust,
+		NodeEgressGrants: map[string]NodeEgressGrant{},
+	}
+	normalize(&cfg)
+	if err := Validate(cfg); err != nil {
+		return Config{}, markContentError(err)
+	}
+	return cfg, nil
+}
+
 func configSchemaFromJSON(payload []byte) (int, bool, error) {
+	if err := preflightConfigJSON(payload); err != nil {
+		return 0, false, err
+	}
 	var envelope struct {
 		SchemaVersion json.RawMessage `json:"schema_version"`
 	}
@@ -329,10 +401,16 @@ func loadExisting(path string) (Config, error) {
 }
 
 func decodeConfig(b []byte) (Config, error) {
+	if err := preflightConfigJSON(b); err != nil {
+		return Config{}, err
+	}
 	var cfg Config
 	decoder := json.NewDecoder(bytes.NewReader(b))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			err = configErrorf("config.schema_newer_or_unknown: %w", err)
+		}
 		return Config{}, markContentError(err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
@@ -618,6 +696,9 @@ func Validate(cfg Config) error {
 	if err := validatePeers(cfg.Peers, cfg.XrayProfiles); err != nil {
 		return err
 	}
+	if err := validateNodeEgressGrants(cfg.NodeEgressGrants, cfg.Peers); err != nil {
+		return err
+	}
 	seenInboundKinds := make(map[string]struct{}, len(cfg.NodeInbound))
 	seenInboundListeners := make(map[string]string, len(cfg.NodeInbound))
 	for _, in := range cfg.NodeInbound {
@@ -710,7 +791,13 @@ func normalize(cfg *Config) {
 	if cfg.PeerTrust == nil {
 		cfg.PeerTrust = map[string]PeerTrustGrant{}
 	}
+	if cfg.NodeEgressGrants == nil {
+		cfg.NodeEgressGrants = map[string]NodeEgressGrant{}
+	} else {
+		cfg.NodeEgressGrants = cloneNodeEgressGrants(cfg.NodeEgressGrants)
+	}
 	normalizePeers(cfg.Peers)
+	normalizeNodeEgressGrants(cfg.NodeEgressGrants)
 	for index := range cfg.NodeInbound {
 		if cfg.NodeInbound[index].Purpose == "" {
 			switch cfg.NodeInbound[index].Kind {
@@ -722,6 +809,92 @@ func normalize(cfg *Config) {
 		}
 	}
 	SortStable(cfg)
+}
+
+func cloneNodeEgressGrants(grants map[string]NodeEgressGrant) map[string]NodeEgressGrant {
+	cloned := make(map[string]NodeEgressGrant, len(grants))
+	for key, grant := range grants {
+		grant.AllowCIDRs = append([]string(nil), grant.AllowCIDRs...)
+		grant.AllowPrivateCIDRs = append([]string(nil), grant.AllowPrivateCIDRs...)
+		grant.DenyCIDRs = append([]string(nil), grant.DenyCIDRs...)
+		grant.AllowPorts = append([]EgressPortRange(nil), grant.AllowPorts...)
+		cloned[key] = grant
+	}
+	return cloned
+}
+
+func normalizeNodeEgressGrants(grants map[string]NodeEgressGrant) {
+	for key, grant := range grants {
+		sort.Strings(grant.AllowCIDRs)
+		sort.Strings(grant.AllowPrivateCIDRs)
+		sort.Strings(grant.DenyCIDRs)
+		sort.SliceStable(grant.AllowPorts, func(i, j int) bool {
+			if grant.AllowPorts[i].From != grant.AllowPorts[j].From {
+				return grant.AllowPorts[i].From < grant.AllowPorts[j].From
+			}
+			return grant.AllowPorts[i].To < grant.AllowPorts[j].To
+		})
+		grants[key] = grant
+	}
+}
+
+func validateNodeEgressGrants(grants map[string]NodeEgressGrant, peers []PeerConfig) error {
+	directPeers := make(map[string]PeerConfig, len(peers))
+	for _, peer := range peers {
+		directPeers[peer.NodeID] = peer
+	}
+	keys := make([]string, 0, len(grants))
+	for key := range grants {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		grant := grants[key]
+		if key == "" || strings.TrimSpace(key) != key || grant.SourceNodeID != key {
+			return configErrorf("config.node_egress_grant_source_mismatch: %s", key)
+		}
+		peer, exists := directPeers[key]
+		if !exists {
+			return configErrorf("config.node_egress_grant_peer_unknown: %s", key)
+		}
+		if !peer.Direction.CanAcceptInbound() {
+			return configErrorf("config.node_egress_grant_peer_inbound_required: %s", key)
+		}
+		if grant.Network != "tcp" {
+			return configErrorf("config.node_egress_grant_network_invalid: %s", key)
+		}
+		publicAllowed, err := parseCanonicalGrantPrefixes(key, "allow_cidrs", grant.AllowCIDRs)
+		if err != nil {
+			return err
+		}
+		privateAllowed, err := parseCanonicalGrantPrefixes(key, "allow_private_cidrs", grant.AllowPrivateCIDRs)
+		if err != nil {
+			return err
+		}
+		denied, err := parseCanonicalGrantPrefixes(key, "deny_cidrs", grant.DenyCIDRs)
+		if err != nil {
+			return err
+		}
+		ports := make([]egresspolicy.PortRange, len(grant.AllowPorts))
+		for index, portRange := range grant.AllowPorts {
+			ports[index] = egresspolicy.PortRange{From: portRange.From, To: portRange.To}
+		}
+		if _, err := egresspolicy.NewPolicy(publicAllowed, privateAllowed, denied, ports); err != nil {
+			return configErrorf("config.node_egress_grant_invalid: %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func parseCanonicalGrantPrefixes(nodeID, field string, values []string) ([]netip.Prefix, error) {
+	prefixes, err := egresspolicy.ParseCanonicalPrefixes(values)
+	if errors.Is(err, egresspolicy.ErrDuplicatePrefix) {
+		return nil, configErrorf("config.node_egress_grant_cidr_duplicate: %s %s", nodeID, field)
+	}
+	if err != nil {
+		return nil, configErrorf("config.node_egress_grant_cidr_invalid: %s %s", nodeID, field)
+	}
+	return prefixes, nil
 }
 
 func validateXrayProfile(profile XrayProfile) error {

@@ -703,12 +703,15 @@ func xrayStatusFrom(planeStatus dataplane.Status) controlapi.XrayStatus {
 		state = controlapi.RuntimeStateStarting
 	}
 	result := controlapi.XrayStatus{
-		State:                state,
-		FailStopped:          planeStatus.FailStopped,
-		Draining:             make([]controlapi.XrayGenerationStatus, 0, len(status.Draining)),
-		Inbounds:             make([]controlapi.XrayInboundStatus, 0, len(planeStatus.Listeners)),
-		StrictStreamOutbound: status.StrictStreamOutbound,
-		StrictPacketOutbound: status.StrictPacketOutbound,
+		State:                       state,
+		FailStopped:                 planeStatus.FailStopped,
+		Draining:                    make([]controlapi.XrayGenerationStatus, 0, len(status.Draining)),
+		Inbounds:                    make([]controlapi.XrayInboundStatus, 0, len(planeStatus.Listeners)),
+		StrictStreamOutbound:        status.StrictStreamOutbound,
+		StrictPacketOutbound:        status.StrictPacketOutbound,
+		EgressAuthorizationRevision: planeStatus.EgressAuthorizationRevision,
+		EgressAuthorizationDigest:   hex.EncodeToString(planeStatus.EgressAuthorizationDigest[:]),
+		EgressAuthorizationSources:  planeStatus.EgressAuthorizationSources,
 	}
 	for _, inbound := range planeStatus.Listeners {
 		result.Inbounds = append(result.Inbounds, controlapi.XrayInboundStatus{

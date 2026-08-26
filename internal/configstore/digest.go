@@ -12,5 +12,14 @@ func ContentDigest(cfg Config) ([sha256.Size]byte, error) {
 	if err != nil {
 		return [sha256.Size]byte{}, err
 	}
+	var normalized Config
+	if err := json.Unmarshal(encoded, &normalized); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	normalize(&normalized)
+	encoded, err = json.Marshal(normalized)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
 	return sha256.Sum256(encoded), nil
 }
