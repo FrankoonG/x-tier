@@ -35,7 +35,9 @@ type seedEnvelope struct {
 }
 
 // Create generates and atomically persists a new identity. It never overwrites
-// an existing path.
+// an existing path. On Windows, independent processes creating seed files in
+// the same directory must serialize that operation externally; X-Tier's
+// production callers do so through the configstore transaction lock.
 func Create(path string) (*Identity, error) {
 	seed, err := CreateSeed(path)
 	if err != nil {
@@ -54,7 +56,8 @@ func Load(path string) (*Identity, error) {
 }
 
 // CreateSeed generates and atomically persists a NodeSeed. It never overwrites
-// an existing path.
+// an existing path. It has the same Windows cross-process serialization
+// requirement as Create.
 func CreateSeed(path string) (NodeSeed, error) {
 	if path == "" {
 		return NodeSeed{}, fs.ErrInvalid
@@ -194,6 +197,12 @@ func UnmarshalSeedEnvelope(data []byte) (NodeSeed, error) {
 }
 
 func writeExclusiveAtomic(path string, data []byte) error {
+	return withSecretPublicationLock(func() error {
+		return writeExclusiveAtomicUnserialized(path, data)
+	})
+}
+
+func writeExclusiveAtomicUnserialized(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 	if base == "." || base == string(filepath.Separator) || base == "" {

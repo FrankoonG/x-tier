@@ -7,10 +7,22 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+var secretPublicationMu sync.Mutex
+
+func withSecretPublicationLock(publish func() error) error {
+	// Directory DACL propagation can race another creator securing its temporary
+	// file. Production cross-process calls are serialized by configstore; this
+	// closes the remaining in-process Windows permission race.
+	secretPublicationMu.Lock()
+	defer secretPublicationMu.Unlock()
+	return publish()
+}
 
 func secureSecretDirectory(path string) error {
 	return applyOwnerOnlyACL(path, nil, true)

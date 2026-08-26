@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -97,5 +98,44 @@ func TestWindowsCreateRepairsDirectoryACLBeforePublish(t *testing.T) {
 	}
 	if _, err := Load(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowsSeedPublicationLockCoversDirectorySetup(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "keystore")
+	path := filepath.Join(dir, "node-seed.json")
+	secretPublicationMu.Lock()
+
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		close(started)
+		result <- writeExclusiveAtomic(path, []byte("permission-race-probe\n"))
+	}()
+	<-started
+	scopeFailure := ""
+	completed := false
+	var publicationErr error
+	select {
+	case publicationErr = <-result:
+		completed = true
+		scopeFailure = "publication completed while serialization lock was held"
+	case <-time.After(100 * time.Millisecond):
+		if _, err := os.Lstat(dir); err == nil {
+			scopeFailure = "publication created its directory before acquiring the serialization lock"
+		} else if !os.IsNotExist(err) {
+			scopeFailure = "inspect blocked publication directory: " + err.Error()
+		}
+	}
+
+	secretPublicationMu.Unlock()
+	if !completed {
+		publicationErr = <-result
+	}
+	if scopeFailure != "" {
+		t.Fatal(scopeFailure)
+	}
+	if publicationErr != nil {
+		t.Fatalf("serialized publication failed: %v", publicationErr)
 	}
 }

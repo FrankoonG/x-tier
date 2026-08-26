@@ -10,6 +10,8 @@ import (
 	"syscall"
 )
 
+func withSecretPublicationLock(publish func() error) error { return publish() }
+
 func secureSecretDirectory(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
