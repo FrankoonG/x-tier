@@ -16,13 +16,66 @@ import (
 	"github.com/FrankoonG/rendr"
 )
 
+var testOriginClaim = OriginClaim{
+	Assurance:         OriginAssuranceXrayBearer,
+	ClaimedPeerNodeID: "node-a",
+	InboundTag:        "xtier-node-vless",
+	PrincipalHandle:   "xp.node-a",
+}
+
+func TestOriginAndFlowClaimsValidateBearerBoundary(t *testing.T) {
+	if err := testOriginClaim.Validate(); err != nil {
+		t.Fatalf("valid origin claim: %v", err)
+	}
+	for name, claim := range map[string]OriginClaim{
+		"missing assurance":  {ClaimedPeerNodeID: "node-a", InboundTag: "xtier-node-vless", PrincipalHandle: "xp.node-a"},
+		"stronger assurance": {Assurance: "node_session", ClaimedPeerNodeID: "node-a", InboundTag: "xtier-node-vless", PrincipalHandle: "xp.node-a"},
+		"missing peer":       {Assurance: OriginAssuranceXrayBearer, InboundTag: "xtier-node-vless", PrincipalHandle: "xp.node-a"},
+		"missing inbound":    {Assurance: OriginAssuranceXrayBearer, ClaimedPeerNodeID: "node-a", PrincipalHandle: "xp.node-a"},
+		"missing principal":  {Assurance: OriginAssuranceXrayBearer, ClaimedPeerNodeID: "node-a", InboundTag: "xtier-node-vless"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := claim.Validate(); err == nil {
+				t.Fatal("invalid origin claim succeeded")
+			}
+		})
+	}
+	valid := FlowClaim{
+		Origin:         testOriginClaim,
+		FlowID:         [16]byte{1},
+		PeerInstanceID: PeerInstanceID{1},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid flow claim: %v", err)
+	}
+	invalidFlow := valid
+	invalidFlow.FlowID = [16]byte{}
+	if err := invalidFlow.Validate(); err == nil {
+		t.Fatal("zero flow ID succeeded")
+	}
+	invalidPeer := valid
+	invalidPeer.PeerInstanceID = PeerInstanceID{}
+	if err := invalidPeer.Validate(); err == nil {
+		t.Fatal("zero peer instance ID succeeded")
+	}
+}
+
 func TestRuntimeCarriesTargetAndBidirectionalBytes(t *testing.T) {
 	echo := startEcho(t)
 	server := newTestRuntime(t)
 	client := newTestRuntime(t)
-	wireRuntimes(t, client, server, func(ctx context.Context, host string, port uint16) (net.Conn, error) {
-		if got := net.JoinHostPort(host, itoa(port)); got != echo.Addr().String() {
+	wireRuntimes(t, client, server, func(ctx context.Context, request EgressRequest) (net.Conn, error) {
+		if got := net.JoinHostPort(request.Destination.Host, itoa(request.Destination.Port)); got != echo.Addr().String() {
 			t.Fatalf("egress target = %s, want %s", got, echo.Addr())
+		}
+		if request.Claim.Origin != testOriginClaim {
+			t.Fatalf("egress origin = %+v, want %+v", request.Claim.Origin, testOriginClaim)
+		}
+		if request.Claim.FlowID == ([16]byte{}) {
+			t.Fatal("egress flow ID is zero")
+		}
+		if request.Claim.PeerInstanceID == (PeerInstanceID{}) {
+			t.Fatal("egress peer instance ID is zero")
 		}
 		return (&net.Dialer{}).DialContext(ctx, "tcp", echo.Addr().String())
 	})
@@ -61,7 +114,7 @@ func TestRuntimeReportsSafeTerminalDialFailure(t *testing.T) {
 		secret     = "credential=do-not-disclose"
 	)
 	want := errors.New("dial " + targetHost + " denied: " + secret)
-	wireRuntimes(t, client, server, func(context.Context, string, uint16) (net.Conn, error) {
+	wireRuntimes(t, client, server, func(context.Context, EgressRequest) (net.Conn, error) {
 		return nil, want
 	})
 	_, err := client.Dial(context.Background(), "peer-b", Destination{Host: targetHost, Port: 443})
@@ -111,7 +164,7 @@ func TestAcceptedSessionOpenHandshakeHasDeadline(t *testing.T) {
 	defer right.Close()
 	runtime := &Runtime{ctx: ctx, handshakeTimeout: 50 * time.Millisecond}
 	done := make(chan error, 1)
-	go func() { done <- runtime.serveAccepted(fakeRendrConn{Conn: left}) }()
+	go func() { done <- runtime.serveAccepted(fakeRendrConn{Conn: left}, testOriginClaim) }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -119,6 +172,126 @@ func TestAcceptedSessionOpenHandshakeHasDeadline(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("stalled open handshake was not bounded")
+	}
+}
+
+func TestAcceptedSessionTimeoutNeverAcknowledgesSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	left, right := net.Pipe()
+	defer right.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	runtime := &Runtime{ctx: ctx, handshakeTimeout: 40 * time.Millisecond}
+	runtime.egressDialer = func(dialCtx context.Context, _ EgressRequest) (net.Conn, error) {
+		<-dialCtx.Done()
+		return upstream, nil
+	}
+	flowID := [16]byte{1}
+	accepted := fakeRendrConn{
+		Conn:   left,
+		flowID: flowID,
+		status: rendr.Status{Peer: rendr.PeerStatus{InstanceID: rendr.InstanceID{1}}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- runtime.serveAccepted(accepted, testOriginClaim) }()
+	if err := writeOpen(right, Destination{Host: "deadline.example.test", Port: 443}); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 8)
+	if _, err := io.ReadFull(right, header); err == nil && bytes.Equal(header[:4], ackMagic[:]) && ackCode(header[4]) == ackOK {
+		t.Fatal("timed-out accepted session emitted ackOK")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("serveAccepted error = %v, want deadline exceeded", err)
+		}
+		if category := categoryOf(err); category != runtimeErrorHandshakeTimeout {
+			t.Fatalf("serveAccepted category = %v, want handshake timeout", category)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed-out accepted session did not return")
+	}
+	runtime.sessionCloseWG.Wait()
+}
+
+func TestAcceptedSessionDeadlineClearFailureNeverAcknowledgesSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	left, right := net.Pipe()
+	defer right.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	clearFailure := errors.New("injected deadline clear failure")
+	acceptedConn := &deadlineClearFailureConn{Conn: left, err: clearFailure}
+	runtime := &Runtime{ctx: ctx, handshakeTimeout: time.Second}
+	runtime.egressDialer = func(context.Context, EgressRequest) (net.Conn, error) {
+		return upstream, nil
+	}
+	accepted := fakeRendrConn{
+		Conn:   acceptedConn,
+		flowID: [16]byte{1},
+		status: rendr.Status{Peer: rendr.PeerStatus{InstanceID: rendr.InstanceID{1}}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- runtime.serveAccepted(accepted, testOriginClaim) }()
+	if err := right.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOpen(right, Destination{Host: "deadline-clear.example.test", Port: 443}); err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 8)
+	if _, err := io.ReadFull(right, header); err == nil && bytes.Equal(header[:4], ackMagic[:]) && ackCode(header[4]) == ackOK {
+		t.Fatal("deadline-clear failure emitted ackOK")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, clearFailure) {
+			t.Fatalf("serveAccepted error = %v, want deadline clear failure", err)
+		}
+		if category := categoryOf(err); category != runtimeErrorCarrier {
+			t.Fatalf("serveAccepted category = %v, want carrier", category)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deadline-clear failure did not return")
+	}
+	runtime.sessionCloseWG.Wait()
+}
+
+func TestConnectionCancellationWatcherStopJoinsInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	interruptEntered := make(chan struct{})
+	releaseInterrupt := make(chan struct{})
+	watcher := watchConnectionCancellation(ctx, nil, func() {
+		close(interruptEntered)
+		<-releaseInterrupt
+	})
+	cancel()
+	select {
+	case <-interruptEntered:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation interrupt did not start")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		watcher.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("watcher Stop returned before interrupt callback exited")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseInterrupt)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("watcher Stop did not return after interrupt callback exited")
 	}
 }
 
@@ -157,11 +330,27 @@ func TestOpenSessionUsesRuntimeHandshakeTimeout(t *testing.T) {
 	}
 }
 
-type fakeRendrConn struct{ net.Conn }
+type fakeRendrConn struct {
+	net.Conn
+	flowID [16]byte
+	status rendr.Status
+}
 
 func (fakeRendrConn) Paths() []rendr.PathInfo { return nil }
-func (fakeRendrConn) FlowID() [16]byte        { return [16]byte{} }
-func (fakeRendrConn) Status() rendr.Status    { return rendr.Status{} }
+func (c fakeRendrConn) FlowID() [16]byte      { return c.flowID }
+func (c fakeRendrConn) Status() rendr.Status  { return c.status }
+
+type deadlineClearFailureConn struct {
+	net.Conn
+	err error
+}
+
+func (c *deadlineClearFailureConn) SetDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		return c.err
+	}
+	return c.Conn.SetDeadline(deadline)
+}
 
 func TestRuntimeDialCancellationInterruptsOpenHandshake(t *testing.T) {
 	server := newTestRuntime(t)
@@ -169,7 +358,7 @@ func TestRuntimeDialCancellationInterruptsOpenHandshake(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
-	wireRuntimes(t, client, server, func(context.Context, string, uint16) (net.Conn, error) {
+	wireRuntimes(t, client, server, func(context.Context, EgressRequest) (net.Conn, error) {
 		close(entered)
 		<-release
 		return nil, errors.New("blocked terminal dial released")
@@ -205,7 +394,7 @@ func TestRuntimeCloseClosesActiveClientSessions(t *testing.T) {
 	echo := startEcho(t)
 	server := newTestRuntime(t)
 	client := newTestRuntime(t)
-	wireRuntimes(t, client, server, func(ctx context.Context, _ string, _ uint16) (net.Conn, error) {
+	wireRuntimes(t, client, server, func(ctx context.Context, _ EgressRequest) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", echo.Addr().String())
 	})
 
@@ -234,7 +423,7 @@ func TestRuntimeRevokeContextWaitsForApplicationSessions(t *testing.T) {
 	echo := startEcho(t)
 	server := newTestRuntime(t)
 	client := newTestRuntime(t)
-	wireRuntimes(t, client, server, func(ctx context.Context, _ string, _ uint16) (net.Conn, error) {
+	wireRuntimes(t, client, server, func(ctx context.Context, _ EgressRequest) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", echo.Addr().String())
 	})
 	conn, err := client.Dial(context.Background(), "peer-b", destinationFromAddr(t, echo.Addr().String()))
@@ -411,7 +600,7 @@ func TestRuntimeRevocationInterruptsAcceptedHandshakeBeforeBlockedClose(t *testi
 	go func() {
 		defer runtime.wg.Done()
 		defer runtime.finishSession(&runtime.activeAccepted)
-		acceptedDone <- runtime.serveAccepted(conn)
+		acceptedDone <- runtime.serveAccepted(conn, testOriginClaim)
 	}()
 	select {
 	case <-readEntered:
@@ -627,6 +816,55 @@ func TestAckUsesFixedSafeClassifications(t *testing.T) {
 	}
 }
 
+func TestWriteFullTreatsCompleteWriteWithErrorAsDelivered(t *testing.T) {
+	injected := errors.New("writer reported an error after accepting all bytes")
+	writer := &fullWriteErrorWriter{err: injected}
+	if err := writeAck(writer, ackOK); err != nil {
+		t.Fatalf("writeAck returned an error after a complete write: %v", err)
+	}
+	if err := readAck(bytes.NewReader(writer.Bytes())); err != nil {
+		t.Fatalf("delivered ACK frame is invalid: %v", err)
+	}
+}
+
+func TestSuccessAckWriteIsTheCancellationLinearizationPoint(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	left, right := net.Pipe()
+	defer right.Close()
+	conn := &cancelAfterWriteConn{Conn: left, cancel: cancel}
+	runtime := &Runtime{ctx: ctx}
+	readDone := make(chan error, 1)
+	go func() {
+		frame := make([]byte, 8)
+		_, err := io.ReadFull(right, frame)
+		if err == nil {
+			err = readAck(bytes.NewReader(frame))
+		}
+		readDone <- err
+	}()
+	if err := runtime.writeSuccessAck(conn); err != nil {
+		t.Fatalf("writeSuccessAck after complete delivery: %v", err)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("client did not receive ackOK: %v", err)
+	}
+	runtime.sessionCloseWG.Wait()
+}
+
+func TestSuccessAckTimeoutPreservesDeadlineClassification(t *testing.T) {
+	runtime := &Runtime{ctx: context.Background()}
+	conn := newBlockingAckConn()
+	started := time.Now()
+	err := runtime.writeSuccessAck(conn)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("writeSuccessAck error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed < ackWriteTimeout/2 || elapsed > ackWriteTimeout+time.Second {
+		t.Fatalf("ACK timeout elapsed = %s, configured = %s", elapsed, ackWriteTimeout)
+	}
+	runtime.sessionCloseWG.Wait()
+}
+
 func TestRuntimeStatusErrorCategoriesAreStable(t *testing.T) {
 	cases := []struct {
 		category runtimeErrorCategory
@@ -702,7 +940,7 @@ func TestRuntimeStatusRedactsCarrierError(t *testing.T) {
 	const secret = "peer-token=do-not-disclose"
 	if err := runtime.SetDialers(func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("carrier authentication failed: " + secret)
-	}, func(context.Context, string, uint16) (net.Conn, error) {
+	}, func(context.Context, EgressRequest) (net.Conn, error) {
 		return nil, errors.New("unused")
 	}); err != nil {
 		t.Fatal(err)
@@ -808,7 +1046,7 @@ func TestRuntimeRevocationDoesNotWaitForTransportClose(t *testing.T) {
 	var releaseOnce sync.Once
 	unblockClose := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(unblockClose)
-	wireRuntimes(t, client, server, func(ctx context.Context, _ string, _ uint16) (net.Conn, error) {
+	wireRuntimes(t, client, server, func(ctx context.Context, _ EgressRequest) (net.Conn, error) {
 		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", echo.Addr().String())
 		if err != nil {
 			return nil, err
@@ -950,7 +1188,7 @@ func TestRuntimeHardProxyErrorReleasesAcceptedSlot(t *testing.T) {
 	client := newTestRuntime(t)
 	hardErr := errors.New("write failure credential=do-not-disclose")
 	upstream := newBlockingWriteErrorConn(hardErr)
-	wireRuntimes(t, client, server, func(context.Context, string, uint16) (net.Conn, error) {
+	wireRuntimes(t, client, server, func(context.Context, EgressRequest) (net.Conn, error) {
 		return upstream, nil
 	})
 	waitRuntimeStatus(t, server, func(status RuntimeStatus) bool {
@@ -993,6 +1231,57 @@ type readErrorConn struct {
 	closed       chan struct{}
 	deadlineSet  chan struct{}
 }
+
+type fullWriteErrorWriter struct {
+	bytes.Buffer
+	err error
+}
+
+func (w *fullWriteErrorWriter) Write(payload []byte) (int, error) {
+	written, _ := w.Buffer.Write(payload)
+	return written, w.err
+}
+
+type cancelAfterWriteConn struct {
+	net.Conn
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (c *cancelAfterWriteConn) Write(payload []byte) (int, error) {
+	written, err := c.Conn.Write(payload)
+	if written == len(payload) {
+		c.once.Do(c.cancel)
+	}
+	return written, err
+}
+
+type blockingAckConn struct {
+	writeStarted chan struct{}
+	closed       chan struct{}
+	writeOnce    sync.Once
+	closeOnce    sync.Once
+}
+
+func newBlockingAckConn() *blockingAckConn {
+	return &blockingAckConn{writeStarted: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (c *blockingAckConn) Read([]byte) (int, error) { return 0, net.ErrClosed }
+func (c *blockingAckConn) Write([]byte) (int, error) {
+	c.writeOnce.Do(func() { close(c.writeStarted) })
+	<-c.closed
+	return 0, net.ErrClosed
+}
+func (c *blockingAckConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+func (*blockingAckConn) LocalAddr() net.Addr              { return testAddr("local") }
+func (*blockingAckConn) RemoteAddr() net.Addr             { return testAddr("remote") }
+func (*blockingAckConn) SetDeadline(time.Time) error      { return nil }
+func (*blockingAckConn) SetReadDeadline(time.Time) error  { return nil }
+func (*blockingAckConn) SetWriteDeadline(time.Time) error { return nil }
 
 func newReadErrorConn(conn net.Conn, err error) *readErrorConn {
 	return &readErrorConn{
@@ -1235,7 +1524,7 @@ func wireRuntimes(t *testing.T, client, server *Runtime, egress EgressDialer) {
 	stream := func(ctx context.Context, _ string, _ string) (net.Conn, error) {
 		left, right := net.Pipe()
 		accepted := make(chan error, 1)
-		go func() { accepted <- server.InjectCarrier(ctx, right) }()
+		go func() { accepted <- server.InjectCarrier(ctx, testOriginClaim, right) }()
 		select {
 		case err := <-accepted:
 			if err != nil {
@@ -1250,7 +1539,7 @@ func wireRuntimes(t *testing.T, client, server *Runtime, egress EgressDialer) {
 			return nil, ctx.Err()
 		}
 	}
-	if err := client.SetDialers(stream, func(context.Context, string, uint16) (net.Conn, error) {
+	if err := client.SetDialers(stream, func(context.Context, EgressRequest) (net.Conn, error) {
 		return nil, errors.New("client egress must not be used")
 	}); err != nil {
 		t.Fatal(err)

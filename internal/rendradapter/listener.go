@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -59,3 +60,44 @@ type carrierAddr string
 
 func (a carrierAddr) Network() string { return "xray" }
 func (a carrierAddr) String() string  { return string(a) }
+
+const carrierAdmissionAddressPrefix = "xtier-admission:"
+
+type admittedCarrierConn struct {
+	net.Conn
+	address carrierAddr
+	release func()
+	once    sync.Once
+}
+
+func newAdmittedCarrierConn(conn net.Conn, token string, release func()) *admittedCarrierConn {
+	return &admittedCarrierConn{
+		Conn:    conn,
+		address: carrierAddr(carrierAdmissionAddressPrefix + token),
+		release: release,
+	}
+}
+
+func (c *admittedCarrierConn) RemoteAddr() net.Addr {
+	if c == nil {
+		return carrierAddr(carrierAdmissionAddressPrefix)
+	}
+	return c.address
+}
+
+func (c *admittedCarrierConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.once.Do(func() {
+		if c.release != nil {
+			c.release()
+		}
+	})
+	return c.Conn.Close()
+}
+
+func carrierAdmissionToken(address string) (string, bool) {
+	token, ok := strings.CutPrefix(address, carrierAdmissionAddressPrefix)
+	return token, ok && token != ""
+}

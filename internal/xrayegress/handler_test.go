@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,17 +50,32 @@ func TestHandlerPreservesRealTCPHalfCloseAndResponse(t *testing.T) {
 	}()
 
 	handler := mustStartEgressHandler(t)
+	var dialNetwork, dialAddress string
+	dialer := new(net.Dialer)
+	handler.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialNetwork, dialAddress = network, address
+		return dialer.DialContext(ctx, network, address)
+	}
 	link, peer := newEgressLinkPair()
 	defer peer.Close()
 	tracker := new(egressErrorTracker)
 	port := xnet.Port(listener.Addr().(*net.TCPAddr).Port)
-	ctx := egressContext(xnet.TCPDestination(xnet.DomainAddress("localhost"), port), tracker)
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	ctx := egressContextFrom(parentCtx, xnet.TCPDestination(xnet.IPAddress(listener.Addr().(*net.TCPAddr).IP), port), tracker)
 	dispatchDone := make(chan struct{})
 	go func() {
 		handler.Dispatch(ctx, link)
 		close(dispatchDone)
 	}()
 
+	readyCtx, cancelReady := context.WithTimeout(context.Background(), handlerTestTimeout)
+	if err := ConfirmReady(readyCtx, peer); err != nil {
+		cancelReady()
+		t.Fatalf("confirm egress ready: %v", err)
+	}
+	cancelReady()
+	cancelParent()
 	mustConnWrite(t, peer, request)
 	if err := peer.CloseWrite(); err != nil {
 		t.Fatalf("close Xray uplink: %v", err)
@@ -69,34 +85,139 @@ func TestHandlerPreservesRealTCPHalfCloseAndResponse(t *testing.T) {
 	}
 	assertConnReadClosed(t, peer)
 	waitForSignal(t, dispatchDone, "egress dispatch completion")
+	if dialNetwork != "tcp4" || dialAddress != listener.Addr().String() {
+		t.Fatalf("dial target = %q %q, want tcp4 %q", dialNetwork, dialAddress, listener.Addr())
+	}
 	if err := waitForError(t, serverDone, "TCP server completion"); err != nil {
 		t.Fatalf("TCP server: %v", err)
 	}
 	assertNoEgressErrors(t, tracker)
 }
 
-func TestTargetFromContextPreservesLastDomainDestination(t *testing.T) {
-	want := xnet.TCPDestination(xnet.DomainAddress("edge-only.example.test"), 18443)
-	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{
-		{Target: xnet.TCPDestination(xnet.IPAddress(net.ParseIP("192.0.2.10")), 9)},
-		{Target: want},
-	})
+func TestConfirmReadyRejectsInvalidAndTruncatedFrames(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame []byte
+	}{
+		{name: "invalid", frame: []byte("BADFRAME")},
+		{name: "truncated", frame: readyFrame[:3]},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			left, right := net.Pipe()
+			defer left.Close()
+			writeDone := make(chan struct{})
+			go func() {
+				_, _ = right.Write(test.frame)
+				_ = right.Close()
+				close(writeDone)
+			}()
 
-	got, err := targetFromContext(ctx)
-	if err != nil {
-		t.Fatalf("targetFromContext: %v", err)
+			ctx, cancel := context.WithTimeout(context.Background(), handlerTestTimeout)
+			err := ConfirmReady(ctx, left)
+			cancel()
+			if !errors.Is(err, ErrNotReady) {
+				t.Fatalf("ConfirmReady error = %v, want ErrNotReady", err)
+			}
+			waitForSignal(t, writeDone, "readiness writer")
+		})
 	}
-	if got.Network != xnet.Network_TCP {
-		t.Fatalf("network = %s, want TCP", got.Network)
+}
+
+func TestConfirmReadyNilContextClosesConnection(t *testing.T) {
+	left, right := net.Pipe()
+	defer right.Close()
+	if err := ConfirmReady(nil, left); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("ConfirmReady error = %v, want ErrNotReady", err)
 	}
-	if got.Address.Family() != xnet.AddressFamilyDomain {
-		t.Fatalf("address family = %v, want domain", got.Address.Family())
+	readResult := make(chan error, 1)
+	go func() {
+		var one [1]byte
+		_, err := right.Read(one[:])
+		readResult <- err
+	}()
+	if err := waitForError(t, readResult, "nil-context peer close"); err == nil {
+		t.Fatal("connection remained open after nil-context readiness failure")
 	}
-	if got.Address.Domain() != want.Address.Domain() {
-		t.Fatalf("domain = %q, want %q", got.Address.Domain(), want.Address.Domain())
+}
+
+func TestConfirmReadyCancellationCannotRaceSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := newReadyCancellationRaceConn()
+	result := make(chan error, 1)
+	go func() { result <- ConfirmReady(ctx, conn) }()
+	waitForSignal(t, conn.readStarted, "readiness read")
+	cancel()
+	waitForSignal(t, conn.readDeadlineStarted, "readiness cancellation deadline")
+	close(conn.releaseRead)
+	select {
+	case err := <-result:
+		t.Fatalf("ConfirmReady returned before its cancellation callback exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
-	if got.Port != want.Port {
-		t.Fatalf("port = %d, want %d", got.Port, want.Port)
+	close(conn.releaseReadDeadline)
+	err := waitForError(t, result, "canceled readiness result")
+	if !errors.Is(err, ErrNotReady) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("ConfirmReady error = %v, want ErrNotReady and context.Canceled", err)
+	}
+}
+
+func TestConfirmReadyCancellationClosesWhenReadDeadlinesAreUnsupported(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := newUnsupportedReadyDeadlineConn()
+	result := make(chan error, 1)
+	go func() { result <- ConfirmReady(ctx, conn) }()
+	waitForSignal(t, conn.readStarted, "unsupported-deadline readiness read")
+	cancel()
+	waitForSignal(t, conn.closeStarted, "unsupported-deadline readiness close")
+	err := waitForError(t, result, "unsupported-deadline readiness result")
+	if !errors.Is(err, ErrNotReady) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("ConfirmReady error = %v, want ErrNotReady and context.Canceled", err)
+	}
+}
+
+func TestTargetFromContextCanonicalizesLastIPLiteral(t *testing.T) {
+	tests := []struct {
+		name     string
+		address  xnet.Address
+		wantAddr string
+		family   xnet.AddressFamily
+	}{
+		{
+			name:     "IPv4",
+			address:  testIPAddress{ip: net.IP{192, 0, 2, 10}, family: xnet.AddressFamilyIPv4, text: "192.000.002.010"},
+			wantAddr: "192.0.2.10:18443",
+			family:   xnet.AddressFamilyIPv4,
+		},
+		{
+			name:     "IPv6",
+			address:  testIPAddress{ip: net.ParseIP("2001:0db8:0:0:0:0:0:10"), family: xnet.AddressFamilyIPv6, text: "[2001:0DB8:0:0:0:0:0:10]"},
+			wantAddr: "[2001:db8::10]:18443",
+			family:   xnet.AddressFamilyIPv6,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{
+				{Target: xnet.TCPDestination(xnet.IPAddress(net.IP{198, 51, 100, 1}), 9)},
+				{Target: xnet.TCPDestination(test.address, 18443)},
+			})
+
+			got, err := targetFromContext(ctx)
+			if err != nil {
+				t.Fatalf("targetFromContext: %v", err)
+			}
+			if got.Network != xnet.Network_TCP {
+				t.Fatalf("network = %s, want TCP", got.Network)
+			}
+			if got.Address.Family() != test.family {
+				t.Fatalf("address family = %v, want %v", got.Address.Family(), test.family)
+			}
+			if got.NetAddr() != test.wantAddr {
+				t.Fatalf("NetAddr = %q, want %q", got.NetAddr(), test.wantAddr)
+			}
+		})
 	}
 }
 
@@ -128,16 +249,104 @@ func TestDispatchRejectsInboundContextWithoutDialing(t *testing.T) {
 	}
 }
 
-func TestDispatchRejectsUDPAndMissingTargetFailClosed(t *testing.T) {
-	handler := mustStartEgressHandler(t)
+func TestDispatchRejectsNonDialableTargetsBeforeDial(t *testing.T) {
 	tests := []struct {
 		name string
 		ctx  func(*egressErrorTracker) context.Context
 	}{
 		{
+			name: "domain",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.DomainAddress("origin.example.test"), 443), tracker)
+			},
+		},
+		{
+			name: "numeric literal encoded as domain",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.DomainAddress("192.0.2.10"), 443), tracker)
+			},
+		},
+		{
+			name: "IPv6 zone",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				address := testIPAddress{ip: net.ParseIP("fe80::1"), family: xnet.AddressFamilyIPv6, text: "[fe80::1%eth0]"}
+				return egressContext(xnet.TCPDestination(address, 443), tracker)
+			},
+		},
+		{
+			name: "IPv6 link-local without zone",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.IPAddress(net.ParseIP("fe80::1")), 443), tracker)
+			},
+		},
+		{
+			name: "IPv4-mapped IPv6",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				address := testIPAddress{ip: net.ParseIP("::ffff:192.0.2.10"), family: xnet.AddressFamilyIPv6, text: "[::ffff:192.0.2.10]"}
+				return egressContext(xnet.TCPDestination(address, 443), tracker)
+			},
+		},
+		{
+			name: "unspecified IPv4",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.AnyIP, 443), tracker)
+			},
+		},
+		{
+			name: "unspecified IPv6",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.AnyIPv6, 443), tracker)
+			},
+		},
+		{
+			name: "multicast IPv4",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.IPAddress(net.IP{224, 0, 0, 1}), 443), tracker)
+			},
+		},
+		{
+			name: "multicast IPv6",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.IPAddress(net.ParseIP("ff02::1")), 443), tracker)
+			},
+		},
+		{
+			name: "IPv4 broadcast",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.IPAddress(net.IPv4bcast), 443), tracker)
+			},
+		},
+		{
+			name: "zero port",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				return egressContext(xnet.TCPDestination(xnet.IPAddress(net.IP{192, 0, 2, 10}), 0), tracker)
+			},
+		},
+		{
+			name: "nil address",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				target := xnet.Destination{Network: xnet.Network_TCP, Port: 443}
+				return egressContext(target, tracker)
+			},
+		},
+		{
+			name: "invalid IP bytes",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				address := testIPAddress{ip: net.IP{192, 0, 2}, family: xnet.AddressFamilyIPv4, text: "192.0.2"}
+				return egressContext(xnet.TCPDestination(address, 443), tracker)
+			},
+		},
+		{
+			name: "IP family mismatch",
+			ctx: func(tracker *egressErrorTracker) context.Context {
+				address := testIPAddress{ip: net.ParseIP("2001:db8::1"), family: xnet.AddressFamilyIPv4, text: "2001:db8::1"}
+				return egressContext(xnet.TCPDestination(address, 443), tracker)
+			},
+		},
+		{
 			name: "UDP",
 			ctx: func(tracker *egressErrorTracker) context.Context {
-				return egressContext(xnet.UDPDestination(xnet.DomainAddress("dns.example.test"), 53), tracker)
+				return egressContext(xnet.UDPDestination(xnet.IPAddress(net.IP{192, 0, 2, 53}), 53), tracker)
 			},
 		},
 		{
@@ -157,14 +366,106 @@ func TestDispatchRejectsUDPAndMissingTargetFailClosed(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			handler := mustStartEgressHandler(t)
+			dialCalls := 0
+			handler.dial = func(context.Context, string, string) (net.Conn, error) {
+				dialCalls++
+				return nil, errors.New("unexpected dial")
+			}
 			link, peer := newEgressLinkPair()
 			defer peer.Close()
 			tracker := new(egressErrorTracker)
 			handler.Dispatch(test.ctx(tracker), link)
 			assertOneEgressError(t, tracker, ErrInvalidTarget)
 			assertConnFailClosed(t, peer)
+			if dialCalls != 0 {
+				t.Fatalf("dial calls = %d, want 0", dialCalls)
+			}
 		})
 	}
+}
+
+func TestDispatchRejectsConnectedPeerMismatchBeforeReadiness(t *testing.T) {
+	handler := mustStartEgressHandler(t)
+	left, right := net.Pipe()
+	defer right.Close()
+	handler.dial = func(context.Context, string, string) (net.Conn, error) {
+		return &remoteAddrConn{
+			Conn:   left,
+			remote: staticAddr("198.51.100.9:443"),
+		}, nil
+	}
+	link, peer := newEgressLinkPair()
+	defer peer.Close()
+	tracker := new(egressErrorTracker)
+	target := xnet.TCPDestination(xnet.IPAddress(net.IP{192, 0, 2, 9}), 443)
+
+	handler.Dispatch(egressContext(target, tracker), link)
+	assertOneEgressError(t, tracker, ErrPeerMismatch)
+	assertConnFailClosed(t, peer)
+
+	readResult := make(chan error, 1)
+	go func() {
+		var one [1]byte
+		_, err := right.Read(one[:])
+		readResult <- err
+	}()
+	if err := waitForError(t, readResult, "mismatched connection close"); err == nil {
+		t.Fatal("mismatched egress connection remained open")
+	}
+}
+
+func TestDispatchRedactsDialFailureBeforeReportingIt(t *testing.T) {
+	handler := mustStartEgressHandler(t)
+	const secret = "credential=never-report-this"
+	dialFailure := errors.New("upstream rejected " + secret)
+	handler.dial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, dialFailure
+	}
+	link, peer := newEgressLinkPair()
+	defer peer.Close()
+	tracker := new(egressErrorTracker)
+	target := xnet.TCPDestination(xnet.IPAddress(net.IP{192, 0, 2, 77}), 443)
+
+	handler.Dispatch(egressContext(target, tracker), link)
+	errs := tracker.snapshot()
+	if len(errs) != 1 || errors.Is(errs[0], dialFailure) {
+		t.Fatalf("originator errors = %v, want one opaque dial failure", errs)
+	}
+	for _, sensitive := range []string{secret, "192.0.2.77", dialFailure.Error()} {
+		if strings.Contains(errs[0].Error(), sensitive) {
+			t.Fatalf("reported dial error leaked %q: %v", sensitive, errs[0])
+		}
+	}
+	assertConnFailClosed(t, peer)
+}
+
+func TestCloseInterruptsBlockedReadinessWriter(t *testing.T) {
+	handler := mustStartEgressHandler(t)
+	conn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	handler.dial = func(context.Context, string, string) (net.Conn, error) {
+		return &remoteAddrConn{Conn: conn, remote: staticAddr("192.0.2.22:443")}, nil
+	}
+	link, peer := newEgressLinkPair()
+	defer peer.Close()
+	writer := newBlockingInterruptWriter()
+	link.Writer = writer
+	tracker := new(egressErrorTracker)
+	dispatchDone := make(chan struct{})
+	go func() {
+		handler.Dispatch(egressContext(xnet.TCPDestination(xnet.IPAddress(net.IP{192, 0, 2, 22}), 443), tracker), link)
+		close(dispatchDone)
+	}()
+	waitForSignal(t, writer.started, "readiness writer start")
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- handler.Close() }()
+	waitForSignal(t, writer.interrupted, "readiness writer interrupt")
+	if err := waitForError(t, closeDone, "handler close after readiness interrupt"); err != nil {
+		t.Fatal(err)
+	}
+	waitForSignal(t, dispatchDone, "dispatch after readiness interrupt")
+	assertOneEgressError(t, tracker, ErrNotReady)
 }
 
 func TestConcurrentCloseTerminatesAllActiveConnections(t *testing.T) {
@@ -210,6 +511,14 @@ func TestConcurrentCloseTerminatesAllActiveConnections(t *testing.T) {
 			t.Fatalf("accept active connection: %v", err)
 		case <-time.After(handlerTestTimeout):
 			t.Fatal("timed out accepting active connections")
+		}
+	}
+	for index, peer := range peers {
+		readyCtx, cancelReady := context.WithTimeout(context.Background(), handlerTestTimeout)
+		err := ConfirmReady(readyCtx, peer)
+		cancelReady()
+		if err != nil {
+			t.Fatalf("confirm active egress %d ready: %v", index, err)
 		}
 	}
 	waitForActiveEgressConnections(t, handler, activeConnections)
@@ -278,7 +587,7 @@ func TestConcurrentCloseWaitsForAndCancelsPendingDial(t *testing.T) {
 	tracker := new(egressErrorTracker)
 	dispatchDone := make(chan struct{})
 	go func() {
-		handler.Dispatch(egressContext(xnet.TCPDestination(xnet.DomainAddress("pending.example.test"), 443), tracker), link)
+		handler.Dispatch(egressContext(xnet.TCPDestination(xnet.IPAddress(net.IP{192, 0, 2, 20}), 443), tracker), link)
 		close(dispatchDone)
 	}()
 	waitForSignal(t, dialStarted, "pending dial start")
@@ -311,7 +620,7 @@ func TestCloseWaitsForInterruptedCopyGoroutines(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	handler.dial = func(context.Context, string, string) (net.Conn, error) {
-		return conn, nil
+		return &remoteAddrConn{Conn: conn, remote: staticAddr("192.0.2.21:443")}, nil
 	}
 
 	reader := newDelayedInterruptReader()
@@ -319,7 +628,7 @@ func TestCloseWaitsForInterruptedCopyGoroutines(t *testing.T) {
 	tracker := new(egressErrorTracker)
 	dispatchDone := make(chan struct{})
 	go func() {
-		handler.Dispatch(egressContext(xnet.TCPDestination(xnet.DomainAddress("copy.example.test"), 443), tracker), link)
+		handler.Dispatch(egressContext(xnet.TCPDestination(xnet.IPAddress(net.IP{192, 0, 2, 21}), 443), tracker), link)
 		close(dispatchDone)
 	}()
 	waitForSignal(t, reader.started, "copy reader start")
@@ -350,6 +659,131 @@ type delayedInterruptReader struct {
 	startOnce   sync.Once
 	stopOnce    sync.Once
 }
+
+type testIPAddress struct {
+	ip     net.IP
+	family xnet.AddressFamily
+	text   string
+}
+
+type remoteAddrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *remoteAddrConn) RemoteAddr() net.Addr { return c.remote }
+
+type staticAddr string
+
+func (a staticAddr) Network() string { return "tcp" }
+func (a staticAddr) String() string  { return string(a) }
+
+type readyCancellationRaceConn struct {
+	readStarted         chan struct{}
+	releaseRead         chan struct{}
+	readDeadlineStarted chan struct{}
+	releaseReadDeadline chan struct{}
+	readOnce            sync.Once
+	readDeadlineOnce    sync.Once
+}
+
+func newReadyCancellationRaceConn() *readyCancellationRaceConn {
+	return &readyCancellationRaceConn{
+		readStarted:         make(chan struct{}),
+		releaseRead:         make(chan struct{}),
+		readDeadlineStarted: make(chan struct{}),
+		releaseReadDeadline: make(chan struct{}),
+	}
+}
+
+func (c *readyCancellationRaceConn) Read(buffer []byte) (int, error) {
+	c.readOnce.Do(func() { close(c.readStarted) })
+	<-c.releaseRead
+	return copy(buffer, readyFrame[:]), nil
+}
+
+func (*readyCancellationRaceConn) Write(buffer []byte) (int, error) { return len(buffer), nil }
+func (*readyCancellationRaceConn) Close() error                     { return nil }
+func (*readyCancellationRaceConn) LocalAddr() net.Addr              { return staticAddr("local") }
+func (*readyCancellationRaceConn) RemoteAddr() net.Addr             { return staticAddr("remote") }
+func (*readyCancellationRaceConn) SetDeadline(time.Time) error      { return nil }
+func (c *readyCancellationRaceConn) SetReadDeadline(time.Time) error {
+	c.readDeadlineOnce.Do(func() {
+		close(c.readDeadlineStarted)
+		<-c.releaseReadDeadline
+	})
+	return nil
+}
+func (*readyCancellationRaceConn) SetWriteDeadline(time.Time) error { return nil }
+
+type unsupportedReadyDeadlineConn struct {
+	readStarted  chan struct{}
+	closeStarted chan struct{}
+	closed       chan struct{}
+	readOnce     sync.Once
+	closeOnce    sync.Once
+}
+
+func newUnsupportedReadyDeadlineConn() *unsupportedReadyDeadlineConn {
+	return &unsupportedReadyDeadlineConn{
+		readStarted:  make(chan struct{}),
+		closeStarted: make(chan struct{}),
+		closed:       make(chan struct{}),
+	}
+}
+
+func (c *unsupportedReadyDeadlineConn) Read([]byte) (int, error) {
+	c.readOnce.Do(func() { close(c.readStarted) })
+	<-c.closed
+	return 0, net.ErrClosed
+}
+
+func (*unsupportedReadyDeadlineConn) Write(payload []byte) (int, error) { return len(payload), nil }
+func (c *unsupportedReadyDeadlineConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closeStarted)
+		close(c.closed)
+	})
+	return nil
+}
+func (*unsupportedReadyDeadlineConn) LocalAddr() net.Addr  { return staticAddr("local") }
+func (*unsupportedReadyDeadlineConn) RemoteAddr() net.Addr { return staticAddr("remote") }
+func (*unsupportedReadyDeadlineConn) SetDeadline(time.Time) error {
+	return errors.New("deadlines unsupported")
+}
+func (*unsupportedReadyDeadlineConn) SetReadDeadline(time.Time) error {
+	return errors.New("read deadlines unsupported")
+}
+func (*unsupportedReadyDeadlineConn) SetWriteDeadline(time.Time) error {
+	return errors.New("write deadlines unsupported")
+}
+
+type blockingInterruptWriter struct {
+	started     chan struct{}
+	interrupted chan struct{}
+	startOnce   sync.Once
+	stopOnce    sync.Once
+}
+
+func newBlockingInterruptWriter() *blockingInterruptWriter {
+	return &blockingInterruptWriter{started: make(chan struct{}), interrupted: make(chan struct{})}
+}
+
+func (w *blockingInterruptWriter) WriteMultiBuffer(payload buf.MultiBuffer) error {
+	buf.ReleaseMulti(payload)
+	w.startOnce.Do(func() { close(w.started) })
+	<-w.interrupted
+	return io.ErrClosedPipe
+}
+
+func (w *blockingInterruptWriter) Interrupt() {
+	w.stopOnce.Do(func() { close(w.interrupted) })
+}
+
+func (a testIPAddress) IP() net.IP                 { return append(net.IP(nil), a.ip...) }
+func (testIPAddress) Domain() string               { panic("Domain called on test IP address") }
+func (a testIPAddress) Family() xnet.AddressFamily { return a.family }
+func (a testIPAddress) String() string             { return a.text }
 
 func newDelayedInterruptReader() *delayedInterruptReader {
 	return &delayedInterruptReader{
@@ -438,7 +872,11 @@ func mustTCPListener(t *testing.T) net.Listener {
 }
 
 func egressContext(target xnet.Destination, tracker *egressErrorTracker) context.Context {
-	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: target}})
+	return egressContextFrom(context.Background(), target, tracker)
+}
+
+func egressContextFrom(parent context.Context, target xnet.Destination, tracker *egressErrorTracker) context.Context {
+	ctx := session.ContextWithOutbounds(parent, []*session.Outbound{{Target: target}})
 	return session.TrackedConnectionError(ctx, tracker)
 }
 

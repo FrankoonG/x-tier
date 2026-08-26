@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/FrankoonG/x-tier/internal/configstore"
+	"github.com/FrankoonG/x-tier/internal/egresspolicy"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/rendradapter"
 	"github.com/FrankoonG/x-tier/internal/xraybridge"
@@ -43,7 +44,7 @@ var ErrRendrAuthorizationUpdateFailStopped = errors.New("dataplane: rendr author
 type rendrRuntime interface {
 	SetDialers(rendradapter.StreamDialer, rendradapter.EgressDialer) error
 	Dial(context.Context, string, rendradapter.Destination) (net.Conn, error)
-	InjectCarrier(context.Context, net.Conn) error
+	InjectCarrier(context.Context, rendradapter.OriginClaim, net.Conn) error
 	Status() rendradapter.RuntimeStatus
 	BeginClose()
 	RevokeContext(context.Context) error
@@ -106,6 +107,8 @@ type Plane struct {
 	xray                 *xrayrt.Runtime
 	bridge               *xraybridge.Handler
 	routes               atomic.Pointer[routeTable]
+	egressLookup         egresspolicy.LookupNetIP
+	egressPolicy         egresspolicy.Policy
 
 	reconcileMu    sync.Mutex
 	applyMu        sync.RWMutex
@@ -157,7 +160,8 @@ func Start(ctx context.Context, cfg configstore.Config) (*Plane, error) {
 			AttemptedRevision: cfg.Revision,
 			ObservedAt:        time.Now().UTC(),
 		},
-		listeners: make(map[string]string),
+		listeners:    make(map[string]string),
+		egressPolicy: egresspolicy.DefaultPolicy(),
 	}
 	p.routes.Store(&routeTable{users: map[string]string{}, carrierPeers: map[string]string{}})
 	p.activeCarriers = make(map[*closeObservedConn]carrierAuthorization)
@@ -953,8 +957,56 @@ func (p *Plane) dialCarrier(ctx context.Context, peerTag, innerTarget string) (n
 	return p.xray.Dial(ctx, peerTag, innerTarget)
 }
 
-func (p *Plane) dialEgress(ctx context.Context, host string, port uint16) (net.Conn, error) {
-	return p.xray.DialFixed(ctx, xrayconfig.EgressOutboundTag, net.JoinHostPort(host, fmt.Sprint(port)))
+func (p *Plane) dialEgress(ctx context.Context, request rendradapter.EgressRequest) (net.Conn, error) {
+	if p == nil || p.xray == nil || request.Validate() != nil || !p.egressClaimAuthorized(request.Claim.Origin) {
+		return nil, errors.New("dataplane: egress flow claim is not authorized")
+	}
+	candidates, err := egresspolicy.Resolve(ctx, p.egressLookup, p.egressPolicy, request.Destination.Host)
+	if err != nil {
+		return nil, err
+	}
+	var dialErr error
+	for _, candidate := range candidates {
+		if !p.egressClaimAuthorized(request.Claim.Origin) {
+			return nil, errors.New("dataplane: egress flow claim was revoked")
+		}
+		address := net.JoinHostPort(candidate.String(), fmt.Sprint(request.Destination.Port))
+		conn, err := p.xray.DialFixed(ctx, xrayconfig.EgressOutboundTag, address)
+		if err != nil {
+			dialErr = errors.Join(dialErr, err)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		if err := xrayegress.ConfirmReady(ctx, conn); err != nil {
+			dialErr = errors.Join(dialErr, err)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		if !p.egressClaimAuthorized(request.Claim.Origin) {
+			_ = conn.Close()
+			return nil, errors.New("dataplane: egress flow claim was revoked")
+		}
+		return conn, nil
+	}
+	if dialErr == nil {
+		dialErr = errors.New("dataplane: no permitted egress candidate")
+	}
+	return nil, dialErr
+}
+
+func (p *Plane) egressClaimAuthorized(claim rendradapter.OriginClaim) bool {
+	if p == nil || claim.Validate() != nil || claim.InboundTag != xrayconfig.NodeVLESSTag {
+		return false
+	}
+	p.applyMu.RLock()
+	routes := p.routes.Load()
+	authorized := routes != nil && routes.carrierPeers[claim.PrincipalHandle] == claim.ClaimedPeerNodeID
+	p.applyMu.RUnlock()
+	return authorized
 }
 
 func (p *Plane) publishOutboundAndRoutes(ctx context.Context, compiled *xrayconfig.Compiled) error {
@@ -1461,7 +1513,13 @@ func (p *Plane) Handoff(ctx context.Context, request xraybridge.CarrierRequest, 
 		}
 		p.carrierMu.Unlock()
 	}()
-	if err := runtime.InjectCarrier(ctx, tracked); err != nil {
+	claim := rendradapter.OriginClaim{
+		Assurance:         rendradapter.OriginAssuranceXrayBearer,
+		ClaimedPeerNodeID: peerNodeID,
+		InboundTag:        request.InboundTag,
+		PrincipalHandle:   request.AuthenticatedUser,
+	}
+	if err := runtime.InjectCarrier(ctx, claim, tracked); err != nil {
 		_ = tracked.Close()
 		return err
 	}

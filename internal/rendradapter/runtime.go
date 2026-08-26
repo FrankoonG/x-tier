@@ -2,7 +2,9 @@ package rendradapter
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -24,8 +26,10 @@ const (
 	maxTargetHost        = 253
 	maxOpenError         = 1024
 	openHandshakeTimeout = 15 * time.Second
+	ackWriteTimeout      = time.Second
 	runtimeCloseTimeout  = 5 * time.Second
 	MaxAcceptedSessions  = 512
+	maxClaimField        = 1024
 )
 
 const (
@@ -87,10 +91,73 @@ func (e *categorizedError) Unwrap() error { return e.cause }
 // outbound tag. innerTarget is X-Tier-owned and must not be user-controlled.
 type StreamDialer func(ctx context.Context, peerTag, innerTarget string) (net.Conn, error)
 
-// EgressDialer opens the final TCP connection on the accepting node. Host is
-// preserved as a domain when the client supplied one, so resolution happens at
-// the terminal node.
-type EgressDialer func(ctx context.Context, host string, port uint16) (net.Conn, error)
+// OriginClaim is the Xray bearer claim bound to the initial carrier path. It is
+// not a NodeSession proof and must not be promoted to a cryptographic NodeID.
+const OriginAssuranceXrayBearer = "xray_bearer"
+
+type OriginClaim struct {
+	Assurance         string
+	ClaimedPeerNodeID string
+	InboundTag        string
+	PrincipalHandle   string
+}
+
+func (c OriginClaim) Validate() error {
+	if c.Assurance != OriginAssuranceXrayBearer {
+		return errors.New("rendradapter: unsupported origin assurance")
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "claimed peer", value: c.ClaimedPeerNodeID},
+		{name: "inbound tag", value: c.InboundTag},
+		{name: "principal", value: c.PrincipalHandle},
+	} {
+		if field.value == "" || len(field.value) > maxClaimField || strings.TrimSpace(field.value) != field.value || strings.ContainsAny(field.value, "\x00\r\n") {
+			return fmt.Errorf("rendradapter: invalid %s claim", field.name)
+		}
+	}
+	return nil
+}
+
+type FlowClaim struct {
+	Origin         OriginClaim
+	FlowID         [16]byte
+	PeerInstanceID PeerInstanceID
+}
+
+type PeerInstanceID [16]byte
+
+func (c FlowClaim) Validate() error {
+	if err := c.Origin.Validate(); err != nil {
+		return err
+	}
+	if c.FlowID == ([16]byte{}) {
+		return errors.New("rendradapter: invalid flow claim ID")
+	}
+	if c.PeerInstanceID == (PeerInstanceID{}) {
+		return errors.New("rendradapter: invalid flow peer instance ID")
+	}
+	return nil
+}
+
+type EgressRequest struct {
+	Claim       FlowClaim
+	Destination Destination
+}
+
+func (r EgressRequest) Validate() error {
+	if err := r.Claim.Validate(); err != nil {
+		return err
+	}
+	return r.Destination.Validate()
+}
+
+// EgressDialer opens the final TCP connection on the accepting node. The
+// destination remains a domain until this callback, so the terminal node owns
+// resolution and authorization before handing a frozen literal to its dialer.
+type EgressDialer func(ctx context.Context, request EgressRequest) (net.Conn, error)
 
 type Destination struct {
 	Host string `json:"host"`
@@ -164,6 +231,8 @@ type Runtime struct {
 	acceptFailed     atomic.Bool
 	acceptedSlots    chan struct{}
 	handshakeTimeout time.Duration
+	claimMu          sync.Mutex
+	pendingClaims    map[string]OriginClaim
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -194,6 +263,7 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		sessionsClosed:   make(chan struct{}),
 		acceptedSlots:    make(chan struct{}, MaxAcceptedSessions),
 		handshakeTimeout: openHandshakeTimeout,
+		pendingClaims:    make(map[string]OriginClaim),
 	}
 	if err := rr.RegisterStreamFactory(xrayStreamFactory, rendr.StreamFactory{
 		Carrier: rendr.CarrierUnknown,
@@ -238,16 +308,97 @@ func (r *Runtime) SetDialers(stream StreamDialer, egress EgressDialer) error {
 	return nil
 }
 
-// InjectCarrier transfers one authenticated, decrypted Xray stream into the
-// Runtime.Listen source. Ownership transfers only after a successful return.
-func (r *Runtime) InjectCarrier(ctx context.Context, conn net.Conn) error {
+// InjectCarrier transfers one authenticated, decrypted Xray stream and its
+// local bearer claim into the Runtime.Listen source. Ownership transfers only
+// after a successful return.
+func (r *Runtime) InjectCarrier(ctx context.Context, claim OriginClaim, conn net.Conn) error {
 	if r == nil || r.source == nil {
 		return errors.New("rendradapter: runtime unavailable")
+	}
+	if err := claim.Validate(); err != nil {
+		return err
+	}
+	if conn == nil {
+		return errors.New("rendradapter: nil carrier connection")
 	}
 	if r.closing.Load() {
 		return net.ErrClosed
 	}
-	return r.source.Inject(ctx, conn)
+	token, err := r.registerCarrierClaim(claim)
+	if err != nil {
+		return err
+	}
+	wrapped := newAdmittedCarrierConn(conn, token, func() { r.releaseCarrierClaim(token) })
+	if err := r.source.Inject(ctx, wrapped); err != nil {
+		r.releaseCarrierClaim(token)
+		return err
+	}
+	return nil
+}
+
+func (r *Runtime) registerCarrierClaim(claim OriginClaim) (string, error) {
+	var raw [16]byte
+	for range 16 {
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", fmt.Errorf("rendradapter: carrier claim token: %w", err)
+		}
+		token := hex.EncodeToString(raw[:])
+		r.claimMu.Lock()
+		if r.closing.Load() {
+			r.claimMu.Unlock()
+			return "", net.ErrClosed
+		}
+		if len(r.pendingClaims) >= MaxAcceptedSessions {
+			r.claimMu.Unlock()
+			return "", errors.New("rendradapter: carrier claim capacity reached")
+		}
+		if _, exists := r.pendingClaims[token]; !exists {
+			r.pendingClaims[token] = claim
+			r.claimMu.Unlock()
+			return token, nil
+		}
+		r.claimMu.Unlock()
+	}
+	return "", errors.New("rendradapter: carrier claim token collision")
+}
+
+func (r *Runtime) releaseCarrierClaim(token string) {
+	r.claimMu.Lock()
+	delete(r.pendingClaims, token)
+	r.claimMu.Unlock()
+}
+
+func (r *Runtime) consumeCarrierClaim(conn rendr.Conn) (OriginClaim, error) {
+	if conn == nil {
+		return OriginClaim{}, errors.New("rendradapter: accepted stream has no carrier claim")
+	}
+	token := ""
+	for _, path := range conn.Paths() {
+		candidate, ok := carrierAdmissionToken(path.RemoteAddr)
+		if !ok {
+			candidate, ok = carrierAdmissionToken(path.Spec.Address)
+		}
+		if !ok {
+			continue
+		}
+		if token != "" && token != candidate {
+			return OriginClaim{}, errors.New("rendradapter: accepted stream has ambiguous carrier claims")
+		}
+		token = candidate
+	}
+	if token == "" {
+		return OriginClaim{}, errors.New("rendradapter: accepted stream has no carrier claim")
+	}
+	r.claimMu.Lock()
+	claim, ok := r.pendingClaims[token]
+	if ok {
+		delete(r.pendingClaims, token)
+	}
+	r.claimMu.Unlock()
+	if !ok {
+		return OriginClaim{}, errors.New("rendradapter: accepted stream carrier claim is unavailable")
+	}
+	return claim, nil
 }
 
 func (r *Runtime) Dial(ctx context.Context, peerTag string, target Destination) (net.Conn, error) {
@@ -349,12 +500,15 @@ func (r *Runtime) openSession(ctx context.Context, conn net.Conn, target Destina
 	if len(interrupts) > 0 && interrupts[0] != nil {
 		interrupt = interrupts[0]
 	}
-	stopWatcher := watchConnectionCancellation(handshakeCtx, r.ctx, interrupt)
-	defer stopWatcher()
+	watcher := watchConnectionCancellation(handshakeCtx, r.ctx, interrupt)
+	defer watcher.Stop()
 
 	err := writeOpen(conn, target)
 	if err == nil {
 		err = readAck(conn)
+	}
+	if err == nil {
+		err = watcher.Commit()
 	}
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -363,38 +517,134 @@ func (r *Runtime) openSession(ctx context.Context, conn net.Conn, target Destina
 	if r.ctx.Err() != nil {
 		return categorized(runtimeErrorCanceled, net.ErrClosed)
 	}
-	if handshakeCtx.Err() != nil {
-		return categorized(runtimeErrorHandshakeTimeout, fmt.Errorf("rendradapter: opening terminal session: %w", handshakeCtx.Err()))
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(handshakeCtx.Err(), context.DeadlineExceeded) {
+		return categorized(runtimeErrorHandshakeTimeout, fmt.Errorf("rendradapter: opening terminal session: %w", errors.Join(err, handshakeCtx.Err())))
 	}
 	return categorized(classifyOpenError(err), err)
 }
 
-func watchConnectionCancellation(ctx, runtimeCtx context.Context, interrupt func()) func() {
-	done := make(chan struct{})
-	watcherDone := make(chan struct{})
+type cancellationWatcherState uint8
+
+const (
+	cancellationPending cancellationWatcherState = iota
+	cancellationCommitted
+	cancellationFailed
+)
+
+type connectionCancellationWatcher struct {
+	ctx        context.Context
+	runtimeCtx context.Context
+	interrupt  func()
+	stop       chan struct{}
+	done       chan struct{}
+	stopOnce   sync.Once
+
+	mu    sync.Mutex
+	state cancellationWatcherState
+	cause error
+}
+
+func watchConnectionCancellation(ctx, runtimeCtx context.Context, interrupt func()) *connectionCancellationWatcher {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	watcher := &connectionCancellationWatcher{
+		ctx: ctx, runtimeCtx: runtimeCtx, interrupt: interrupt,
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
 	var runtimeDone <-chan struct{}
 	if runtimeCtx != nil {
 		runtimeDone = runtimeCtx.Done()
 	}
 	go func() {
-		defer close(watcherDone)
+		defer close(watcher.done)
 		select {
 		case <-ctx.Done():
-			if interrupt != nil {
-				interrupt()
-			}
+			watcher.fail(context.Cause(ctx))
 		case <-runtimeDone:
-			if interrupt != nil {
-				interrupt()
-			}
-		case <-done:
+			watcher.fail(net.ErrClosed)
+		case <-watcher.stop:
 		}
 	}()
-	var stopOnce sync.Once
-	return func() {
-		stopOnce.Do(func() { close(done) })
-		<-watcherDone
+	return watcher
+}
+
+func (w *connectionCancellationWatcher) Commit() error {
+	if w == nil {
+		return context.Canceled
 	}
+	interrupt := false
+	w.mu.Lock()
+	switch w.state {
+	case cancellationFailed:
+		// The watcher already owns the failure and interruption.
+	case cancellationCommitted:
+		w.mu.Unlock()
+		w.Stop()
+		return nil
+	default:
+		if cause := w.currentCause(); cause != nil {
+			w.state = cancellationFailed
+			w.cause = cause
+			interrupt = true
+		} else {
+			w.state = cancellationCommitted
+		}
+	}
+	cause := w.cause
+	w.mu.Unlock()
+	if interrupt && w.interrupt != nil {
+		w.interrupt()
+	}
+	w.Stop()
+	return cause
+}
+
+func (w *connectionCancellationWatcher) Stop() {
+	if w == nil {
+		return
+	}
+	w.stopOnce.Do(func() { close(w.stop) })
+	<-w.done
+}
+
+func (w *connectionCancellationWatcher) fail(cause error) {
+	if cause == nil {
+		cause = context.Canceled
+	}
+	interrupt := false
+	w.mu.Lock()
+	if w.state == cancellationPending {
+		w.state = cancellationFailed
+		w.cause = cause
+		interrupt = true
+	}
+	w.mu.Unlock()
+	if interrupt && w.interrupt != nil {
+		w.interrupt()
+	}
+}
+
+func (w *connectionCancellationWatcher) currentCause() error {
+	if cause := context.Cause(w.ctx); cause != nil {
+		return cause
+	}
+	if deadline, ok := w.ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	if w.runtimeCtx != nil && context.Cause(w.runtimeCtx) != nil {
+		return net.ErrClosed
+	}
+	return nil
+}
+
+func (w *connectionCancellationWatcher) Cause() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cause
 }
 
 func (r *Runtime) releaseClient(conn *trackedConn) {
@@ -684,6 +934,13 @@ func (r *Runtime) acceptLoop() {
 			}
 			return
 		}
+		claim, claimErr := r.consumeCarrierClaim(conn)
+		if claimErr != nil {
+			<-r.acceptedSlots
+			r.retireUnadmittedAccepted(conn)
+			r.recordError(runtimeErrorProtocol)
+			continue
+		}
 		r.admissionMu.Lock()
 		if r.closing.Load() {
 			r.admissionMu.Unlock()
@@ -700,7 +957,7 @@ func (r *Runtime) acceptLoop() {
 			defer r.wg.Done()
 			defer func() { <-r.acceptedSlots }()
 			defer r.finishSession(&r.activeAccepted)
-			if err := r.serveAccepted(conn); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+			if err := r.serveAccepted(conn, claim); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 				r.recordError(categoryOf(err))
 			}
 		}()
@@ -711,7 +968,7 @@ func (r *Runtime) retireUnadmittedAccepted(conn net.Conn) {
 	r.scheduleSessionConnClose(conn)
 }
 
-func (r *Runtime) serveAccepted(conn rendr.Conn) error {
+func (r *Runtime) serveAccepted(conn rendr.Conn, origin OriginClaim) error {
 	var carrierCloseOnce sync.Once
 	closeCarrier := func() {
 		carrierCloseOnce.Do(func() { r.scheduleSessionConnClose(conn) })
@@ -719,11 +976,11 @@ func (r *Runtime) serveAccepted(conn rendr.Conn) error {
 	defer closeCarrier()
 	handshakeCtx, cancel := context.WithTimeout(r.ctx, r.handshakeTimeout)
 	defer cancel()
-	stopHandshakeWatcher := watchConnectionCancellation(handshakeCtx, nil, func() {
+	handshakeWatcher := watchConnectionCancellation(handshakeCtx, nil, func() {
 		r.scheduleSessionTask(func() { _ = conn.SetDeadline(time.Now()) })
 		closeCarrier()
 	})
-	defer stopHandshakeWatcher()
+	defer handshakeWatcher.Stop()
 	if deadline, ok := handshakeCtx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
 			return categorized(runtimeErrorInternal, err)
@@ -748,8 +1005,24 @@ func (r *Runtime) serveAccepted(conn rendr.Conn) error {
 		_ = writeAck(conn, ackEgressUnavailable)
 		return categorized(runtimeErrorEgressUnavailable, err)
 	}
-	upstream, err := dialer(handshakeCtx, target.Host, target.Port)
+	status := conn.Status()
+	request := EgressRequest{
+		Claim: FlowClaim{
+			Origin:         origin,
+			FlowID:         conn.FlowID(),
+			PeerInstanceID: PeerInstanceID(status.Peer.InstanceID),
+		},
+		Destination: target,
+	}
+	if err := request.Validate(); err != nil {
+		_ = writeAck(conn, ackInvalidRequest)
+		return categorized(runtimeErrorProtocol, err)
+	}
+	upstream, err := dialer(handshakeCtx, request)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(handshakeCtx.Err(), context.Canceled) {
+			return categorized(runtimeErrorCanceled, errors.Join(err, handshakeCtx.Err()))
+		}
 		category := runtimeErrorEgressUnavailable
 		code := ackEgressUnavailable
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(handshakeCtx.Err(), context.DeadlineExceeded) {
@@ -764,24 +1037,51 @@ func (r *Runtime) serveAccepted(conn rendr.Conn) error {
 		upstreamCloseOnce.Do(func() { r.scheduleSessionConnClose(upstream) })
 	}
 	defer closeUpstream()
-	if err := writeAck(conn, ackOK); err != nil {
-		return categorized(runtimeErrorCarrier, err)
-	}
-	stopHandshakeWatcher()
-	if err := handshakeCtx.Err(); err != nil {
+	if err := handshakeWatcher.Commit(); err != nil {
 		category := runtimeErrorCanceled
 		if errors.Is(err, context.DeadlineExceeded) {
 			category = runtimeErrorHandshakeTimeout
 		}
 		return categorized(category, err)
 	}
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		return categorized(runtimeErrorInternal, err)
+	cancel()
+	if err := r.writeSuccessAck(conn); err != nil {
+		category := runtimeErrorCarrier
+		if errors.Is(err, context.DeadlineExceeded) {
+			category = runtimeErrorHandshakeTimeout
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+			category = runtimeErrorCanceled
+		}
+		return categorized(category, err)
 	}
 	return categorized(runtimeErrorStream, proxyStreamWithInterrupt(r.ctx, conn, upstream, func() {
 		closeCarrier()
 		closeUpstream()
 	}, r.scheduleSessionTask))
+}
+
+func (r *Runtime) writeSuccessAck(conn net.Conn) error {
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
+	ackCtx, cancel := context.WithTimeout(r.ctx, ackWriteTimeout)
+	defer cancel()
+	watcher := watchConnectionCancellation(ackCtx, nil, func() {
+		r.scheduleSessionConnClose(conn)
+	})
+	err := writeAck(conn, ackOK)
+	watcher.Stop()
+	if err == nil {
+		// A complete protocol frame is the success linearization point. A
+		// concurrent runtime cancellation may close the new stream, but cannot
+		// retroactively turn an acknowledgement already delivered into failure.
+		return nil
+	}
+	cause := watcher.Cause()
+	if cause == nil {
+		cause = context.Cause(ackCtx)
+	}
+	return errors.Join(cause, err)
 }
 
 func (r *Runtime) scheduleSessionConnClose(conn net.Conn) {
@@ -1038,13 +1338,19 @@ func writeAck(w io.Writer, code ackCode) error {
 func writeFull(w io.Writer, payload []byte) error {
 	for len(payload) > 0 {
 		written, err := w.Write(payload)
-		if err != nil {
-			return err
-		}
-		if written <= 0 || written > len(payload) {
+		if written < 0 || written > len(payload) {
 			return io.ErrShortWrite
 		}
 		payload = payload[written:]
+		if len(payload) == 0 {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
 	}
 	return nil
 }

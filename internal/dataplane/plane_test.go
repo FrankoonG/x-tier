@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,11 +96,171 @@ func TestTwoPlanesCarryAuthenticatedSOCKSThroughRemoteXrayEgress(t *testing.T) {
 	assertBoundListener(t, bStatus, "xtier-node-vless", bCarrier)
 }
 
-func TestTwoPlanesPropagateOriginCloseBeforeSOCKSClientClose(t *testing.T) {
-	originListener, err := net.Listen("tcp", "127.0.0.1:0")
+func TestTerminalNodeResolvesDomainOnceBeforeFixedXrayEgress(t *testing.T) {
+	origin := startEchoOrigin(t)
+	originHost, originPort, err := net.SplitHostPort(origin)
 	if err != nil {
 		t.Fatal(err)
 	}
+	bCarrier := reserveAddress(t)
+	aSOCKS := reserveAddress(t)
+	b, err := Start(context.Background(), terminalConfig(bCarrier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, b) })
+	var lookupCalls atomic.Int32
+	b.egressLookup = func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		lookupCalls.Add(1)
+		if network != "ip" || host != "only-b.example.test" {
+			return nil, fmt.Errorf("unexpected terminal lookup %q %q", network, host)
+		}
+		return []netip.Addr{netip.MustParseAddr(originHost)}, nil
+	}
+	a, err := Start(context.Background(), entryConfig(aSOCKS, bCarrier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, a) })
+
+	dialer, err := proxy.SOCKS5("tcp", aSOCKS, &proxy.Auth{User: "terminal", Password: "entry-secret"}, proxy.Direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := dialer.Dial("tcp", net.JoinHostPort("ONLY-B.example.test.", originPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("terminal DNS ownership")
+	if _, err := conn.Write(payload); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	response := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, response); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if string(response) != string(payload) {
+		t.Fatalf("response = %q, want %q", response, payload)
+	}
+	if calls := lookupCalls.Load(); calls != 1 {
+		t.Fatalf("terminal DNS calls = %d, want 1", calls)
+	}
+}
+
+func TestFixedXrayEgressSurvivesHandshakeContextCancellation(t *testing.T) {
+	origin := startEchoOrigin(t)
+	originHost, originPort, err := net.SplitHostPort(origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedPort, err := strconv.ParseUint(originPort, 10, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bCarrier := reserveAddress(t)
+	cfg := terminalConfig(bCarrier)
+	principal := singleCarrierAccount(t, cfg)
+	b, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, b) })
+	request := rendradapter.EgressRequest{
+		Claim: rendradapter.FlowClaim{
+			Origin: rendradapter.OriginClaim{
+				ClaimedPeerNodeID: cfg.Peers[0].NodeID,
+				InboundTag:        xrayconfig.NodeVLESSTag,
+				PrincipalHandle:   principal,
+				Assurance:         "xray_bearer",
+			},
+			FlowID:         [16]byte{1},
+			PeerInstanceID: rendradapter.PeerInstanceID{1},
+		},
+		Destination: rendradapter.Destination{Host: originHost, Port: uint16(parsedPort)},
+	}
+	dialCtx, cancelDial := context.WithCancel(context.Background())
+	conn, err := b.dialEgress(dialCtx, request)
+	if err != nil {
+		cancelDial()
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cancelDial()
+	assertConnEcho(t, conn, []byte("ready session outlives handshake context"))
+}
+
+func TestTerminalNodeRejectsMixedDNSAnswersBeforeOriginDial(t *testing.T) {
+	originListener, origin := listenTestOrigin(t)
+	t.Cleanup(func() { _ = originListener.Close() })
+	originHost, originPort, err := net.SplitHostPort(origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bCarrier := reserveAddress(t)
+	aSOCKS := reserveAddress(t)
+	b, err := Start(context.Background(), terminalConfig(bCarrier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, b) })
+	var lookupCalls atomic.Int32
+	b.egressLookup = func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		lookupCalls.Add(1)
+		if network != "ip" || host != "mixed.example.test" {
+			return nil, fmt.Errorf("unexpected terminal lookup %q %q", network, host)
+		}
+		return []netip.Addr{netip.MustParseAddr(originHost), netip.MustParseAddr("127.0.0.1")}, nil
+	}
+	a, err := Start(context.Background(), entryConfig(aSOCKS, bCarrier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, a) })
+
+	dialer, err := proxy.SOCKS5("tcp", aSOCKS, &proxy.Auth{User: "terminal", Password: "entry-secret"}, proxy.Direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := dialer.Dial("tcp", net.JoinHostPort("mixed.example.test", originPort))
+	if err == nil {
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			_ = conn.Close()
+			t.Fatal(err)
+		}
+		_, writeErr := conn.Write([]byte("must not reach origin"))
+		var one [1]byte
+		_, readErr := conn.Read(one[:])
+		_ = conn.Close()
+		if writeErr == nil && readErr == nil {
+			t.Fatal("mixed DNS answer carried application data")
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for lookupCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if calls := lookupCalls.Load(); calls != 1 {
+		t.Fatalf("terminal DNS calls = %d, want 1", calls)
+	}
+	if err := originListener.(*net.TCPListener).SetDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	accepted, acceptErr := originListener.Accept()
+	if accepted != nil {
+		_ = accepted.Close()
+		t.Fatal("origin accepted a connection for a mixed DNS answer")
+	}
+	var netErr net.Error
+	if !errors.As(acceptErr, &netErr) || !netErr.Timeout() {
+		t.Fatalf("origin accept error = %v, want timeout", acceptErr)
+	}
+}
+
+func TestTwoPlanesPropagateOriginCloseBeforeSOCKSClientClose(t *testing.T) {
+	originListener, originAddress := listenTestOrigin(t)
 	t.Cleanup(func() { _ = originListener.Close() })
 	originDone := make(chan error, 1)
 	go func() {
@@ -134,7 +297,7 @@ func TestTwoPlanesPropagateOriginCloseBeforeSOCKSClientClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := dialer.Dial("tcp", originListener.Addr().String())
+	conn, err := dialer.Dial("tcp", originAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2289,10 +2452,7 @@ func reserveAddress(t *testing.T) string {
 
 func startHalfCloseOrigin(t *testing.T) (string, <-chan [sha256.Size]byte) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, address := listenTestOrigin(t)
 	t.Cleanup(func() { _ = listener.Close() })
 	done := make(chan [sha256.Size]byte, 1)
 	go func() {
@@ -2309,15 +2469,12 @@ func startHalfCloseOrigin(t *testing.T) (string, <-chan [sha256.Size]byte) {
 		done <- digest
 		_, _ = io.WriteString(conn, hex.EncodeToString(digest[:]))
 	}()
-	return listener.Addr().String(), done
+	return address, done
 }
 
 func startObservedEchoOrigin(t *testing.T) (string, <-chan struct{}, <-chan []byte) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, address := listenTestOrigin(t)
 	t.Cleanup(func() { _ = listener.Close() })
 	accepted := make(chan struct{}, 8)
 	done := make(chan []byte, 8)
@@ -2349,7 +2506,7 @@ func startObservedEchoOrigin(t *testing.T) (string, <-chan struct{}, <-chan []by
 			}(conn)
 		}
 	}()
-	return listener.Addr().String(), accepted, done
+	return address, accepted, done
 }
 
 func assertOriginClosedBefore(t *testing.T, received <-chan []byte, want []byte, deadline time.Time) {
@@ -2380,10 +2537,7 @@ func assertOriginClosedBefore(t *testing.T, received <-chan []byte, want []byte,
 
 func startEchoOrigin(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, address := listenTestOrigin(t)
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() {
 		for {
@@ -2397,7 +2551,50 @@ func startEchoOrigin(t *testing.T) string {
 			}()
 		}
 	}()
-	return listener.Addr().String()
+	return address
+}
+
+func listenTestOrigin(t *testing.T) (net.Listener, string) {
+	t.Helper()
+	host := testOriginIPv4(t)
+	listener, err := net.Listen("tcp4", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Fatalf("listen test origin on %s: %v", host, err)
+	}
+	return listener, listener.Addr().String()
+}
+
+func testOriginIPv4(t *testing.T) string {
+	t.Helper()
+	probe, err := net.Dial("udp4", "192.0.2.1:9")
+	if err == nil {
+		local, ok := probe.LocalAddr().(*net.UDPAddr)
+		_ = probe.Close()
+		if ok && local.IP.IsGlobalUnicast() && !local.IP.IsLoopback() && !local.IP.IsLinkLocalUnicast() {
+			return local.IP.String()
+		}
+	}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatalf("enumerate interfaces for test origin: %v", err)
+	}
+	for _, networkInterface := range interfaces {
+		addresses, addressErr := networkInterface.Addrs()
+		if addressErr != nil {
+			continue
+		}
+		for _, raw := range addresses {
+			address, _, parseErr := net.ParseCIDR(raw.String())
+			if parseErr != nil {
+				continue
+			}
+			if address != nil && address.To4() != nil && address.IsGlobalUnicast() && !address.IsLoopback() && !address.IsLinkLocalUnicast() {
+				return address.String()
+			}
+		}
+	}
+	t.Fatal("no non-loopback IPv4 address is available for the test origin")
+	return ""
 }
 
 func assertSOCKSEcho(t *testing.T, socksAddress, origin string) {
@@ -2520,7 +2717,7 @@ func (r *fakeRendrRuntime) Dial(ctx context.Context, _ string, _ rendradapter.De
 	}
 }
 
-func (r *fakeRendrRuntime) InjectCarrier(_ context.Context, conn net.Conn) error {
+func (r *fakeRendrRuntime) InjectCarrier(_ context.Context, _ rendradapter.OriginClaim, conn net.Conn) error {
 	if !r.acceptCarrier {
 		return errors.New("fake rendr carrier injection is unavailable")
 	}
