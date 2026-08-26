@@ -72,6 +72,8 @@ import { FailureNotice } from './FailureNotice';
 export interface MutationSpec {
   /** Typed backend operation used unchanged for the dry run and apply. */
   operation: DomainMutation;
+  /** Refuse to rebase a replacement assembled from an older configuration snapshot. */
+  expectedRevision?: number;
   /** Dialog title. State the effect, not the mechanism. */
   title: string;
   /** One line of context above the command. */
@@ -141,7 +143,10 @@ export function MutationDialog({ spec, onClose, onApplied }: MutationDialogProps
     setFailure(null);
     setCheckedOperationKey(null);
     try {
-      const payload = await mutate<unknown>(spec.operation, { dryRun: true });
+      const payload = await mutate<unknown>(spec.operation, {
+        dryRun: true,
+        revision: spec.expectedRevision ?? revision,
+      });
       if (ticket !== run.current) return;
       setPreview(payload);
       /* From the daemon's own answer, not from this render.

@@ -183,6 +183,104 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
     blocked: true,
     needsRefresh: true,
   },
+  'config.node_egress_grant_revoke_required': {
+    title: 'The direction change would orphan an egress grant',
+    guidance:
+      'This peer currently has permission to enter the node and use its exit. '
+      + 'Cancel this review, refresh the peer, then reopen it and review the combined '
+      + 'direction change and grant revocation as one atomic mutation.',
+    severity: 'warning',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.node_egress_grant_source_required': {
+    title: 'The egress source is missing',
+    guidance:
+      'A grant must name the authenticated peer node ID it belongs to. This is '
+      + 'a panel request error; nothing was changed.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.node_egress_grant_source_mismatch': {
+    title: 'The egress source does not match its entry',
+    guidance:
+      'The map key and source node ID must be identical. Re-read the grant '
+      + 'before replacing it; the panel must not infer a different principal.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.node_egress_grant_peer_unknown': {
+    title: 'The grant source is not a direct peer',
+    guidance:
+      'Node egress can be granted only to a direct address-book peer. The peer '
+      + 'may have been removed by another writer; refresh before trying again.',
+    severity: 'warning',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.node_egress_grant_peer_inbound_required': {
+    title: 'This peer cannot enter the node',
+    guidance:
+      'Only inbound or bidirectional peers can receive a node egress grant. '
+      + 'Change the peer direction first, then configure its destinations.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.node_egress_grant_network_invalid': {
+    title: 'The egress network is unsupported',
+    guidance: 'This build accepts TCP grants only. Nothing was changed.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.node_egress_grant_cidr_invalid': {
+    title: 'A CIDR is not canonical',
+    guidance:
+      'Use a network address with an explicit prefix, such as 8.8.8.0/24 or '
+      + '2001:4860::/32. Host bits, IPv4-mapped IPv6 and zone identifiers are refused.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.node_egress_grant_cidr_duplicate': {
+    title: 'A CIDR is repeated',
+    guidance:
+      'Each CIDR may appear once in its list. Remove the duplicate and review '
+      + 'the complete replacement again.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.node_egress_grant_ports_required': {
+    title: 'No destination ports are allowed',
+    guidance: 'Add at least one TCP port or inclusive port range.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.node_egress_grant_port_invalid': {
+    title: 'A destination port range is invalid',
+    guidance:
+      'Ports must be between 1 and 65535, with the lower endpoint first and no '
+      + 'overlapping ranges.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.node_egress_grant_invalid': {
+    title: 'The egress policy is invalid',
+    guidance:
+      'Allow at least one public or private CIDR and one TCP port. Put RFC1918, '
+      + 'CGNAT and ULA ranges in the private list; explicit denies cannot '
+      + 'override the built-in special-address deny set.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.node_egress_grant_unknown': {
+    title: 'No node egress grant exists',
+    guidance:
+      'The grant may already have been revoked. Refresh the peer before '
+      + 'deciding whether a new grant is needed.',
+    severity: 'info',
+    blocked: true,
+    needsRefresh: true,
+  },
   'peer_trust.scope_forbidden': {
     title: 'That trust scope is not permitted',
     guidance: 'The requested scope is outside what this build allows.',

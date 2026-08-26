@@ -97,6 +97,10 @@ export function Runtime() {
    * a reported value from an uninitialised struct field.
    */
   const xrayPresent = daemon ? daemon.xray.state !== 'unavailable' : false;
+  const authorizationDigest = daemon?.xray.egress_authorization_digest ?? '';
+  const shortAuthorizationDigest = authorizationDigest
+    ? `${authorizationDigest.slice(0, 12)}...`
+    : null;
 
   return (
     <Screen
@@ -338,6 +342,34 @@ export function Runtime() {
                       ? 'degraded'
                       : 'ok',
                     note: 'Handlers registered by the last successful apply or rollback.',
+                  },
+                  {
+                    key: 'egress_authorization_revision',
+                    label: 'Authorization revision',
+                    value: !xrayPresent
+                      ? null
+                      : daemon.xray.egress_authorization_revision === -1
+                        ? '-1 (fail-stop)'
+                        : String(daemon.xray.egress_authorization_revision),
+                    status: daemon.xray.fail_stopped ? 'failed' : 'ok',
+                    note: 'Configuration revision that produced the immutable node-egress authorization snapshot currently installed in Xray.',
+                  },
+                  {
+                    key: 'egress_authorization_sources',
+                    label: 'Authorized sources',
+                    value: xrayPresent ? String(daemon.xray.egress_authorization_sources) : null,
+                    status: daemon.xray.fail_stopped ? 'inactive' : 'info',
+                    note: 'Authenticated peer node IDs in the active runtime snapshot. Zero is an explicit default-deny reading.',
+                  },
+                  {
+                    key: 'egress_authorization_digest',
+                    label: 'Authorization digest',
+                    value: shortAuthorizationDigest ? (
+                      <span title={authorizationDigest}>
+                        <Code variant="plain">{shortAuthorizationDigest}</Code>
+                      </span>
+                    ) : null,
+                    note: 'Short SHA-256 fingerprint of the semantic runtime snapshot; hover for the complete digest.',
                   },
                   {
                     key: 'strict_stream',

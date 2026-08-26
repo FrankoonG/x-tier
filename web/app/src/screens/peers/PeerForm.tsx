@@ -8,7 +8,8 @@
  * THE FIELDS ARE EXACTLY WHAT THE BACKEND ACCEPTS — NO MORE
  * ---------------------------------------------------------
  * `peer add` declares five: `--node-id --addr --direction --profile --nested`.
- * `peer set` declares four: `--direction --nested --addr --profile`.
+ * `peer set` declares five: `--direction --nested --addr --profile` and the
+ * atomic `--revoke-egress-grant` dependency for a direction change.
  *
  * The first version of this form emitted `--display-name`, `--gateway-addr`
  * and `--no-nested`. None exists. Go's `flag` package rejects an undefined
@@ -65,7 +66,9 @@ export interface PeerFormProps {
    * configuration fault.
    */
   profiles: XrayProfile[] | null;
-  onSubmit: (operation: DomainMutation, title: string) => void;
+  /** Whether this peer has a grant, or null when the grant list was not read. */
+  hasNodeEgressGrant: boolean | null;
+  onSubmit: (operation: DomainMutation, title: string, revokesNodeEgressGrant: boolean) => void;
   onCancel: () => void;
 }
 
@@ -93,7 +96,14 @@ function flatten(peers: PeerConfig[]): PeerConfig[] {
   return peers.flatMap((p) => [p, ...flatten(p.children ?? [])]);
 }
 
-export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerFormProps) {
+export function PeerForm({
+  peer,
+  existing,
+  profiles,
+  hasNodeEgressGrant,
+  onSubmit,
+  onCancel,
+}: PeerFormProps) {
   const isNew = peer === null;
   const [draft, setDraft] = useState<Draft>(() => toDraft(peer));
   const [touched, setTouched] = useState<Partial<Record<keyof Draft, boolean>>>({});
@@ -105,6 +115,9 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
 
   const all = useMemo(() => flatten(existing), [existing]);
   const dialable = draft.direction !== 'inbound';
+  const losesInboundPermission = peer !== null
+    && peer.direction !== 'outbound'
+    && draft.direction === 'outbound';
   const vlessProfiles = useMemo(
     () => (profiles ?? []).filter((profile) => profile.kind === 'vless'),
     [profiles],
@@ -142,6 +155,9 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
     if (dialable && !draft.addr.trim()) {
       e.addr = 'Required for a peer this node may dial. Set inbound-only, or give it an address.';
     }
+    if (losesInboundPermission && hasNodeEgressGrant === null) {
+      e.direction = 'Node egress grants were not read, so an attached grant cannot be revoked atomically.';
+    }
     const profileID = draft.xray_profile_id.trim();
     if (dialable && !profileID) {
       e.xray_profile_id = 'Required for a peer this node may dial.';
@@ -156,7 +172,7 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
       }
     }
     return e;
-  }, [draft, all, dialable, isNew, profiles]);
+  }, [draft, all, dialable, isNew, profiles, losesInboundPermission, hasNodeEgressGrant]);
 
   const valid = Object.keys(errors).length === 0;
 
@@ -193,6 +209,7 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
     if (isNew) {
       return {
         changed: true,
+        revokesNodeEgressGrant: false,
         operation: mutations.peerCreate({
           name: draft.name.trim(),
           nodeId: draft.node_id.trim(),
@@ -215,11 +232,14 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
     if (draft.nested_enabled !== before.nested_enabled) {
       patch.nestedEnabled = draft.nested_enabled;
     }
+    const revokesNodeEgressGrant = losesInboundPermission && hasNodeEgressGrant === true;
+    if (revokesNodeEgressGrant) patch.revokeNodeEgressGrant = true;
     return {
       changed: Object.keys(patch).length > 0,
+      revokesNodeEgressGrant,
       operation: mutations.peerUpdate(peer!.name, patch),
     };
-  }, [draft, isNew, peer]);
+  }, [draft, isNew, peer, losesInboundPermission, hasNodeEgressGrant]);
 
   const unchanged = !submission.changed;
 
@@ -230,7 +250,12 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
         if (!valid || unchanged) return;
         onSubmit(
           submission.operation,
-          isNew ? `Add peer ${draft.name.trim()}` : `Update ${peer!.name}`,
+          isNew
+            ? `Add peer ${draft.name.trim()}`
+            : submission.revokesNodeEgressGrant
+              ? `Update ${peer!.name} and revoke its egress grant`
+              : `Update ${peer!.name}`,
+          submission.revokesNodeEgressGrant,
         );
       }}
       style={{ display: 'grid', gap: 'var(--stratum-space-6)' }}
@@ -291,7 +316,7 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
             }
           >
             <AddressInput
-              accept={['hostport', 'ipv4', 'ipv6']}
+              accept={['hostport']}
               value={draft.addr}
               onChange={(v) => set('addr', v)}
               placeholder="198.51.100.7:443"
@@ -304,6 +329,7 @@ export function PeerForm({ peer, existing, profiles, onSubmit, onCancel }: PeerF
           <Field
             label="May dial"
             group
+            error={touched.direction ? errors.direction : undefined}
             description="Who is permitted to open a connection. A permission, not a traffic direction."
           >
             <SegmentedControl

@@ -51,6 +51,7 @@ import {
   IconPlus,
   IconRelay,
   IconTrash,
+  InlineMessage,
   Menu,
   MenuItem,
   MenuSeparator,
@@ -68,11 +69,12 @@ import type { BadgeVariant, TableColumn } from '@stratum/ui';
 import type {
   Direction,
   MutationResponse,
+  NodeEgressGrantsResponse,
   PeerConfig,
   PeersResponse,
   XrayProfilesResponse,
 } from '../api/types';
-import { getPeers, getXrayProfiles, mutations } from '../api/control';
+import { getNodeEgressGrants, getPeers, getXrayProfiles, mutations } from '../api/control';
 import { useDomainRead } from '../state/useDomainRead';
 import { useControl } from '../state/store';
 import { FailureNotice } from '../components/FailureNotice';
@@ -80,6 +82,7 @@ import { MutationDialog, useMutationDialog } from '../components/MutationDialog'
 import { Absent } from '../components/Absent';
 import { PeerForm } from './peers/PeerForm';
 import { PeerDetail } from './peers/PeerDetail';
+import { PeerEgressGrantEditor } from './peers/PeerEgressGrantEditor';
 
 /* Direction is the most misread field in a mesh panel: it looks like a traffic
  * direction and is not. The label says "may dial" every time, and the arrow
@@ -247,12 +250,15 @@ function ChangeSummary({
 }
 
 export function Peers() {
-  const { revision, epoch, refresh } = useControl();
+  const { revision, revisionRead, epoch, refresh } = useControl();
   const read = useDomainRead<PeersResponse>('peers', getPeers, [revision, epoch]);
   // Profiles come from the configuration, not a hardcoded list — a peer can
   // name one this panel has never heard of.
   const profilesRead = useDomainRead<XrayProfilesResponse>(
     'xray-profiles', getXrayProfiles, [revision, epoch],
+  );
+  const grantsRead = useDomainRead<NodeEgressGrantsResponse>(
+    'node-egress-grants', getNodeEgressGrants, [revision, epoch],
   );
   const mutation = useMutationDialog();
 
@@ -273,6 +279,20 @@ export function Peers() {
    */
   const known = read.data ? (read.data.peers ?? []) : null;
   const peers = known ?? [];
+  const grantsCurrent = revisionRead
+    && grantsRead.failure === null
+    && read.data?.revision === revision
+    && grantsRead.data?.revision === revision;
+  const grantFrom = (snapshot: NodeEgressGrantsResponse, peer: PeerConfig) => {
+    const grants = snapshot.node_egress_grants;
+    return Object.hasOwn(grants, peer.node_id) ? grants[peer.node_id] ?? null : null;
+  };
+  const grantFor = (peer: PeerConfig) => (
+    grantsCurrent ? grantFrom(grantsRead.data!, peer) : null
+  );
+  const currentEditingPeer = editing !== null && editing !== 'new'
+    ? peers.find((peer) => peer.name === editing.name) ?? editing
+    : null;
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -394,6 +414,20 @@ export function Peers() {
         ),
     },
     {
+      key: 'egress',
+      header: 'Node egress',
+      width: 120,
+      cell: (p) => {
+        if (!grantsCurrent) return <Absent>not current</Absent>;
+        if (p.direction === 'outbound') return <Absent>not applicable</Absent>;
+        return grantFor(p) ? (
+          <Tag size="sm" variant="accent">granted</Tag>
+        ) : (
+          <Tag size="sm" variant="neutral" outline>default deny</Tag>
+        );
+      },
+    },
+    {
       key: 'enabled',
       header: 'Enabled',
       width: 140,
@@ -415,7 +449,7 @@ export function Peers() {
                 title: next ? `Enable ${p.name}` : `Disable ${p.name}`,
                 description: next
                   ? 'Marks the peer usable. Nothing is dialled.'
-                  : 'Marks the peer unusable. Paths that traverse it will stop resolving.',
+                  : 'Marks the peer unusable. Paths stop resolving; its node egress grant is retained.',
                 confirmLabel: next ? 'Enable' : 'Disable',
                 destructive: !next,
                 summarise: (payload) => {
@@ -435,7 +469,7 @@ export function Peers() {
                       note={
                         next
                           ? 'Paths through this peer will resolve again.'
-                          : 'Any path that traverses this peer stops resolving immediately.'
+                          : 'Any path that traverses this peer stops resolving immediately. Its node egress grant remains saved.'
                       }
                     />
                   );
@@ -494,7 +528,13 @@ export function Peers() {
                       { label: 'Peer', from: p.name, to: null },
                       { label: 'Node ID', from: p.node_id, to: null },
                     ]}
-                    note={`Any path naming ${p.node_id} stops resolving. This cannot be undone from the panel.`}
+                    note={
+                      `Any path naming ${p.node_id} stops resolving. `
+                      + (grantFor(p)
+                        ? 'Its node egress grant is revoked in the same commit. '
+                        : 'Any attached node egress grant is removed in the same commit. ')
+                      + 'This cannot be undone from the panel.'
+                    }
                   />
                 ),
               })
@@ -554,6 +594,19 @@ export function Peers() {
           actions={
             !read.failure.blocked ? (
               <Button size="sm" variant="default" onClick={() => void read.reload()}>
+                Try again
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
+      {grantsRead.failure && (
+        <FailureNotice
+          failure={grantsRead.failure}
+          actions={
+            !grantsRead.failure.blocked ? (
+              <Button size="sm" variant="default" onClick={() => void grantsRead.reload()}>
                 Try again
               </Button>
             ) : undefined
@@ -727,7 +780,7 @@ export function Peers() {
         open={editing !== null}
         onOpenChange={(open) => !open && setEditing(null)}
         side="right"
-        size="md"
+        size="lg"
         title={editing === 'new' ? 'Add peer' : `Edit ${editing?.name ?? ''}`}
         description={
           editing === 'new'
@@ -736,18 +789,73 @@ export function Peers() {
         }
       >
         {editing && (
-          <PeerForm
-            peer={editing === 'new' ? null : editing}
-            existing={peers}
-            profiles={
-              profilesRead.data ? Object.values(profilesRead.data.xray_profiles ?? {}) : null
-            }
-            onSubmit={(operation, title) => {
-              setEditing(null);
-              mutation.open({ operation, title, confirmLabel: 'Apply' });
-            }}
-            onCancel={() => setEditing(null)}
-          />
+          <div style={{ display: 'grid', gap: 'var(--stratum-space-8)' }}>
+            <PeerForm
+              key={editing === 'new' ? 'new' : `${editing.name}:${read.data?.revision ?? 'unread'}`}
+              peer={editing === 'new' ? null : currentEditingPeer}
+              existing={peers}
+              profiles={
+                profilesRead.data ? Object.values(profilesRead.data.xray_profiles ?? {}) : null
+              }
+              hasNodeEgressGrant={
+                editing === 'new'
+                  ? false
+                  : !grantsCurrent
+                    ? null
+                    : grantFor(currentEditingPeer!) !== null
+              }
+              onSubmit={(operation, title, revokesNodeEgressGrant) => {
+                setEditing(null);
+                mutation.open({
+                  operation,
+                  title,
+                  description: revokesNodeEgressGrant
+                    ? 'The direction change and grant revocation are one atomic configuration mutation.'
+                    : undefined,
+                  confirmLabel: 'Apply',
+                  destructive: revokesNodeEgressGrant,
+                });
+              }}
+              onCancel={() => setEditing(null)}
+            />
+
+            {editing !== 'new' && (
+              <>
+                <Separator decorative />
+                {currentEditingPeer!.direction === 'outbound' ? (
+                  <InlineMessage variant="info">
+                    Node egress grants require an inbound or bidirectional peer. Change the peer
+                    direction first, then reopen it to configure destinations.
+                  </InlineMessage>
+                ) : grantsRead.data === null && grantsRead.failure ? (
+                  <FailureNotice
+                    failure={grantsRead.failure}
+                    actions={
+                      !grantsRead.failure.blocked ? (
+                        <Button size="sm" variant="default" onClick={() => void grantsRead.reload()}>
+                          Try again
+                        </Button>
+                      ) : undefined
+                    }
+                  />
+                ) : grantsRead.data === null ? (
+                  <InlineMessage variant="info">Reading node egress grants at the current revision…</InlineMessage>
+                ) : (
+                  <PeerEgressGrantEditor
+                    key={currentEditingPeer!.node_id}
+                    peer={currentEditingPeer!}
+                    grant={grantFrom(grantsRead.data, currentEditingPeer!)}
+                    revision={grantsRead.data!.revision}
+                    current={grantsCurrent}
+                    onReview={(spec) => {
+                      setEditing(null);
+                      mutation.open(spec);
+                    }}
+                  />
+                )}
+              </>
+            )}
+          </div>
         )}
       </Drawer>
 

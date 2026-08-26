@@ -15,9 +15,8 @@ export default defineConfig({
   server: {
     port: 5190,
     strictPort: false,
-    // The control plane is same-origin in production (a local bridge on the
-    // same host), so the dev server proxies to the mock daemon rather than
-    // teaching the app about two different origins.
+    // The control plane is same-origin in production. During development the
+    // app reaches the real local web bridge through this proxy as well.
     proxy: {
       '/v1': { target: 'http://127.0.0.1:19091', changeOrigin: false },
     },

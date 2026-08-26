@@ -166,6 +166,33 @@ export interface PeersResponse {
   peers: PeerConfig[] | null;
 }
 
+export interface EgressPortRange {
+  /** Inclusive first TCP destination port. */
+  from: number;
+  /** Inclusive last TCP destination port. */
+  to: number;
+}
+
+/** Complete source-bound permission for using this node as a TCP exit. */
+export interface NodeEgressGrant {
+  source_node_id: string;
+  network: 'tcp';
+  allow_cidrs: string[];
+  allow_private_cidrs: string[];
+  deny_cidrs: string[];
+  allow_ports: EgressPortRange[];
+}
+
+export interface NodeEgressGrantsResponse {
+  api_version: 1;
+  ok: true;
+  revision: number;
+  /** The local node enforcing every grant in this response. */
+  target_local_node_id: string;
+  /** Keyed by the authenticated source peer node ID. */
+  node_egress_grants: Record<string, NodeEgressGrant>;
+}
+
 export interface InboundsResponse {
   api_version: 1;
   ok: true;
@@ -277,6 +304,12 @@ export interface XrayStatus {
   draining: XrayGenerationStatus[];
   strict_stream_outbound: boolean;
   strict_packet_outbound: boolean;
+  /** Config revision from which the active immutable authorization was compiled. */
+  egress_authorization_revision: number;
+  /** Lowercase SHA-256 digest; empty only when no Xray runtime is available. */
+  egress_authorization_digest: string;
+  /** Number of authenticated source peers granted by the active snapshot. */
+  egress_authorization_sources: number;
   inbounds: XrayInboundStatus[];
 }
 

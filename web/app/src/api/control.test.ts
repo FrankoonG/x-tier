@@ -11,6 +11,7 @@ import {
   getInbounds,
   getJournal,
   getLocalStatus,
+  getNodeEgressGrants,
   getPeers,
   getSettings,
   getXrayProfiles,
@@ -52,6 +53,9 @@ function validDaemonStatus(): Record<string, unknown> {
     xray: {
       state: 'running', fail_stopped: false, draining: [], inbounds: [],
       strict_stream_outbound: true, strict_packet_outbound: false,
+      egress_authorization_revision: 9,
+      egress_authorization_digest: 'a'.repeat(64),
+      egress_authorization_sources: 1,
     },
   };
 }
@@ -491,6 +495,33 @@ test('illegal daemon status values are rejected before screens consume them', as
     (status) => { (status.idempotency as Record<string, unknown>).restart_persistent = true; },
     (status) => { (status.rendr as Record<string, unknown>).endpoint_owned = true; },
     (status) => { (status.xray as Record<string, unknown>).inbounds = [{ tag: 'user/socks', state: 'bogus' }]; },
+    (status) => { delete (status.xray as Record<string, unknown>).egress_authorization_revision; },
+    (status) => { (status.xray as Record<string, unknown>).egress_authorization_revision = -1; },
+    (status) => { (status.xray as Record<string, unknown>).egress_authorization_digest = 'A'.repeat(64); },
+    (status) => { (status.xray as Record<string, unknown>).egress_authorization_digest = 'a'.repeat(63); },
+    (status) => { (status.xray as Record<string, unknown>).egress_authorization_sources = -1; },
+    (status) => {
+      const xray = status.xray as Record<string, unknown>;
+      xray.state = 'failed';
+      xray.fail_stopped = true;
+      xray.egress_authorization_revision = 9;
+      xray.egress_authorization_sources = 0;
+    },
+    (status) => {
+      const xray = status.xray as Record<string, unknown>;
+      xray.state = 'failed';
+      xray.fail_stopped = true;
+      xray.egress_authorization_revision = -1;
+      xray.egress_authorization_sources = 1;
+    },
+    (status) => {
+      const xray = status.xray as Record<string, unknown>;
+      xray.state = 'failed';
+      xray.fail_stopped = true;
+      xray.egress_authorization_revision = -1;
+      xray.egress_authorization_digest = '';
+      xray.egress_authorization_sources = 0;
+    },
   ];
   const originalFetch = globalThis.fetch;
   try {
@@ -502,6 +533,95 @@ test('illegal daemon status values are rejected before screens consume them', as
       globalThis.fetch = async () => Response.json(status);
       await assert.rejects(
         getDaemonStatus(),
+        (error: unknown) => error instanceof TransportFailure
+          && !error.outcomeUnknown
+          && error.message.startsWith('control.response_invalid'),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('unavailable and fail-stopped authorization snapshots keep distinct valid shapes', async () => {
+  const unavailable = validDaemonStatus();
+  unavailable.xray = {
+    state: 'unavailable', fail_stopped: false, draining: [], inbounds: [],
+    strict_stream_outbound: false, strict_packet_outbound: false,
+    egress_authorization_revision: 0,
+    egress_authorization_digest: 'c'.repeat(64),
+    egress_authorization_sources: 0,
+  };
+  const failStopped = validDaemonStatus();
+  failStopped.state = 'degraded';
+  failStopped.xray = {
+    state: 'failed', fail_stopped: true, draining: [], inbounds: [],
+    strict_stream_outbound: true, strict_packet_outbound: false,
+    egress_authorization_revision: -1,
+    egress_authorization_digest: 'b'.repeat(64),
+    egress_authorization_sources: 0,
+  };
+
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const status of [unavailable, failStopped]) {
+      clearJournal();
+      resetControlSession();
+      globalThis.fetch = async () => Response.json(status);
+      await assert.doesNotReject(getDaemonStatus());
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('malformed node egress grant reads are rejected at the API boundary', async () => {
+  const base = () => ({
+    api_version: 1,
+    ok: true,
+    revision: 9,
+    target_local_node_id: 'node-a',
+    node_egress_grants: {
+      'node-b': {
+        source_node_id: 'node-b',
+        network: 'tcp',
+        allow_cidrs: ['8.8.8.0/24'],
+        allow_private_cidrs: [],
+        deny_cidrs: [],
+        allow_ports: [{ from: 443, to: 443 }],
+      },
+    },
+  });
+  const malformed: Record<string, unknown>[] = [
+    { ...base(), node_egress_grants: null },
+    {
+      ...base(),
+      node_egress_grants: {
+        'node-b': { ...base().node_egress_grants['node-b'], source_node_id: 'node-c' },
+      },
+    },
+    {
+      ...base(),
+      node_egress_grants: {
+        'node-b': { ...base().node_egress_grants['node-b'], network: 'udp' },
+      },
+    },
+    {
+      ...base(),
+      node_egress_grants: {
+        'node-b': { ...base().node_egress_grants['node-b'], allow_ports: [{ from: 0, to: 443 }] },
+      },
+    },
+  ];
+
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const response of malformed) {
+      clearJournal();
+      resetControlSession();
+      globalThis.fetch = async () => Response.json(response);
+      await assert.rejects(
+        getNodeEgressGrants(),
         (error: unknown) => error instanceof TransportFailure
           && !error.outcomeUnknown
           && error.message.startsWith('control.response_invalid'),
@@ -573,6 +693,7 @@ const mappings: MappingCase[] = [
   { name: 'local status', path: '/v1/domain/local', method: 'GET', mutating: false, invoke: () => getLocalStatus() },
   { name: 'settings read', path: '/v1/domain/settings', method: 'GET', mutating: false, invoke: () => getSettings() },
   { name: 'peers read', path: '/v1/domain/peers', method: 'GET', mutating: false, invoke: () => getPeers() },
+  { name: 'node egress grants read', path: '/v1/domain/node-egress-grants', method: 'GET', mutating: false, invoke: () => getNodeEgressGrants() },
   { name: 'inbounds read', path: '/v1/domain/inbounds', method: 'GET', mutating: false, invoke: () => getInbounds() },
   { name: 'profiles read', path: '/v1/domain/xray-profiles', method: 'GET', mutating: false, invoke: () => getXrayProfiles() },
   mutationCase('identity init', '/v1/domain/identity/init', 'POST', mutations.identityInit('A'), { name: 'A' }),
@@ -581,9 +702,19 @@ const mappings: MappingCase[] = [
   mutationCase('inbound put', '/v1/domain/inbounds', 'PUT', mutations.inboundPut({ kind: 'socks', listen: '127.0.0.1:1080', xrayProfileId: 'socks', exitPeer: 'B' }), { kind: 'socks', listen: '127.0.0.1:1080', xray_profile_id: 'socks', exit_peer: 'B' }),
   mutationCase('inbound state', '/v1/domain/inbounds/state', 'PATCH', mutations.inboundState('socks', false, 'maintenance'), { kind: 'socks', enabled: false, reason: 'maintenance' }),
   mutationCase('peer add', '/v1/domain/peers', 'POST', mutations.peerCreate({ name: 'B', nodeId: 'node-b', addr: '10.0.0.2:443', direction: 'outbound', xrayProfileId: 'vless', nestedEnabled: true }), { name: 'B', node_id: 'node-b', addr: '10.0.0.2:443', direction: 'outbound', xray_profile_id: 'vless', nested_enabled: true }),
-  mutationCase('peer patch', '/v1/domain/peers', 'PATCH', mutations.peerUpdate('B', { nestedEnabled: false, addr: '10.0.0.3:443' }), { name: 'B', patch: { nested_enabled: false, addr: '10.0.0.3:443' } }),
+  mutationCase('peer patch', '/v1/domain/peers', 'PATCH', mutations.peerUpdate('B', { direction: 'outbound', nestedEnabled: false, addr: '10.0.0.3:443', revokeNodeEgressGrant: true }), { name: 'B', patch: { direction: 'outbound', nested_enabled: false, addr: '10.0.0.3:443', revoke_node_egress_grant: true } }),
   mutationCase('peer state', '/v1/domain/peers/state', 'PATCH', mutations.peerState('B', true), { name: 'B', enabled: true, reason: '' }),
   mutationCase('peer remove', '/v1/domain/peers', 'DELETE', mutations.peerRemove('B'), { name: 'B' }),
+  mutationCase('node egress grant replace', '/v1/domain/node-egress-grants', 'PUT', mutations.nodeEgressGrantPut('B', {
+    sourceNodeId: 'node-b', network: 'tcp',
+    allowCIDRs: ['8.8.8.0/24'], allowPrivateCIDRs: ['10.0.0.0/8'],
+    denyCIDRs: ['8.8.8.8/32'], allowPorts: [{ from: 443, to: 443 }, { from: 8000, to: 8099 }],
+  }), {
+    source_node_id: 'node-b', network: 'tcp',
+    allow_cidrs: ['8.8.8.0/24'], allow_private_cidrs: ['10.0.0.0/8'],
+    deny_cidrs: ['8.8.8.8/32'], allow_ports: [{ from: 443, to: 443 }, { from: 8000, to: 8099 }],
+  }),
+  mutationCase('node egress grant revoke', '/v1/domain/node-egress-grants', 'DELETE', mutations.nodeEgressGrantRevoke('B', 'node-b'), { source_node_id: 'node-b' }),
   mutationCase('profile put', '/v1/domain/xray-profiles', 'PUT', mutations.xrayProfilePut({ id: 'vless', kind: 'vless', credential: 'browser-secret', transport: 'tcp', security: 'none', allowInsecurePlaintext: true }), { id: 'vless', kind: 'vless', credential: 'browser-secret', transport: 'tcp', security: 'none', allow_insecure_plaintext: true }),
   mutationCase('profile remove', '/v1/domain/xray-profiles', 'DELETE', mutations.xrayProfileRemove('vless'), { id: 'vless' }),
   { name: 'profile validate', path: '/v1/domain/xray-profiles/validate', method: 'POST', expected: { api_version: 1, id: 'vless' }, mutating: false, invoke: () => validateXrayProfile('vless') },
@@ -608,6 +739,15 @@ test('all screen operations call versioned domain routes without a CLI transport
           }
           if (mapping.name === 'daemon status') {
             return Response.json(validDaemonStatus());
+          }
+          if (mapping.name === 'node egress grants read') {
+            return Response.json({
+              api_version: 1,
+              ok: true,
+              revision: 9,
+              target_local_node_id: 'node-a',
+              node_egress_grants: {},
+            });
           }
           return Response.json({
             api_version: 1,

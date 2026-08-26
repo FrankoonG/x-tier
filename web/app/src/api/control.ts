@@ -4,8 +4,10 @@ import type {
   DaemonStatus,
   Direction,
   EndpointKind,
+  EgressPortRange,
   InboundsResponse,
   LocalStatus,
+  NodeEgressGrantsResponse,
   PeersResponse,
   SettingsResponse,
   Strategy,
@@ -92,6 +94,7 @@ const ROUTES = {
   settings: '/v1/domain/settings',
   peers: '/v1/domain/peers',
   peerState: '/v1/domain/peers/state',
+  nodeEgressGrants: '/v1/domain/node-egress-grants',
   inbounds: '/v1/domain/inbounds',
   inboundState: '/v1/domain/inbounds/state',
   profiles: '/v1/domain/xray-profiles',
@@ -413,6 +416,18 @@ export interface PeerPatchInput {
   direction?: Direction;
   xrayProfileId?: string;
   nestedEnabled?: boolean;
+  /** Required when a direction patch removes inbound permission from a granted source. */
+  revokeNodeEgressGrant?: boolean;
+}
+
+/** Full replacement. Omitted fields are intentionally replaced by empty lists. */
+export interface NodeEgressGrantPutInput {
+  sourceNodeId: string;
+  network: 'tcp';
+  allowCIDRs: string[];
+  allowPrivateCIDRs: string[];
+  denyCIDRs: string[];
+  allowPorts: EgressPortRange[];
 }
 
 export interface XrayProfilePutInput {
@@ -508,6 +523,7 @@ export const mutations = {
     if (patch.nestedEnabled !== undefined) {
       argv.push(patch.nestedEnabled ? '--nested' : '--nested=false');
     }
+    if (patch.revokeNodeEgressGrant) argv.push('--revoke-egress-grant');
     return mutation(argv, ROUTES.peers, 'PATCH', {
       name,
       patch: {
@@ -515,6 +531,7 @@ export const mutations = {
         direction: patch.direction,
         xray_profile_id: patch.xrayProfileId,
         nested_enabled: patch.nestedEnabled,
+        revoke_node_egress_grant: patch.revokeNodeEgressGrant,
       },
     });
   },
@@ -527,6 +544,37 @@ export const mutations = {
 
   peerRemove(name: string): DomainMutation {
     return mutation(['local', 'peer', 'remove', name], ROUTES.peers, 'DELETE', { name });
+  },
+
+  nodeEgressGrantPut(peerName: string, input: NodeEgressGrantPutInput): DomainMutation {
+    const argv = ['local', 'peer', 'egress', 'set', peerName, '--network', input.network];
+    option(argv, 'allow-cidrs', input.allowCIDRs.join(','));
+    option(argv, 'allow-private-cidrs', input.allowPrivateCIDRs.join(','));
+    option(argv, 'deny-cidrs', input.denyCIDRs.join(','));
+    option(
+      argv,
+      'allow-ports',
+      input.allowPorts.map((range) => (
+        range.from === range.to ? String(range.from) : `${range.from}-${range.to}`
+      )).join(','),
+    );
+    return mutation(argv, ROUTES.nodeEgressGrants, 'PUT', {
+      source_node_id: input.sourceNodeId,
+      network: input.network,
+      allow_cidrs: [...input.allowCIDRs],
+      allow_private_cidrs: [...input.allowPrivateCIDRs],
+      deny_cidrs: [...input.denyCIDRs],
+      allow_ports: input.allowPorts.map((range) => ({ ...range })),
+    });
+  },
+
+  nodeEgressGrantRevoke(peerName: string, sourceNodeId: string): DomainMutation {
+    return mutation(
+      ['local', 'peer', 'egress', 'revoke', peerName],
+      ROUTES.nodeEgressGrants,
+      'DELETE',
+      { source_node_id: sourceNodeId },
+    );
   },
 
   xrayProfilePut(input: XrayProfilePutInput): DomainMutation {
@@ -743,6 +791,51 @@ function validateGeneration(value: unknown): void {
   optionalString(generation, 'cleanup_error');
 }
 
+function validateNodeEgressGrant(value: unknown, expectedSource?: string): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('node egress grant is invalid');
+  }
+  const grant = value as Record<string, unknown>;
+  if (typeof grant.source_node_id !== 'string' || grant.source_node_id.length === 0
+    || (expectedSource !== undefined && grant.source_node_id !== expectedSource)
+    || grant.network !== 'tcp') {
+    throw new Error('node egress grant identity is invalid');
+  }
+  for (const key of ['allow_cidrs', 'allow_private_cidrs', 'deny_cidrs']) {
+    if (!Array.isArray(grant[key]) || !grant[key].every((entry) => typeof entry === 'string')) {
+      throw new Error(`node egress grant ${key} is invalid`);
+    }
+  }
+  if (!Array.isArray(grant.allow_ports)) {
+    throw new Error('node egress grant allow_ports is invalid');
+  }
+  for (const value of grant.allow_ports) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error('node egress grant port range is invalid');
+    }
+    const portRange = value as Record<string, unknown>;
+    if (typeof portRange.from !== 'number' || !Number.isSafeInteger(portRange.from)
+      || typeof portRange.to !== 'number' || !Number.isSafeInteger(portRange.to)
+      || portRange.from < 1 || portRange.to > 65535 || portRange.from > portRange.to) {
+      throw new Error('node egress grant port range is invalid');
+    }
+  }
+}
+
+function validateNodeEgressGrantsResponse(value: Record<string, unknown>): void {
+  if (value.ok !== true || typeof value.revision !== 'number'
+    || !Number.isSafeInteger(value.revision) || value.revision < 0
+    || typeof value.target_local_node_id !== 'string'
+    || typeof value.node_egress_grants !== 'object' || value.node_egress_grants === null
+    || Array.isArray(value.node_egress_grants)) {
+    throw new Error('node egress grants response is invalid');
+  }
+  for (const [source, grant] of Object.entries(value.node_egress_grants)) {
+    if (!source) throw new Error('node egress grant key is invalid');
+    validateNodeEgressGrant(grant, source);
+  }
+}
+
 function validateDaemonStatus(value: Record<string, unknown>): void {
   requireStatusFields(value, ['boot_id', 'config_path', 'control_addr', 'started_at'], [], ['revision']);
   const daemonState = requireEnum(value, 'state', DAEMON_STATES);
@@ -824,8 +917,37 @@ function validateDaemonStatus(value: Record<string, unknown>): void {
   }
 
   const xray = recordField(value, 'xray');
-  requireStatusFields(xray, [], ['fail_stopped', 'strict_stream_outbound', 'strict_packet_outbound'], []);
+  requireStatusFields(
+    xray,
+    ['egress_authorization_digest'],
+    ['fail_stopped', 'strict_stream_outbound', 'strict_packet_outbound'],
+    ['egress_authorization_sources'],
+  );
   const xrayState = requireEnum(xray, 'state', RUNTIME_STATES);
+  const authorizationRevision = xray.egress_authorization_revision;
+  const authorizationDigest = xray.egress_authorization_digest as string;
+  const authorizationDigestValid = authorizationDigest === ''
+    || /^[0-9a-f]{64}$/.test(authorizationDigest);
+  const authorizationFieldsValid = typeof authorizationRevision === 'number'
+    && Number.isSafeInteger(authorizationRevision)
+    && authorizationRevision >= -1
+    && authorizationDigestValid;
+  const authorizationFailStopped = xray.fail_stopped === true
+    && authorizationRevision === -1
+    && /^[0-9a-f]{64}$/.test(authorizationDigest)
+    && xray.egress_authorization_sources === 0;
+  const authorizationRunning = xrayState === 'running'
+    && xray.fail_stopped === false
+    && typeof authorizationRevision === 'number'
+    && Number.isSafeInteger(authorizationRevision)
+    && authorizationRevision >= 0
+    && authorizationRevision <= (value.revision as number)
+    && /^[0-9a-f]{64}$/.test(authorizationDigest);
+  if (!authorizationFieldsValid
+    || (xray.fail_stopped === true && !authorizationFailStopped)
+    || (xrayState === 'running' && !authorizationRunning)) {
+    throw new Error('daemon status xray egress authorization is invalid');
+  }
   if (!Array.isArray(xray.draining) || !Array.isArray(xray.inbounds)) {
     throw new Error('daemon status xray collections are invalid');
   }
@@ -985,6 +1107,9 @@ async function fetchJSON<T>(call: DomainCall, expectDomainOK: boolean): Promise<
     mutationFacts(parsed, call, true);
     validateMutationSuccess(parsed, call);
     if (call.path === ROUTES.status) validateDaemonStatus(parsed);
+    if (call.path === ROUTES.nodeEgressGrants && call.method === 'GET') {
+      validateNodeEgressGrantsResponse(parsed);
+    }
   } catch (error) {
     const unknown = call.mutating && !call.dryRun;
     throw new TransportFailure(
@@ -1085,6 +1210,10 @@ export function getSettings(): Promise<SettingsResponse> {
 
 export function getPeers(): Promise<PeersResponse> {
   return getDomain(['local', 'peers'], ROUTES.peers);
+}
+
+export function getNodeEgressGrants(): Promise<NodeEgressGrantsResponse> {
+  return getDomain(['local', 'peer', 'egress', 'list'], ROUTES.nodeEgressGrants);
 }
 
 export function getInbounds(): Promise<InboundsResponse> {
