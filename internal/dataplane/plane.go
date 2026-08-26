@@ -61,9 +61,10 @@ type rendrRetirement struct {
 }
 
 type routeTable struct {
-	users               map[string]string
-	carrierPeers        map[string]string
-	egressAuthorization *egressAuthorizationSnapshot
+	users                       map[string]string
+	carrierPeers                map[string]string
+	egressAuthorization         *egressAuthorizationSnapshot
+	egressAuthorizationRevision int64
 }
 
 type Status struct {
@@ -75,6 +76,7 @@ type Status struct {
 	EgressAuthorizationRevision int64
 	EgressAuthorizationDigest   [32]byte
 	EgressAuthorizationSources  int
+	EgressAuthorizationDenials  uint64
 	LastError                   string
 	LastErrorCode               string
 	ObservedAt                  time.Time
@@ -112,6 +114,7 @@ type Plane struct {
 	bridge               *xraybridge.Handler
 	routes               atomic.Pointer[routeTable]
 	egressLookup         egresspolicy.LookupNetIP
+	egressDenials        atomic.Uint64
 
 	reconcileMu    sync.Mutex
 	applyMu        sync.RWMutex
@@ -679,6 +682,7 @@ func (p *Plane) Status() Status {
 	}
 	p.stateMu.RLock()
 	status := p.status
+	status.EgressAuthorizationDenials = p.egressDenials.Load()
 	status.ObservationFresh = fresh
 	status.Listeners = append([]ListenerStatus(nil), p.status.Listeners...)
 	p.stateMu.RUnlock()
@@ -1000,6 +1004,7 @@ func (p *Plane) dialEgressAuthorized(
 	}
 	policy, authorized := p.egressPolicyFor(authorization, request.Claim.Origin)
 	if !authorized {
+		p.egressDenials.Add(1)
 		return nil, errors.New("dataplane: egress flow claim is not authorized")
 	}
 	candidates, err := egresspolicy.Resolve(
@@ -1010,11 +1015,15 @@ func (p *Plane) dialEgressAuthorized(
 		request.Destination.Port,
 	)
 	if err != nil {
+		if errors.Is(err, egresspolicy.ErrAddressDenied) {
+			p.egressDenials.Add(1)
+		}
 		return nil, err
 	}
 	var dialErr error
 	for _, candidate := range candidates {
 		if !p.egressClaimAuthorized(authorization, request.Claim.Origin) {
+			p.egressDenials.Add(1)
 			return nil, errors.New("dataplane: egress flow claim was revoked")
 		}
 		address := net.JoinHostPort(candidate.String(), fmt.Sprint(request.Destination.Port))
@@ -1035,6 +1044,7 @@ func (p *Plane) dialEgressAuthorized(
 		}
 		if !p.egressClaimAuthorized(authorization, request.Claim.Origin) {
 			_ = conn.Close()
+			p.egressDenials.Add(1)
 			return nil, errors.New("dataplane: egress flow claim was revoked")
 		}
 		return conn, nil
@@ -1079,10 +1089,12 @@ func (p *Plane) publishOutboundAndRoutes(
 	}
 	previousRoutes := p.routes.Load()
 	previousEgressAuthorization := activeEgressAuthorization(previousRoutes)
+	authorizationRevision := egressAuthorization.sourceRevision
 	if sameEgressAuthorization(previousEgressAuthorization, egressAuthorization) {
 		egressAuthorization = previousEgressAuthorization
 	}
 	routes := routesFrom(*compiled, egressAuthorization)
+	routes.egressAuthorizationRevision = authorizationRevision
 	rotate := carrierRevocationRequired(previousRoutes, routes) ||
 		previousEgressAuthorization != egressAuthorization
 	operationCtx := ctx
@@ -1313,11 +1325,15 @@ func (p *Plane) observeRuntime() {
 	managedTags := p.xray.ManagedInboundTags()
 	routes := p.routes.Load()
 	authorization := activeEgressAuthorization(routes)
+	authorizationRevision := int64(-1)
+	if routes != nil {
+		authorizationRevision = routes.egressAuthorizationRevision
+	}
 	p.stateMu.Lock()
 	p.status.Rendr = rendrStatus
 	p.status.Xray = xrayStatus
 	p.status.Listeners = listenerStatuses(p.listeners, managedTags, routes)
-	p.status.EgressAuthorizationRevision = authorization.sourceRevision
+	p.status.EgressAuthorizationRevision = authorizationRevision
 	p.status.EgressAuthorizationDigest = authorization.digest
 	p.status.EgressAuthorizationSources = len(authorization.policies)
 	if retirementErr != nil && p.status.State == "running" {
@@ -1466,9 +1482,10 @@ func routesFrom(
 	egressAuthorization *egressAuthorizationSnapshot,
 ) *routeTable {
 	routes := &routeTable{
-		users:               make(map[string]string),
-		carrierPeers:        make(map[string]string, len(compiled.CarrierPeers)),
-		egressAuthorization: egressAuthorization,
+		users:                       make(map[string]string),
+		carrierPeers:                make(map[string]string, len(compiled.CarrierPeers)),
+		egressAuthorization:         egressAuthorization,
+		egressAuthorizationRevision: egressAuthorization.sourceRevision,
 	}
 	for tag, route := range compiled.Routes {
 		if route.Kind == xrayconfig.RouteUser {
@@ -1483,9 +1500,10 @@ func routesFrom(
 
 func newEmptyRouteTable() *routeTable {
 	return &routeTable{
-		users:               map[string]string{},
-		carrierPeers:        map[string]string{},
-		egressAuthorization: newDenyEgressAuthorization(-1),
+		users:                       map[string]string{},
+		carrierPeers:                map[string]string{},
+		egressAuthorization:         newDenyEgressAuthorization(-1),
+		egressAuthorizationRevision: -1,
 	}
 }
 

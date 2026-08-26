@@ -489,6 +489,14 @@ func (d *Daemon) Reload(ctx context.Context, expectedRevision int64, dryRun bool
 	return d.reconcileStatusFrom(cfg.Revision, configuredDigest, applied), nil
 }
 
+// ReconcileCommittedRevision is the control-plane commit barrier. It keeps
+// every acknowledged config revision observable by the runtime instead of
+// relying on the periodic reconciler, which may legitimately coalesce file
+// observations between ticks.
+func (d *Daemon) ReconcileCommittedRevision(ctx context.Context, revision int64) (controlapi.ReconcileStatus, error) {
+	return d.Reload(ctx, revision, false)
+}
+
 func (d *Daemon) Close() error {
 	if d == nil {
 		return nil
@@ -712,6 +720,7 @@ func xrayStatusFrom(planeStatus dataplane.Status) controlapi.XrayStatus {
 		EgressAuthorizationRevision: planeStatus.EgressAuthorizationRevision,
 		EgressAuthorizationDigest:   hex.EncodeToString(planeStatus.EgressAuthorizationDigest[:]),
 		EgressAuthorizationSources:  planeStatus.EgressAuthorizationSources,
+		EgressAuthorizationDenials:  planeStatus.EgressAuthorizationDenials,
 	}
 	for _, inbound := range planeStatus.Listeners {
 		result.Inbounds = append(result.Inbounds, controlapi.XrayInboundStatus{

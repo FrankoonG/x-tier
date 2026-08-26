@@ -94,10 +94,9 @@ func compileEgressAuthorization(cfg configstore.Config) (*egressAuthorizationSna
 }
 
 func newDenyEgressAuthorization(sourceRevision int64) *egressAuthorizationSnapshot {
-	payload, _ := json.Marshal([]canonicalEgressGrant{})
 	return &egressAuthorizationSnapshot{
 		sourceRevision: sourceRevision,
-		digest:         sha256.Sum256(payload),
+		digest:         sha256.Sum256([]byte("xtier:egress-authorization:fail-stop:v1")),
 		policies:       map[string]egresspolicy.Policy{},
 	}
 }

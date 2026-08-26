@@ -599,9 +599,35 @@ func (s *Server) executeConfigDomainMutation(meta controlapi.DomainMutationReque
 		return mutateErr
 	})
 	if err != nil {
+		if configstore.CommitVisible(err) && result.AfterRevision > meta.Revision {
+			if _, supported, reconcileErr := s.reconcileCommittedRevision(ctx, result.AfterRevision); supported && reconcileErr != nil {
+				return committedRevisionDomainError(reconcileErr, effects.preparations)
+			}
+		}
 		return domainMutationErrorResult(err, 0, false, effects.preparations)
 	}
+	if _, supported, reconcileErr := s.reconcileCommittedRevision(ctx, result.AfterRevision); supported && reconcileErr != nil {
+		return committedRevisionDomainError(reconcileErr, effects.preparations)
+	}
 	return domainMutationResult(false, result.BeforeRevision, result.AfterRevision, payload)
+}
+
+func committedRevisionDomainError(err error, preparations []controlapi.MutationPreparation) domainResult {
+	failure := domainFailure{
+		code: runtimeCommandErrorCode(err),
+		err:  errors.New(sanitizeRuntimeCommandError(err)),
+	}
+	status := 0
+	if failure.code == "service.reload_result_invalid" {
+		status = http.StatusInternalServerError
+	}
+	return domainMutationErrorResultWithOutcome(
+		failure,
+		status,
+		true,
+		controlapi.MutationOutcomeApplied,
+		preparations,
+	)
 }
 
 func domainMutationResult(dryRun bool, before, after int64, payload any) domainResult {

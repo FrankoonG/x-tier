@@ -518,6 +518,61 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
     severity: 'info',
     blocked: true,
   },
+  'service.reload_apply': {
+    title: 'Configuration committed, runtime apply failed',
+    guidance:
+      'The configuration write is on disk, but the daemon did not confirm this revision as a '
+      + 'healthy data-plane state. Do not repeat or reverse the change blindly. Re-read Runtime '
+      + 'and the journal; authorization changes fail closed when the runtime cannot retire the old state.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'service.reload_applied_unhealthy': {
+    title: 'The new runtime revision is unhealthy',
+    guidance:
+      'The data plane published the committed revision but did not become healthy. Re-read Runtime '
+      + 'before taking another action; managed traffic may be fail-stopped.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'service.reload_not_applied': {
+    title: 'Configuration committed, runtime did not publish it',
+    guidance:
+      'The desired revision is on disk, but the live data plane did not confirm it. Re-read Runtime '
+      + 'and resolve the apply failure before making another configuration change.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'service.reload_result_invalid': {
+    title: 'Runtime confirmation was incomplete',
+    guidance:
+      'The configuration was committed, but the daemon returned no trustworthy proof that the same '
+      + 'revision is active. Treat the runtime state as unknown and inspect Runtime before continuing.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'service.reload_canceled': {
+    title: 'Runtime confirmation did not finish',
+    guidance:
+      'The configuration was committed before the reconciliation was canceled. Re-read Runtime and '
+      + 'wait for the background reconciler; do not assume either the old or new data plane is active.',
+    severity: 'warning',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'service.committed_revision_invalid': {
+    title: 'The daemon lost the committed revision boundary',
+    guidance:
+      'The configuration write completed, but the daemon could not identify the next revision to '
+      + 'apply. Stop further writes and inspect Runtime and the journal.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
 
   'config.restore_not_required': {
     title: 'The active configuration is already valid',

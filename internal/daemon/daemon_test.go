@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1517,10 +1518,12 @@ func TestXrayStatusReflectsObservedRuntimeAndFailStop(t *testing.T) {
 		EgressAuthorizationRevision: 9,
 		EgressAuthorizationDigest:   authorizationDigest,
 		EgressAuthorizationSources:  2,
+		EgressAuthorizationDenials:  4,
 	})
 	if running.State != controlapi.RuntimeStateRunning || running.FailStopped ||
 		!running.StrictStreamOutbound || running.StrictPacketOutbound ||
 		running.EgressAuthorizationRevision != 9 || running.EgressAuthorizationSources != 2 ||
+		running.EgressAuthorizationDenials != 4 ||
 		running.EgressAuthorizationDigest != hex.EncodeToString(authorizationDigest[:]) {
 		t.Fatalf("running Xray status = %+v", running)
 	}
@@ -2563,6 +2566,9 @@ func (p *permanentlyUnhealthyApplyPlane) Apply(_ context.Context, cfg configstor
 	p.status.AttemptedDigest = digest
 	p.status.LastError = publicerr.MessageCode("runtime.xray_cleanup_failed")
 	p.status.FailStopped = true
+	p.status.EgressAuthorizationRevision = -1
+	p.status.EgressAuthorizationDigest = sha256.Sum256([]byte("xtier:egress-authorization:fail-stop:v1"))
+	p.status.EgressAuthorizationSources = 0
 	p.status.ObservationFresh = true
 	p.status.ObservedAt = time.Now().UTC()
 	p.status.Rendr = healthyRendrStatusForDaemonTest()

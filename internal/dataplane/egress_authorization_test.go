@@ -62,7 +62,9 @@ func TestEgressWithoutGrantOrMatchingSourceRejectsBeforeDNS(t *testing.T) {
 	if lookupCalls != 0 {
 		t.Fatalf("grantless egress reached DNS %d times", lookupCalls)
 	}
-
+	if denials := plane.Status().EgressAuthorizationDenials; denials != 1 {
+		t.Fatalf("grantless egress denials=%d, want 1", denials)
+	}
 }
 
 func TestEgressWrongSourceCannotBorrowAnotherNodeGrant(t *testing.T) {
@@ -84,6 +86,9 @@ func TestEgressWrongSourceCannotBorrowAnotherNodeGrant(t *testing.T) {
 	}
 	if lookupCalls != 0 {
 		t.Fatalf("wrong-source egress reached DNS %d times", lookupCalls)
+	}
+	if denials := plane.Status().EgressAuthorizationDenials; denials != 1 {
+		t.Fatalf("wrong-source egress denials=%d, want 1", denials)
 	}
 }
 
@@ -139,6 +144,9 @@ func TestEgressGrantChangeRotatesRuntimeAndRevokesCapturedSnapshot(t *testing.T)
 	if lookupCalls != 0 {
 		t.Fatalf("unauthorized candidate port reached DNS %d times", lookupCalls)
 	}
+	if denials := plane.Status().EgressAuthorizationDenials; denials != 2 {
+		t.Fatalf("authorization denials=%d, want captured-snapshot plus port denials", denials)
+	}
 }
 
 func TestInvalidEgressAuthorizationFailsClosed(t *testing.T) {
@@ -173,6 +181,37 @@ func TestEgressAuthorizationStatusTracksEffectiveSnapshot(t *testing.T) {
 	}
 }
 
+func TestGrantlessAuthorizationRecoversFromFailStopWithCurrentRevision(t *testing.T) {
+	cfg := entryConfig(reserveAddress(t), reserveAddress(t))
+	compiled, err := compileEgressAuthorization(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny := newDenyEgressAuthorization(-1)
+	if deny.digest == compiled.digest {
+		t.Fatal("fail-stop and legitimate empty authorization have the same digest")
+	}
+
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, plane) })
+	if err := plane.FailStop(context.Background(), "test.fail_stop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := plane.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	status := plane.Status()
+	if status.State != "running" || status.FailStopped ||
+		status.EgressAuthorizationRevision != cfg.Revision ||
+		status.EgressAuthorizationSources != 0 ||
+		status.EgressAuthorizationDigest != compiled.digest {
+		t.Fatalf("grantless recovery status = %+v", status)
+	}
+}
+
 func TestSemanticGrantReorderingReusesRuntimeAndAuthorizationSnapshot(t *testing.T) {
 	cfg := terminalConfig(reserveAddress(t))
 	plane, err := Start(context.Background(), cfg)
@@ -197,7 +236,7 @@ func TestSemanticGrantReorderingReusesRuntimeAndAuthorizationSnapshot(t *testing
 		t.Fatal("semantic grant reordering rotated runtime or authorization snapshot")
 	}
 	status := plane.Status()
-	if status.AppliedRevision != candidate.Revision || status.EgressAuthorizationRevision != cfg.Revision {
+	if status.AppliedRevision != candidate.Revision || status.EgressAuthorizationRevision != candidate.Revision {
 		t.Fatalf("semantic reorder status = %+v", status)
 	}
 }

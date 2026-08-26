@@ -304,12 +304,14 @@ export interface XrayStatus {
   draining: XrayGenerationStatus[];
   strict_stream_outbound: boolean;
   strict_packet_outbound: boolean;
-  /** Config revision from which the active immutable authorization was compiled. */
+  /** Applied runtime revision that confirmed the active immutable authorization. */
   egress_authorization_revision: number;
   /** Lowercase SHA-256 digest; empty only when no Xray runtime is available. */
   egress_authorization_digest: string;
   /** Number of authenticated source peers granted by the active snapshot. */
   egress_authorization_sources: number;
+  /** Cumulative source/snapshot/policy denials since this daemon started. */
+  egress_authorization_denials: number;
   inbounds: XrayInboundStatus[];
 }
 

@@ -125,8 +125,10 @@ func TestValidateStatusAcceptsExplicitStartupRollbackAndFailStoppedXray(t *testi
 		Rendr: controlapi.RuntimeStatus{State: controlapi.RuntimeStateUnavailable},
 		Xray: controlapi.XrayStatus{
 			State: controlapi.RuntimeStateFailed, FailStopped: true,
-			Current:              &controlapi.XrayGenerationStatus{Generation: 1},
-			StrictStreamOutbound: true,
+			Current:                     &controlapi.XrayGenerationStatus{Generation: 1},
+			StrictStreamOutbound:        true,
+			EgressAuthorizationRevision: -1,
+			EgressAuthorizationDigest:   strings.Repeat("a", 64),
 		},
 	}
 	if err := validateStatus(status); err != nil {
@@ -149,6 +151,14 @@ func TestValidateStatusAcceptsExplicitStartupRollbackAndFailStoppedXray(t *testi
 	status.Xray.State = controlapi.RuntimeStateRunning
 	if err := validateStatus(status); err == nil {
 		t.Fatal("fail-stopped Xray was accepted as running")
+	}
+	status.Xray.FailStopped = false
+	if err := validateStatus(status); err == nil {
+		t.Fatal("running Xray with fail-stop authorization revision was accepted")
+	}
+	status.Xray.EgressAuthorizationRevision = status.Revision
+	if err := validateStatus(status); err != nil {
+		t.Fatalf("running Xray with current authorization was rejected: %v", err)
 	}
 }
 

@@ -352,7 +352,7 @@ export function Runtime() {
                         ? '-1 (fail-stop)'
                         : String(daemon.xray.egress_authorization_revision),
                     status: daemon.xray.fail_stopped ? 'failed' : 'ok',
-                    note: 'Configuration revision that produced the immutable node-egress authorization snapshot currently installed in Xray.',
+                    note: 'Applied runtime revision that confirmed the immutable node-egress authorization snapshot currently installed in Xray.',
                   },
                   {
                     key: 'egress_authorization_sources',
@@ -360,6 +360,13 @@ export function Runtime() {
                     value: xrayPresent ? String(daemon.xray.egress_authorization_sources) : null,
                     status: daemon.xray.fail_stopped ? 'inactive' : 'info',
                     note: 'Authenticated peer node IDs in the active runtime snapshot. Zero is an explicit default-deny reading.',
+                  },
+                  {
+                    key: 'egress_authorization_denials',
+                    label: 'Authorization denials',
+                    value: xrayPresent ? String(daemon.xray.egress_authorization_denials) : null,
+                    status: daemon.xray.egress_authorization_denials > 0 ? 'info' : 'ok',
+                    note: 'Cumulative source, snapshot, or destination-policy refusals since this daemon started.',
                   },
                   {
                     key: 'egress_authorization_digest',

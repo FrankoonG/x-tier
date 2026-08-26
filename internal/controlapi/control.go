@@ -122,6 +122,7 @@ type XrayStatus struct {
 	EgressAuthorizationRevision int64                  `json:"egress_authorization_revision"`
 	EgressAuthorizationDigest   string                 `json:"egress_authorization_digest"`
 	EgressAuthorizationSources  int                    `json:"egress_authorization_sources"`
+	EgressAuthorizationDenials  uint64                 `json:"egress_authorization_denials"`
 	Inbounds                    []XrayInboundStatus    `json:"inbounds"`
 }
 

@@ -921,7 +921,7 @@ function validateDaemonStatus(value: Record<string, unknown>): void {
     xray,
     ['egress_authorization_digest'],
     ['fail_stopped', 'strict_stream_outbound', 'strict_packet_outbound'],
-    ['egress_authorization_sources'],
+    ['egress_authorization_sources', 'egress_authorization_denials'],
   );
   const xrayState = requireEnum(xray, 'state', RUNTIME_STATES);
   const authorizationRevision = xray.egress_authorization_revision;
@@ -941,7 +941,7 @@ function validateDaemonStatus(value: Record<string, unknown>): void {
     && typeof authorizationRevision === 'number'
     && Number.isSafeInteger(authorizationRevision)
     && authorizationRevision >= 0
-    && authorizationRevision <= (value.revision as number)
+    && authorizationRevision === reconcile.applied_revision
     && /^[0-9a-f]{64}$/.test(authorizationDigest);
   if (!authorizationFieldsValid
     || (xray.fail_stopped === true && !authorizationFailStopped)

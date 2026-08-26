@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -105,6 +106,14 @@ type RuntimeReloader interface {
 	// Reload reconciles one desired revision; it is not a force-restart API.
 	// Repeating an already healthy revision must not publish a new generation.
 	Reload(context.Context, int64, bool) (controlapi.ReconcileStatus, error)
+}
+
+// CommittedRevisionReconciler is implemented by the long-running daemon. The
+// control server invokes it while still holding the config and reload mutation
+// gates, so two successful writes cannot collapse into one observed runtime
+// revision and skip a security-sensitive intermediate state.
+type CommittedRevisionReconciler interface {
+	ReconcileCommittedRevision(context.Context, int64) (controlapi.ReconcileStatus, error)
 }
 
 func Start(ctx context.Context, addr, configPath string, providers ...StatusProvider) (*Server, error) {
@@ -495,7 +504,7 @@ func (s *Server) executeCommand(req controlapi.Request) controlapi.Response {
 			if isConfigRestoreCommand(req.Args) {
 				return s.executeRestoreLastKnownGood(req)
 			}
-			return s.executeCLICommand(mutationCtx, req)
+			return s.executeConfigCLICommand(mutationCtx, req)
 		})
 	}()
 
@@ -506,6 +515,39 @@ func (s *Server) executeCommand(req controlapi.Request) controlapi.Response {
 		s.pinRequestExecution(req.RequestID, executionDone)
 		return indeterminateCommandResponse(req, "control.mutation_timeout", "mutation execution exceeded its server budget")
 	}
+}
+
+func (s *Server) executeConfigCLICommand(ctx context.Context, req controlapi.Request) controlapi.Response {
+	response := s.executeCLICommand(ctx, req)
+	if !response.Applied || response.Outcome != controlapi.MutationOutcomeApplied {
+		return response
+	}
+	if req.Revision == math.MaxInt64 {
+		failure := runtimeCommandErrorResponse(req.JSON, publicerr.Errorf(
+			"service.committed_revision_invalid",
+			"committed mutation did not provide a valid next revision",
+		))
+		return withMutationOutcome(failure, true, controlapi.MutationOutcomeApplied)
+	}
+	_, supported, reconcileErr := s.reconcileCommittedRevision(ctx, req.Revision+1)
+	if !supported || reconcileErr == nil {
+		return response
+	}
+	failure := runtimeCommandErrorResponse(req.JSON, reconcileErr)
+	return withMutationOutcome(failure, true, controlapi.MutationOutcomeApplied)
+}
+
+func (s *Server) reconcileCommittedRevision(
+	ctx context.Context,
+	revision int64,
+) (controlapi.ReconcileStatus, bool, error) {
+	reconciler, ok := s.status.(CommittedRevisionReconciler)
+	if !ok {
+		return controlapi.ReconcileStatus{}, false, nil
+	}
+	status, reconcileErr := reconciler.ReconcileCommittedRevision(ctx, revision)
+	classifiedErr, _, _ := classifyReloadMutation(status, reconcileErr, revision)
+	return status, true, classifiedErr
 }
 
 func (s *Server) executeCLICommand(ctx context.Context, req controlapi.Request) controlapi.Response {
@@ -1148,6 +1190,19 @@ func validateStatus(status controlapi.DaemonStatus) error {
 	if status.Xray.FailStopped && status.Xray.State != controlapi.RuntimeStateFailed {
 		return fmt.Errorf("control.status_xray_fail_stop_state_invalid")
 	}
+	if status.Xray.FailStopped {
+		if status.Xray.EgressAuthorizationRevision != -1 ||
+			status.Xray.EgressAuthorizationSources != 0 ||
+			!validAuthorizationDigest(status.Xray.EgressAuthorizationDigest) {
+			return fmt.Errorf("control.status_xray_fail_stop_authorization_invalid")
+		}
+	} else if status.Xray.State == controlapi.RuntimeStateRunning {
+		if status.Xray.EgressAuthorizationRevision < 0 ||
+			status.Xray.EgressAuthorizationRevision != status.Reconcile.AppliedRevision ||
+			!validAuthorizationDigest(status.Xray.EgressAuthorizationDigest) {
+			return fmt.Errorf("control.status_xray_authorization_invalid")
+		}
+	}
 	if status.Xray.Current != nil && status.Xray.State != controlapi.RuntimeStateRunning &&
 		status.Xray.State != controlapi.RuntimeStateStopping &&
 		!(status.Xray.FailStopped && status.Xray.State == controlapi.RuntimeStateFailed) {
@@ -1164,6 +1219,14 @@ func validateStatus(status controlapi.DaemonStatus) error {
 		}
 	}
 	return nil
+}
+
+func validAuthorizationDigest(digest string) bool {
+	if len(digest) != 64 || digest != strings.ToLower(digest) {
+		return false
+	}
+	decoded, err := hex.DecodeString(digest)
+	return err == nil && len(decoded) == 32
 }
 
 func validateRuntimeStatus(name string, status controlapi.RuntimeStatus) error {

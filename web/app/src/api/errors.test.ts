@@ -39,6 +39,22 @@ test('node egress grant public codes all have operator guidance', () => {
   }
 });
 
+test('committed-revision barrier failures all have operator guidance', () => {
+  for (const code of [
+    'service.reload_apply',
+    'service.reload_applied_unhealthy',
+    'service.reload_not_applied',
+    'service.reload_result_invalid',
+    'service.reload_canceled',
+    'service.committed_revision_invalid',
+  ]) {
+    const advice = adviseCode(code);
+    assert.notEqual(advice.title, 'The command failed', code);
+    assert.equal(advice.blocked, true, code);
+    assert.equal(advice.needsRefresh, true, code);
+  }
+});
+
 test('error guidance never overrides the daemon mutation outcome', () => {
   const refused = describeFailure(new CommandFailure(
     'config.commit_visible_and_resynced',

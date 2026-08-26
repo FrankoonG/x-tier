@@ -56,6 +56,7 @@ function validDaemonStatus(): Record<string, unknown> {
       egress_authorization_revision: 9,
       egress_authorization_digest: 'a'.repeat(64),
       egress_authorization_sources: 1,
+      egress_authorization_denials: 2,
     },
   };
 }
@@ -500,6 +501,8 @@ test('illegal daemon status values are rejected before screens consume them', as
     (status) => { (status.xray as Record<string, unknown>).egress_authorization_digest = 'A'.repeat(64); },
     (status) => { (status.xray as Record<string, unknown>).egress_authorization_digest = 'a'.repeat(63); },
     (status) => { (status.xray as Record<string, unknown>).egress_authorization_sources = -1; },
+    (status) => { (status.xray as Record<string, unknown>).egress_authorization_denials = -1; },
+    (status) => { delete (status.xray as Record<string, unknown>).egress_authorization_denials; },
     (status) => {
       const xray = status.xray as Record<string, unknown>;
       xray.state = 'failed';
@@ -551,6 +554,7 @@ test('unavailable and fail-stopped authorization snapshots keep distinct valid s
     egress_authorization_revision: 0,
     egress_authorization_digest: 'c'.repeat(64),
     egress_authorization_sources: 0,
+    egress_authorization_denials: 0,
   };
   const failStopped = validDaemonStatus();
   failStopped.state = 'degraded';
@@ -560,6 +564,7 @@ test('unavailable and fail-stopped authorization snapshots keep distinct valid s
     egress_authorization_revision: -1,
     egress_authorization_digest: 'b'.repeat(64),
     egress_authorization_sources: 0,
+    egress_authorization_denials: 3,
   };
 
   const originalFetch = globalThis.fetch;
@@ -570,6 +575,23 @@ test('unavailable and fail-stopped authorization snapshots keep distinct valid s
       globalThis.fetch = async () => Response.json(status);
       await assert.doesNotReject(getDaemonStatus());
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a recovered grantless runtime carries the current revision and canonical empty digest', async () => {
+  const status = validDaemonStatus();
+  const xray = status.xray as Record<string, unknown>;
+  xray.egress_authorization_sources = 0;
+  xray.egress_authorization_digest = '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945';
+
+  const originalFetch = globalThis.fetch;
+  try {
+    clearJournal();
+    resetControlSession();
+    globalThis.fetch = async () => Response.json(status);
+    await assert.doesNotReject(getDaemonStatus());
   } finally {
     globalThis.fetch = originalFetch;
   }

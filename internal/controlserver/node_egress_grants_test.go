@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/FrankoonG/x-tier/internal/cli"
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
+	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/statestore"
 )
@@ -145,6 +149,261 @@ func TestDomainNodeEgressGrantTypedLifecycleWithoutCLI(t *testing.T) {
 	}
 	assertNodeEgressGrantStoredState(t, path, 3, false)
 	assertDomainNeverEnteredCLI(t, server)
+}
+
+func TestCommittedRevisionBarrierPreventsGrantRevokeRestoreCoalescing(t *testing.T) {
+	for _, ingress := range []string{"domain", "CLI"} {
+		t.Run(ingress, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := configstore.Save(path, nodeEgressGrantDomainConfig(true)); err != nil {
+				t.Fatal(err)
+			}
+			provider := &committedRevisionTestProvider{
+				domainTestProvider: &domainTestProvider{},
+				entered:            make(chan int64, 2),
+				firstRelease:       make(chan struct{}),
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			server, err := StartOwned(ctx, "127.0.0.1:0", path, path, provider)
+			if err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			defer server.Close()
+			defer cancel()
+
+			revokeDone := make(chan error, 1)
+			go func() {
+				revokeDone <- issueGrantRevoke(t, ingress, server, path)
+			}()
+			select {
+			case revision := <-provider.entered:
+				if revision != 1 {
+					t.Fatalf("first committed revision=%d, want 1", revision)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("revoke did not enter committed-revision barrier")
+			}
+
+			restoreDone := make(chan error, 1)
+			go func() {
+				restoreDone <- issueGrantRestore(t, ingress, server, path)
+			}()
+			select {
+			case revision := <-provider.entered:
+				t.Fatalf("restore revision %d bypassed the revoke barrier", revision)
+			case err := <-restoreDone:
+				t.Fatalf("restore completed before revoke runtime confirmation: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			close(provider.firstRelease)
+			select {
+			case err := <-revokeDone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("revoke did not complete after runtime confirmation")
+			}
+			select {
+			case revision := <-provider.entered:
+				if revision != 2 {
+					t.Fatalf("restored committed revision=%d, want 2", revision)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("restore did not enter committed-revision barrier")
+			}
+			select {
+			case err := <-restoreDone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("restore did not complete")
+			}
+
+			provider.mu.Lock()
+			revisions := append([]int64{}, provider.revisions...)
+			provider.mu.Unlock()
+			if len(revisions) != 2 || revisions[0] != 1 || revisions[1] != 2 {
+				t.Fatalf("runtime observed revisions=%v, want [1 2]", revisions)
+			}
+			assertNodeEgressGrantStoredState(t, path, 2, true)
+		})
+	}
+}
+
+func TestCommittedRevisionBarrierFailureCannotBeReportedAsCleanSuccess(t *testing.T) {
+	for _, ingress := range []string{"domain", "CLI"} {
+		t.Run(ingress, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := configstore.Save(path, nodeEgressGrantDomainConfig(false)); err != nil {
+				t.Fatal(err)
+			}
+			provider := &committedRevisionTestProvider{
+				domainTestProvider: &domainTestProvider{},
+				resultStatus: &controlapi.ReconcileStatus{
+					State:             controlapi.ReconcileStateFailed,
+					AttemptedRevision: 1,
+				},
+				resultErr: publicerr.Errorf("service.reload_apply", "private runtime detail"),
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			server, err := StartOwned(ctx, "127.0.0.1:0", path, path, provider)
+			if err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			defer server.Close()
+			defer cancel()
+
+			if ingress == "domain" {
+				status, body := requestDomain(
+					t,
+					server,
+					http.MethodPut,
+					controlapi.DomainNodeEgressGrantsPath,
+					nodeEgressGrantPutRequest(0, "65100000000000000000000000000001"),
+				)
+				if status != http.StatusOK ||
+					!bytes.Contains(body, []byte(`"ok":false`)) ||
+					!bytes.Contains(body, []byte(`"error_code":"service.reload_apply"`)) ||
+					!bytes.Contains(body, []byte(`"applied":true`)) ||
+					!bytes.Contains(body, []byte(`"outcome":"applied"`)) ||
+					bytes.Contains(body, []byte("private runtime detail")) {
+					t.Fatalf("domain barrier failure status=%d body=%s", status, body)
+				}
+			} else {
+				response, executeErr := controlapi.Execute(server.Addr(), controlapi.TokenPath(path), controlapi.Request{
+					Args: []string{
+						"local", "peer", "egress", "set", "A",
+						"--network", "tcp", "--allow-cidrs", "8.0.0.0/8", "--allow-ports", "443",
+					},
+					JSON:      true,
+					Revision:  0,
+					RequestID: "65100000000000000000000000000002",
+				})
+				if executeErr != nil {
+					t.Fatal(executeErr)
+				}
+				if !response.Applied || response.Outcome != controlapi.MutationOutcomeApplied ||
+					!strings.Contains(response.Stdout, `"ok":false`) ||
+					!strings.Contains(response.Stdout, `"error_code":"service.reload_apply"`) ||
+					strings.Contains(response.Stdout, "private runtime detail") {
+					t.Fatalf("CLI barrier failure response=%+v", response)
+				}
+			}
+			assertNodeEgressGrantStoredState(t, path, 1, true)
+		})
+	}
+}
+
+type committedRevisionTestProvider struct {
+	*domainTestProvider
+	mu           sync.Mutex
+	revisions    []int64
+	entered      chan int64
+	firstRelease chan struct{}
+	resultStatus *controlapi.ReconcileStatus
+	resultErr    error
+}
+
+func (p *committedRevisionTestProvider) ReconcileCommittedRevision(
+	ctx context.Context,
+	revision int64,
+) (controlapi.ReconcileStatus, error) {
+	p.mu.Lock()
+	p.revisions = append(p.revisions, revision)
+	p.mu.Unlock()
+	if p.entered != nil {
+		p.entered <- revision
+	}
+	if revision == 1 && p.firstRelease != nil {
+		select {
+		case <-p.firstRelease:
+		case <-ctx.Done():
+			return controlapi.ReconcileStatus{}, ctx.Err()
+		}
+	}
+	if p.resultStatus != nil {
+		return *p.resultStatus, p.resultErr
+	}
+	return controlapi.ReconcileStatus{
+		State:                  controlapi.ReconcileStateApplied,
+		AppliedRevision:        revision,
+		AttemptedRevision:      revision,
+		ConfigurationPublished: true,
+	}, nil
+}
+
+func issueGrantRevoke(t *testing.T, ingress string, server *Server, path string) error {
+	t.Helper()
+	if ingress == "domain" {
+		status, body, err := requestDomainRaw(server, http.MethodDelete, controlapi.DomainNodeEgressGrantsPath, controlapi.NodeEgressGrantRevokeRequest{
+			DomainMutationRequest: domainMutationRequest(0, "65000000000000000000000000000001"),
+			SourceNodeID:          "node-a",
+		})
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("domain revoke status=%d body=%s", status, body)
+		}
+		return nil
+	}
+	response, err := controlapi.Execute(server.Addr(), controlapi.TokenPath(path), controlapi.Request{
+		Args:      []string{"local", "peer", "egress", "revoke", "A"},
+		JSON:      true,
+		Revision:  0,
+		RequestID: "65000000000000000000000000000002",
+	})
+	if err != nil {
+		return err
+	}
+	if response.ExitCode != 0 || !response.Applied || response.Outcome != controlapi.MutationOutcomeApplied {
+		return fmt.Errorf("CLI revoke response=%+v", response)
+	}
+	return nil
+}
+
+func issueGrantRestore(t *testing.T, ingress string, server *Server, path string) error {
+	t.Helper()
+	if ingress == "domain" {
+		status, body, err := requestDomainRaw(
+			server,
+			http.MethodPut,
+			controlapi.DomainNodeEgressGrantsPath,
+			nodeEgressGrantPutRequest(1, "65000000000000000000000000000003"),
+		)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("domain restore status=%d body=%s", status, body)
+		}
+		return nil
+	}
+	response, err := controlapi.Execute(server.Addr(), controlapi.TokenPath(path), controlapi.Request{
+		Args: []string{
+			"local", "peer", "egress", "set", "A",
+			"--network", "tcp",
+			"--allow-cidrs", "8.0.0.0/8",
+			"--allow-private-cidrs", "10.20.0.0/16",
+			"--deny-cidrs", "8.8.8.0/24",
+			"--allow-ports", "443",
+		},
+		JSON:      true,
+		Revision:  1,
+		RequestID: "65000000000000000000000000000004",
+	})
+	if err != nil {
+		return err
+	}
+	if response.ExitCode != 0 || !response.Applied || response.Outcome != controlapi.MutationOutcomeApplied {
+		return fmt.Errorf("CLI restore response=%+v", response)
+	}
+	return nil
 }
 
 func TestDomainNodeEgressGrantCASAllowsOneWinner(t *testing.T) {
