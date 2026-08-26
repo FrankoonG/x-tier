@@ -1215,6 +1215,9 @@ func TestReadCredentialFileRequiresProtectedRegularFile(t *testing.T) {
 	if err := os.WriteFile(insecure, []byte("not-protected\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(insecure, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := readCredentialFile(insecure); err == nil {
 		t.Fatal("world/inherited-readable credential file was accepted")
 	}
