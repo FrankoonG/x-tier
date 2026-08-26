@@ -1,8 +1,10 @@
 package xrayrt
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -181,7 +183,7 @@ func TestRuntimeCloseContextDeadlineIncludesCloseGateWait(t *testing.T) {
 }
 
 func TestReplaceInboundsPartialRemovalRestoresCompleteOldSet(t *testing.T) {
-	addresses := reserveRuntimeAddresses(t, 4)
+	addresses := reserveDistinctRuntimeAddresses(t, 4)
 	oldA, oldB, newA, newB := addresses[0], addresses[1], addresses[2], addresses[3]
 	oldConfigs := []*core.InboundHandlerConfig{
 		testSOCKSInbound("old-a", oldA),
@@ -202,14 +204,28 @@ func TestReplaceInboundsPartialRemovalRestoresCompleteOldSet(t *testing.T) {
 	if err == nil || errors.Is(err, ErrInboundFailStopped) {
 		t.Fatalf("ReplaceInbounds = %v, want recoverable removal failure", err)
 	}
-	assertRuntimePortState(t, oldA, true)
-	assertRuntimePortState(t, oldB, true)
-	assertRuntimePortState(t, newA, false)
-	assertRuntimePortState(t, newB, false)
+	if tags := runtime.ManagedInboundTags(); len(tags) != 2 || tags[0] != "old-a" || tags[1] != "old-b" {
+		t.Fatalf("restored handler tags = %v, want [old-a old-b]", tags)
+	}
+	equivalent, err := EquivalentInbounds(runtime.inboundConfigs, oldConfigs)
+	if err != nil || !equivalent {
+		t.Fatalf("restored inbound configs equivalent=%v err=%v", equivalent, err)
+	}
+	expectedWire, err := canonicalInboundWire(oldConfigs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(runtime.inboundWire, expectedWire) {
+		t.Fatal("restored inbound wire differs from the complete old set")
+	}
+	assertRuntimeSOCKSState(t, oldA, true)
+	assertRuntimeSOCKSState(t, oldB, true)
+	assertRuntimeSOCKSState(t, newA, false)
+	assertRuntimeSOCKSState(t, newB, false)
 }
 
 func TestReplaceInboundsRestoreFailureFailStopsAndCanRecover(t *testing.T) {
-	addresses := reserveRuntimeAddresses(t, 2)
+	addresses := reserveDistinctRuntimeAddresses(t, 2)
 	oldAddress, newAddress := addresses[0], addresses[1]
 	oldConfigs := []*core.InboundHandlerConfig{testSOCKSInbound("managed", oldAddress)}
 	runtime, err := StartRuntime(context.Background(), StartOptions{Inbounds: oldConfigs})
@@ -228,25 +244,25 @@ func TestReplaceInboundsRestoreFailureFailStopsAndCanRecover(t *testing.T) {
 	if len(runtime.inboundConfigs) != 0 || len(runtime.inboundWire) != 0 {
 		t.Fatalf("fail-stopped runtime retained authoritative inbounds: configs=%d wire=%d", len(runtime.inboundConfigs), len(runtime.inboundWire))
 	}
-	assertRuntimePortState(t, oldAddress, false)
-	assertRuntimePortState(t, newAddress, false)
+	assertRuntimeSOCKSState(t, oldAddress, false)
+	assertRuntimeSOCKSState(t, newAddress, false)
 
 	if err := runtime.ReplaceInbounds(context.Background(), newConfigs); err != nil {
 		t.Fatalf("recover fail-stopped runtime: %v", err)
 	}
-	assertRuntimePortState(t, oldAddress, false)
-	assertRuntimePortState(t, newAddress, true)
+	assertRuntimeSOCKSState(t, oldAddress, false)
+	assertRuntimeSOCKSState(t, newAddress, true)
 }
 
 func TestIdenticalInboundReloadRepairsMissingHandler(t *testing.T) {
-	address := reserveRuntimeAddress(t)
+	address := reserveDistinctRuntimeAddresses(t, 1)[0]
 	configs := []*core.InboundHandlerConfig{testSOCKSInbound("managed", address)}
 	runtime, err := StartRuntime(context.Background(), StartOptions{Inbounds: configs})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	assertRuntimePortState(t, address, true)
+	assertRuntimeSOCKSState(t, address, true)
 
 	if err := runtime.inbound.RemoveHandler(context.Background(), "managed"); err != nil {
 		t.Fatal(err)
@@ -254,7 +270,7 @@ func TestIdenticalInboundReloadRepairsMissingHandler(t *testing.T) {
 	if tags := runtime.ManagedInboundTags(); len(tags) != 0 {
 		t.Fatalf("removed handler remained observable: %v", tags)
 	}
-	assertRuntimePortState(t, address, false)
+	assertRuntimeSOCKSState(t, address, false)
 
 	if err := runtime.ReplaceInbounds(context.Background(), configs); err != nil {
 		t.Fatal(err)
@@ -262,7 +278,7 @@ func TestIdenticalInboundReloadRepairsMissingHandler(t *testing.T) {
 	if tags := runtime.ManagedInboundTags(); len(tags) != 1 || tags[0] != "managed" {
 		t.Fatalf("repaired handler tags = %v", tags)
 	}
-	assertRuntimePortState(t, address, true)
+	assertRuntimeSOCKSState(t, address, true)
 }
 
 type faultInboundManager struct {
@@ -308,12 +324,7 @@ func testSOCKSInbound(tag, address string) *core.InboundHandlerConfig {
 	}
 }
 
-func reserveRuntimeAddress(t *testing.T) string {
-	t.Helper()
-	return reserveRuntimeAddresses(t, 1)[0]
-}
-
-func reserveRuntimeAddresses(t *testing.T, count int) []string {
+func reserveDistinctRuntimeAddresses(t *testing.T, count int) []string {
 	t.Helper()
 	if count <= 0 {
 		t.Fatalf("reservation count = %d, want positive", count)
@@ -341,20 +352,38 @@ func reserveRuntimeAddresses(t *testing.T, count int) []string {
 	return addresses
 }
 
-func assertRuntimePortState(t *testing.T, address string, wantOpen bool) {
+func assertRuntimeSOCKSState(t *testing.T, address string, wantOpen bool) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
+	var lastErr error
 	for {
-		conn, err := net.DialTimeout("tcp4", address, 50*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-		}
-		if (err == nil) == wantOpen {
+		open, err := probeRuntimeSOCKS(address)
+		lastErr = err
+		if open == wantOpen {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("port %s open=%v, want %v (last error %v)", address, err == nil, wantOpen, err)
+			t.Fatalf("SOCKS inbound %s open=%v, want %v (last error %v)", address, open, wantOpen, lastErr)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func probeRuntimeSOCKS(address string) (bool, error) {
+	conn, err := net.DialTimeout("tcp4", address, 50*time.Millisecond)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		return false, err
+	}
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return false, err
+	}
+	response := make([]byte, 2)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return false, err
+	}
+	return response[0] == 0x05 && response[1] == 0x00, nil
 }
