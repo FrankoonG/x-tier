@@ -30,15 +30,23 @@ const rendrRestartMinimumInterval = time.Second
 
 const rendrForceCloseAttemptTimeout = 250 * time.Millisecond
 
+const rendrRevocationTimeout = 2 * time.Second
+
 const maxActiveCarriersPerPeer = rendradapter.MaxAcceptedSessions / 4
 
 var ErrCarrierAdmissionLimit = errors.New("dataplane: carrier admission limit reached")
+
+var ErrRendrRevocationIncomplete = errors.New("dataplane: rendr session revocation incomplete")
+
+var ErrRendrAuthorizationUpdateFailStopped = errors.New("dataplane: rendr authorization update fail-stopped")
 
 type rendrRuntime interface {
 	SetDialers(rendradapter.StreamDialer, rendradapter.EgressDialer) error
 	Dial(context.Context, string, rendradapter.Destination) (net.Conn, error)
 	InjectCarrier(context.Context, net.Conn) error
 	Status() rendradapter.RuntimeStatus
+	BeginClose()
+	RevokeContext(context.Context) error
 	CloseContext(context.Context) error
 	ForceClose() error
 }
@@ -83,17 +91,21 @@ type Plane struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	lifecycleMu      sync.RWMutex
-	rendr            rendrRuntime
-	rendrFactory     rendrRuntimeFactory
-	closing          bool
-	rendrDone        chan struct{}
-	retirements      []*rendrRetirement
-	retirementError  error
-	lastRendrRestart time.Time
-	xray             *xrayrt.Runtime
-	bridge           *xraybridge.Handler
-	routes           atomic.Pointer[routeTable]
+	lifecycleMu          sync.RWMutex
+	rendr                rendrRuntime
+	rendrFactory         rendrRuntimeFactory
+	closing              bool
+	rendrDone            chan struct{}
+	factoryDone          chan struct{}
+	factoryWG            sync.WaitGroup
+	operationDone        chan struct{}
+	operationWG          sync.WaitGroup
+	retirements          []*rendrRetirement
+	retirementCloseError error
+	lastRendrRestart     time.Time
+	xray                 *xrayrt.Runtime
+	bridge               *xraybridge.Handler
+	routes               atomic.Pointer[routeTable]
 
 	reconcileMu    sync.Mutex
 	applyMu        sync.RWMutex
@@ -136,7 +148,9 @@ func Start(ctx context.Context, cfg configstore.Config) (*Plane, error) {
 		rendrFactory: func(ctx context.Context) (rendrRuntime, error) {
 			return rendradapter.NewRuntime(ctx)
 		},
-		rendrDone: make(chan struct{}),
+		rendrDone:     make(chan struct{}),
+		factoryDone:   make(chan struct{}),
+		operationDone: make(chan struct{}),
 		status: Status{
 			State:             "starting",
 			AppliedRevision:   -1,
@@ -235,13 +249,37 @@ func closeRendrRuntime(runtime rendrRuntime) error {
 	return err
 }
 
+func closeRendrRuntimeForRevocation(ctx context.Context, runtime rendrRuntime) error {
+	if runtime == nil {
+		return nil
+	}
+	runtime.BeginClose()
+	if ctx == nil {
+		return errors.Join(ErrRendrRevocationIncomplete, errors.New("dataplane: nil revocation context"))
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, rendrRevocationTimeout)
+	err := runtime.RevokeContext(waitCtx)
+	cancel()
+	if errors.Is(err, rendradapter.ErrShutdownIncomplete) {
+		forceErr, completed := forceRendrRuntime(runtime, rendrForceCloseAttemptTimeout)
+		if !completed {
+			forceErr = errors.Join(forceErr, rendradapter.ErrShutdownIncomplete)
+		}
+		return errors.Join(ErrRendrRevocationIncomplete, err, forceErr)
+	}
+	return err
+}
+
 func (p *Plane) currentRendr() rendrRuntime {
 	p.lifecycleMu.RLock()
 	defer p.lifecycleMu.RUnlock()
 	return p.rendr
 }
 
-func (p *Plane) ensureRendrRunning() error {
+func (p *Plane) ensureRendrRunning(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("dataplane: nil rendr recovery context")
+	}
 	if p.ctx == nil || p.ctx.Err() != nil {
 		return net.ErrClosed
 	}
@@ -253,7 +291,7 @@ func (p *Plane) ensureRendrRunning() error {
 	if status.State == "running" {
 		return nil
 	}
-	if status.State != "failed" {
+	if status.State != "failed" && status.State != "stopping" && status.State != "stopped" {
 		return fmt.Errorf("dataplane: rendr runtime is %s", status.State)
 	}
 
@@ -274,31 +312,24 @@ func (p *Plane) ensureRendrRunning() error {
 		return fmt.Errorf("dataplane: rendr restart backoff active until %s", next.UTC().Format(time.RFC3339Nano))
 	}
 	p.lastRendrRestart = now
-	factory := p.rendrFactory
 	p.lifecycleMu.Unlock()
 
-	replacement, err := factory(p.ctx)
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, rendrRevocationTimeout)
+	defer cancelRecovery()
+	replacement, err := p.callPreparedRendrRuntime(recoveryCtx)
 	if err != nil {
 		return fmt.Errorf("dataplane: restart rendr runtime: %w", err)
-	}
-	if err := replacement.SetDialers(p.dialCarrier, p.dialEgress); err != nil {
-		_ = closeRendrRuntime(replacement)
-		return fmt.Errorf("dataplane: bind restarted rendr runtime: %w", err)
-	}
-	if replacementStatus := replacement.Status(); replacementStatus.State != "running" {
-		_ = closeRendrRuntime(replacement)
-		return fmt.Errorf("dataplane: restarted rendr runtime is %s", replacementStatus.State)
 	}
 
 	p.lifecycleMu.Lock()
 	if p.closing {
 		p.lifecycleMu.Unlock()
-		_ = closeRendrRuntime(replacement)
+		p.retireRendrRuntime(replacement)
 		return net.ErrClosed
 	}
 	if p.rendr != current {
 		p.lifecycleMu.Unlock()
-		_ = closeRendrRuntime(replacement)
+		p.retireRendrRuntime(replacement)
 		return nil
 	}
 	retirement := &rendrRetirement{runtime: current, done: make(chan struct{})}
@@ -307,11 +338,111 @@ func (p *Plane) ensureRendrRunning() error {
 	p.retirements = append(p.retirements, retirement)
 	p.lifecycleMu.Unlock()
 	p.revokeRuntimeCarriers(current)
+	current.BeginClose()
 	go func() {
 		retirement.err = closeRendrRuntime(current)
 		close(retirement.done)
 	}()
+	if err := closeRendrRuntimeForRevocation(recoveryCtx, current); err != nil {
+		status := current.Status()
+		return errors.Join(
+			err,
+			fmt.Errorf("dataplane: failed-runtime revocation barrier retained client=%d accepted=%d", status.ActiveClient, status.ActiveAccepted),
+		)
+	}
 	return nil
+}
+
+type rendrFactoryResult struct {
+	runtime rendrRuntime
+	err     error
+}
+
+func (p *Plane) callPreparedRendrRuntime(waitCtx context.Context) (rendrRuntime, error) {
+	if waitCtx == nil {
+		return nil, errors.New("dataplane: nil rendr factory wait context")
+	}
+	p.lifecycleMu.Lock()
+	if p.closing || p.ctx == nil || p.ctx.Err() != nil {
+		p.lifecycleMu.Unlock()
+		return nil, net.ErrClosed
+	}
+	factory := p.rendrFactory
+	factoryCtx := p.ctx
+	if factory == nil {
+		p.lifecycleMu.Unlock()
+		return nil, errors.New("dataplane: rendr runtime factory unavailable")
+	}
+	p.factoryWG.Add(1)
+	p.lifecycleMu.Unlock()
+
+	result := make(chan rendrFactoryResult)
+	abandoned := make(chan struct{})
+	go func() {
+		defer p.factoryWG.Done()
+		runtime, err := factory(factoryCtx)
+		if err == nil && runtime == nil {
+			err = errors.New("dataplane: rendr runtime factory returned nil")
+		}
+		if err == nil {
+			if bindErr := runtime.SetDialers(p.dialCarrier, p.dialEgress); bindErr != nil {
+				err = fmt.Errorf("dataplane: bind prepared rendr runtime: %w", bindErr)
+			}
+		}
+		if err == nil {
+			if status := runtime.Status(); status.State != "running" {
+				err = fmt.Errorf("dataplane: prepared rendr runtime is %s", status.State)
+			}
+		}
+		if err != nil && runtime != nil {
+			p.retireRendrRuntime(runtime)
+			runtime = nil
+		}
+		select {
+		case result <- rendrFactoryResult{runtime: runtime, err: err}:
+		case <-abandoned:
+			if runtime != nil {
+				p.retireRendrRuntime(runtime)
+			}
+		}
+	}()
+
+	select {
+	case outcome := <-result:
+		return outcome.runtime, outcome.err
+	case <-waitCtx.Done():
+		close(abandoned)
+		return nil, waitCtx.Err()
+	case <-factoryCtx.Done():
+		close(abandoned)
+		return nil, net.ErrClosed
+	}
+}
+
+func (p *Plane) beginOperation() bool {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.closing || p.ctx == nil || p.ctx.Err() != nil {
+		return false
+	}
+	p.operationWG.Add(1)
+	return true
+}
+
+func (p *Plane) retireRendrRuntime(runtime rendrRuntime) {
+	if runtime == nil {
+		return
+	}
+	retirement := &rendrRetirement{runtime: runtime, done: make(chan struct{})}
+	p.lifecycleMu.Lock()
+	p.collectCompletedRetirementsLocked()
+	p.retirements = append(p.retirements, retirement)
+	p.lifecycleMu.Unlock()
+	runtime.BeginClose()
+	go func() {
+		retirement.err = closeRendrRuntime(runtime)
+		close(retirement.done)
+	}()
 }
 
 // Apply reconciles a complete configuration. Managed listeners are quiesced
@@ -327,6 +458,10 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if !p.beginOperation() {
+		return net.ErrClosed
+	}
+	defer p.operationWG.Done()
 	p.reconcileMu.Lock()
 	defer p.reconcileMu.Unlock()
 	if p.ctx == nil || p.ctx.Err() != nil {
@@ -354,28 +489,44 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 			appliedRevision,
 		))
 	}
-	if err := p.ensureRendrRunning(); err != nil {
-		return p.setFailed(cfg.Revision, publicerr.Wrap("runtime.rendr_recovery_failed", err))
-	}
 	wasFailStopped := p.failStopped
-	if cfg.Revision == appliedRevision && !wasFailStopped {
-		if digest != appliedDigest {
-			return p.setFailed(cfg.Revision, publicerr.Errorf(
-				"dataplane.revision_content_mismatch",
-				"configured revision %d differs from the applied content",
-				cfg.Revision,
+	candidateRequired := cfg.Revision != appliedRevision || wasFailStopped
+	if !candidateRequired && digest != appliedDigest {
+		return p.setFailed(cfg.Revision, publicerr.Errorf(
+			"dataplane.revision_content_mismatch",
+			"configured revision %d differs from the applied content",
+			cfg.Revision,
+		))
+	}
+	var compiled xrayconfig.Compiled
+	authorizationRevocation := false
+	if candidateRequired {
+		compiled, err = xrayconfig.Compile(cfg)
+		if err != nil {
+			return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: compile: %w", err))
+		}
+		authorizationRevocation = carrierRevocationRequired(p.routes.Load(), routesFrom(compiled))
+	}
+	if err := p.ensureRendrRunning(ctx); err != nil {
+		if errors.Is(err, ErrRendrRevocationIncomplete) || authorizationRevocation {
+			recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), applyRecoveryTimeout)
+			routeErr := p.failStopRoutes(recoveryCtx)
+			cancelRecovery()
+			return p.failStopRevocationApply(cfg.Revision, errors.Join(
+				ErrRendrAuthorizationUpdateFailStopped,
+				publicerr.Wrap("runtime.rendr_recovery_failed", err),
+				routeErr,
 			))
 		}
+		return p.setFailed(cfg.Revision, publicerr.Wrap("runtime.rendr_recovery_failed", err))
+	}
+	if !candidateRequired {
 		if err := p.xray.RetryCleanup(); err != nil {
 			return p.setFailed(cfg.Revision, publicerr.Wrap("runtime.xray_cleanup_failed", err))
 		}
 		return p.commitAppliedCurrent(cfg.Revision, digest)
 	}
 
-	compiled, err := xrayconfig.Compile(cfg)
-	if err != nil {
-		return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: compile: %w", err))
-	}
 	previous := p.current
 	if previous == nil {
 		return p.setFailed(cfg.Revision, errors.New("dataplane: previous applied configuration unavailable"))
@@ -386,6 +537,9 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 	}
 	if inboundsUnchanged && !wasFailStopped {
 		if err := p.publishOutboundAndRoutes(ctx, &compiled); err != nil {
+			if errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) {
+				return p.failStopRevocationApply(cfg.Revision, err)
+			}
 			return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: apply Xray generation: %w", err))
 		}
 		return p.commitApplied(&compiled, cfg.Revision, digest)
@@ -397,44 +551,53 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 		return p.setFailed(cfg.Revision, fmt.Errorf("dataplane: quiesce Xray inbounds: %w", err))
 	}
 	if err := p.publishOutboundAndRoutes(ctx, &compiled); err != nil {
+		if errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) {
+			return p.failStopRevocationApply(cfg.Revision, err)
+		}
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), applyRecoveryTimeout)
 		defer cancel()
 		if wasFailStopped {
-			p.failStopRoutes()
+			routeStopErr := p.failStopRoutes(recoveryCtx)
 			failStopErr := p.xray.ReplaceInbounds(recoveryCtx, nil)
 			if failStopErr != nil {
 				failStopErr = fmt.Errorf("dataplane: preserve fail-stopped Xray inbounds: %w", failStopErr)
 			}
 			return p.setFailed(cfg.Revision, errors.Join(
 				fmt.Errorf("dataplane: apply Xray generation: %w", err),
+				routeStopErr,
 				failStopErr,
 			))
 		}
 		restoreErr := p.xray.ReplaceInbounds(recoveryCtx, previous.Inbounds)
 		if restoreErr != nil {
-			p.failStopRoutes()
-			restoreErr = fmt.Errorf("dataplane: restore previous Xray inbounds: %w", restoreErr)
+			restoreErr = errors.Join(
+				fmt.Errorf("dataplane: restore previous Xray inbounds: %w", restoreErr),
+				p.failStopRoutes(recoveryCtx),
+			)
 		}
 		return p.setFailed(cfg.Revision, errors.Join(
 			fmt.Errorf("dataplane: apply Xray generation: %w", err),
 			restoreErr,
 		))
 	}
+	// Authorization removal is intentionally irreversible at the session
+	// layer. A later inbound-install rollback restores configuration and new
+	// admission, but it never resurrects sessions owned by the revoked runtime.
 	if err := p.xray.ReplaceInbounds(ctx, compiled.Inbounds); err != nil {
 		inboundErr := fmt.Errorf("dataplane: replace Xray inbounds: %w", err)
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), applyRecoveryTimeout)
 		defer cancel()
 		if wasFailStopped {
-			p.failStopRoutes()
+			routeStopErr := p.failStopRoutes(recoveryCtx)
 			failStopErr := p.xray.ReplaceInbounds(recoveryCtx, nil)
 			if failStopErr != nil {
 				failStopErr = fmt.Errorf("dataplane: preserve fail-stopped Xray inbounds: %w", failStopErr)
 			}
-			return p.setFailed(cfg.Revision, errors.Join(inboundErr, failStopErr))
+			return p.setFailed(cfg.Revision, errors.Join(inboundErr, routeStopErr, failStopErr))
 		}
 		rollbackErr := p.publishOutboundAndRoutes(recoveryCtx, previous)
 		if rollbackErr != nil {
-			p.failStopRoutes()
+			routeStopErr := p.failStopRoutes(recoveryCtx)
 			failStopErr := p.xray.ReplaceInbounds(recoveryCtx, nil)
 			if failStopErr != nil {
 				failStopErr = fmt.Errorf("dataplane: fail-stop managed inbounds: %w", failStopErr)
@@ -442,13 +605,16 @@ func (p *Plane) Apply(ctx context.Context, cfg configstore.Config) error {
 			return p.setFailed(cfg.Revision, errors.Join(
 				inboundErr,
 				rollbackErr,
+				routeStopErr,
 				failStopErr,
 			))
 		}
 		restoreErr := p.xray.ReplaceInbounds(recoveryCtx, previous.Inbounds)
 		if restoreErr != nil {
-			p.failStopRoutes()
-			restoreErr = fmt.Errorf("dataplane: restore previous Xray inbounds: %w", restoreErr)
+			restoreErr = errors.Join(
+				fmt.Errorf("dataplane: restore previous Xray inbounds: %w", restoreErr),
+				p.failStopRoutes(recoveryCtx),
+			)
 		}
 		return p.setFailed(cfg.Revision, errors.Join(inboundErr, restoreErr))
 	}
@@ -466,12 +632,12 @@ func (p *Plane) Dial(ctx context.Context, request xraybridge.UserRequest) (net.C
 		p.applyMu.RUnlock()
 		return nil, fmt.Errorf("dataplane: inbound %q has no applied exit peer", request.InboundTag)
 	}
+	runtime := p.currentRendr()
 	p.applyMu.RUnlock()
 	target := rendradapter.Destination{
 		Host: request.Target.Address.String(),
 		Port: uint16(request.Target.Port),
 	}
-	runtime := p.currentRendr()
 	if runtime == nil {
 		return nil, errors.New("dataplane: rendr runtime unavailable")
 	}
@@ -566,6 +732,20 @@ func (p *Plane) ForceClose() error {
 	default:
 		rendrError = errors.Join(rendrError, xrayrt.ErrShutdownIncomplete, rendradapter.ErrShutdownIncomplete)
 	}
+	select {
+	case <-p.operationDone:
+		retirements, historicalRetirementError = p.rendrRetirementSnapshot()
+		rendrError = errors.Join(rendrError, normalizeRendrCloseError(historicalRetirementError))
+	default:
+		rendrError = errors.Join(rendrError, xrayrt.ErrShutdownIncomplete, rendradapter.ErrShutdownIncomplete)
+	}
+	select {
+	case <-p.factoryDone:
+		retirements, historicalRetirementError = p.rendrRetirementSnapshot()
+		rendrError = errors.Join(rendrError, normalizeRendrCloseError(historicalRetirementError))
+	default:
+		rendrError = errors.Join(rendrError, xrayrt.ErrShutdownIncomplete, rendradapter.ErrShutdownIncomplete)
+	}
 	for _, retirement := range retirements {
 		select {
 		case <-retirement.done:
@@ -590,12 +770,12 @@ func (p *Plane) ForceClose() error {
 		return p.closeErr
 	}
 	p.closeErr = errors.Join(rendrError, xrayError)
-	p.closed = true
 	if errors.Is(p.closeErr, xrayrt.ErrShutdownIncomplete) {
 		p.setState("failed")
-	} else {
-		p.setState("stopped")
+		return p.closeErr
 	}
+	p.closed = true
+	p.setState("stopped")
 	return p.closeErr
 }
 
@@ -607,12 +787,26 @@ func (p *Plane) beginClose() {
 	if p.rendrDone == nil {
 		p.rendrDone = make(chan struct{})
 	}
+	if p.factoryDone == nil {
+		p.factoryDone = make(chan struct{})
+	}
+	if p.operationDone == nil {
+		p.operationDone = make(chan struct{})
+	}
 	p.rendrOnce.Do(func() {
 		if p.cancel != nil {
 			p.cancel()
 		}
 		p.revokeAllCarriers()
 		p.setState("stopping")
+		go func() {
+			p.operationWG.Wait()
+			close(p.operationDone)
+		}()
+		go func() {
+			p.factoryWG.Wait()
+			close(p.factoryDone)
+		}()
 		go func() {
 			if runtime != nil {
 				p.rendrError = runtime.CloseContext(context.Background())
@@ -623,14 +817,23 @@ func (p *Plane) beginClose() {
 }
 
 func (p *Plane) waitRendrShutdown(ctx context.Context) error {
-	retirements, historicalRetirementError := p.rendrRetirementSnapshot()
-	result := normalizeRendrCloseError(historicalRetirementError)
+	select {
+	case <-p.operationDone:
+	case <-ctx.Done():
+		return errors.Join(xrayrt.ErrShutdownIncomplete, rendradapter.ErrShutdownIncomplete, ctx.Err())
+	}
 	select {
 	case <-p.rendrDone:
-		result = errors.Join(result, normalizeRendrCloseError(p.rendrError))
 	case <-ctx.Done():
-		return errors.Join(result, xrayrt.ErrShutdownIncomplete, rendradapter.ErrShutdownIncomplete, ctx.Err())
+		return errors.Join(xrayrt.ErrShutdownIncomplete, rendradapter.ErrShutdownIncomplete, ctx.Err())
 	}
+	select {
+	case <-p.factoryDone:
+	case <-ctx.Done():
+		return errors.Join(xrayrt.ErrShutdownIncomplete, rendradapter.ErrShutdownIncomplete, ctx.Err())
+	}
+	retirements, historicalRetirementError := p.rendrRetirementSnapshot()
+	result := errors.Join(normalizeRendrCloseError(historicalRetirementError), normalizeRendrCloseError(p.rendrError))
 	for _, retirement := range retirements {
 		select {
 		case <-retirement.done:
@@ -646,7 +849,30 @@ func (p *Plane) rendrRetirementSnapshot() ([]*rendrRetirement, error) {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 	p.collectCompletedRetirementsLocked()
-	return append([]*rendrRetirement(nil), p.retirements...), p.retirementError
+	retirementError := p.retirementCloseError
+	for _, retirement := range p.retirements {
+		select {
+		case <-retirement.done:
+			retirementError = errors.Join(retirementError, retirement.err)
+		default:
+		}
+	}
+	return append([]*rendrRetirement(nil), p.retirements...), retirementError
+}
+
+func (p *Plane) rendrRetirementHealthError() error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	p.collectCompletedRetirementsLocked()
+	var healthError error
+	for _, retirement := range p.retirements {
+		select {
+		case <-retirement.done:
+			healthError = errors.Join(healthError, retirement.err)
+		default:
+		}
+	}
+	return healthError
 }
 
 func (p *Plane) collectCompletedRetirementsLocked() {
@@ -654,12 +880,50 @@ func (p *Plane) collectCompletedRetirementsLocked() {
 	for _, retirement := range p.retirements {
 		select {
 		case <-retirement.done:
-			p.retirementError = errors.Join(p.retirementError, retirement.err)
+			if retirement.err == nil {
+				continue
+			}
+			if retirement.runtime == nil {
+				p.retirementCloseError = errors.Join(p.retirementCloseError, retirement.err)
+				continue
+			}
+			if retirement.runtime.Status().State == "stopped" {
+				p.retirementCloseError = errors.Join(
+					p.retirementCloseError,
+					resolvedRendrRetirementError(retirement.err),
+				)
+				continue
+			}
+			active = append(active, retirement)
 		default:
 			active = append(active, retirement)
 		}
 	}
 	p.retirements = active
+}
+
+func resolvedRendrRetirementError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var result error
+		for _, child := range joined.Unwrap() {
+			result = errors.Join(result, resolvedRendrRetirementError(child))
+		}
+		return result
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return resolvedRendrRetirementError(wrapped.Unwrap())
+	}
+	if errors.Is(err, rendradapter.ErrShutdownIncomplete) ||
+		errors.Is(err, xrayrt.ErrShutdownIncomplete) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 func forceRendrRuntime(runtime rendrRuntime, timeout time.Duration) (error, bool) {
@@ -697,24 +961,120 @@ func (p *Plane) publishOutboundAndRoutes(ctx context.Context, compiled *xrayconf
 	if compiled == nil {
 		return errors.New("dataplane: no compiled configuration to publish")
 	}
+	routes := routesFrom(*compiled)
+	rotate := carrierRevocationRequired(p.routes.Load(), routes)
+	operationCtx := ctx
+	var cancelOperation context.CancelFunc
+	if rotate {
+		operationCtx, cancelOperation = context.WithTimeout(ctx, rendrRevocationTimeout)
+		defer cancelOperation()
+	}
+	var current, replacement rendrRuntime
+	var err error
+	if rotate {
+		current, replacement, err = p.prepareRendrRotation(operationCtx)
+		if err != nil {
+			stopErr := p.failStopRoutes(operationCtx)
+			return errors.Join(
+				ErrRendrAuthorizationUpdateFailStopped,
+				fmt.Errorf("dataplane: prepare rendr authorization rotation: %w", err),
+				stopErr,
+			)
+		}
+	}
 	p.applyMu.Lock()
-	defer p.applyMu.Unlock()
-	_, err := p.xray.Apply(ctx, compiled.Outbound)
+	_, err = p.xray.Apply(operationCtx, compiled.Outbound)
 	if err != nil {
+		p.applyMu.Unlock()
+		p.retireRendrRuntime(replacement)
+		if rotate {
+			stopErr := p.failStopRoutes(operationCtx)
+			return errors.Join(ErrRendrAuthorizationUpdateFailStopped, err, stopErr)
+		}
 		return err
 	}
-	routes := routesFrom(*compiled)
 	p.routes.Store(routes)
+	if rotate {
+		installed, installErr := p.installRendrRotation(operationCtx, current, replacement)
+		if installErr != nil {
+			if !installed {
+				failStoppedRoutes := newEmptyRouteTable()
+				p.routes.Store(failStoppedRoutes)
+				p.revokeUnauthorizedCarriers(failStoppedRoutes)
+				p.revokeRuntimeCarriers(current)
+				if current != nil {
+					current.BeginClose()
+				}
+				active := p.currentRendr()
+				if active != nil && active != current {
+					p.revokeRuntimeCarriers(active)
+					active.BeginClose()
+				}
+				p.applyMu.Unlock()
+				if current != nil && current != active {
+					p.retireRendrRuntime(current)
+				}
+				p.retireRendrRuntime(replacement)
+				var revocationErr error
+				if current != nil {
+					revocationErr = errors.Join(
+						revocationErr,
+						closeRendrRuntimeForRevocation(operationCtx, current),
+					)
+				}
+				if active != nil && active != current {
+					revocationErr = errors.Join(
+						revocationErr,
+						closeRendrRuntimeForRevocation(operationCtx, active),
+					)
+				}
+				return errors.Join(ErrRendrAuthorizationUpdateFailStopped, installErr, revocationErr)
+			}
+			failStoppedRoutes := newEmptyRouteTable()
+			p.routes.Store(failStoppedRoutes)
+			p.revokeUnauthorizedCarriers(failStoppedRoutes)
+			p.revokeRuntimeCarriers(replacement)
+			replacement.BeginClose()
+			p.applyMu.Unlock()
+			return errors.Join(ErrRendrAuthorizationUpdateFailStopped, installErr)
+		}
+		p.applyMu.Unlock()
+		return nil
+	}
 	p.revokeUnauthorizedCarriers(routes)
+	p.applyMu.Unlock()
 	return nil
 }
 
-func (p *Plane) failStopRoutes() {
+func (p *Plane) failStopRoutes(ctx context.Context) error {
 	p.applyMu.Lock()
-	defer p.applyMu.Unlock()
-	routes := &routeTable{users: map[string]string{}, carrierPeers: map[string]string{}}
+	routes := newEmptyRouteTable()
 	p.routes.Store(routes)
 	p.revokeUnauthorizedCarriers(routes)
+	current := p.currentRendr()
+	p.revokeRuntimeCarriers(current)
+	if current != nil {
+		current.BeginClose()
+	}
+	p.applyMu.Unlock()
+	return closeRendrRuntimeForRevocation(ctx, current)
+}
+
+func (p *Plane) failStopRevocationApply(revision int64, cause error) error {
+	p.failStopped = true
+	recoveryCtx, cancel := context.WithTimeout(context.Background(), applyRecoveryTimeout)
+	defer cancel()
+	inboundErr := p.xray.ReplaceInbounds(recoveryCtx, nil)
+	if inboundErr != nil {
+		inboundErr = fmt.Errorf("dataplane: fail-stop managed Xray inbounds: %w", inboundErr)
+	}
+	errorCode := "runtime.authorization_update_fail_stopped"
+	if errors.Is(cause, ErrRendrRevocationIncomplete) || inboundErr != nil {
+		errorCode = "runtime.fail_stop_incomplete"
+	}
+	failure := publicerr.Wrap(errorCode, cause)
+	markErr := p.markFailStopped(errorCode)
+	return errors.Join(failure, inboundErr, markErr)
 }
 
 // FailStop revokes all managed admissions when the authoritative configuration
@@ -732,6 +1092,10 @@ func (p *Plane) FailStop(ctx context.Context, errorCode string) error {
 	if errorCode == "" {
 		errorCode = "runtime.fail_stopped"
 	}
+	if !p.beginOperation() {
+		return net.ErrClosed
+	}
+	defer p.operationWG.Done()
 	p.reconcileMu.Lock()
 	defer p.reconcileMu.Unlock()
 	p.lifecycleMu.RLock()
@@ -740,22 +1104,81 @@ func (p *Plane) FailStop(ctx context.Context, errorCode string) error {
 	if closing {
 		return net.ErrClosed
 	}
-	p.failStopRoutes()
+	routeErr := p.failStopRoutes(ctx)
 	p.failStopped = true
 	inboundErr := p.xray.ReplaceInbounds(ctx, nil)
 	statusCode := errorCode
-	if inboundErr != nil {
+	if routeErr != nil || inboundErr != nil {
 		statusCode = "runtime.fail_stop_incomplete"
 	}
 	markErr := p.markFailStopped(statusCode)
-	if inboundErr != nil {
-		return errors.Join(fmt.Errorf("dataplane: remove managed Xray inbounds: %w", inboundErr), markErr)
+	if routeErr != nil || inboundErr != nil {
+		var wrappedInbound error
+		if inboundErr != nil {
+			wrappedInbound = fmt.Errorf("dataplane: remove managed Xray inbounds: %w", inboundErr)
+		}
+		return errors.Join(routeErr, wrappedInbound, markErr)
 	}
 	return markErr
 }
 
+func (p *Plane) prepareRendrRotation(ctx context.Context) (rendrRuntime, rendrRuntime, error) {
+	p.lifecycleMu.RLock()
+	if p.closing || p.ctx == nil || p.ctx.Err() != nil {
+		p.lifecycleMu.RUnlock()
+		return nil, nil, net.ErrClosed
+	}
+	current := p.rendr
+	p.lifecycleMu.RUnlock()
+	if current == nil {
+		return nil, nil, errors.New("dataplane: rendr runtime unavailable")
+	}
+	replacement, err := p.callPreparedRendrRuntime(ctx)
+	if err != nil {
+		return current, nil, fmt.Errorf("dataplane: rotate rendr runtime: %w", err)
+	}
+	return current, replacement, nil
+}
+
+func (p *Plane) installRendrRotation(ctx context.Context, current, replacement rendrRuntime) (bool, error) {
+	if current == nil || replacement == nil {
+		return false, errors.New("dataplane: incomplete rendr rotation")
+	}
+	p.lifecycleMu.Lock()
+	if p.closing || p.ctx == nil || p.ctx.Err() != nil {
+		p.lifecycleMu.Unlock()
+		return false, net.ErrClosed
+	}
+	if p.rendr != current {
+		p.lifecycleMu.Unlock()
+		return false, errors.New("dataplane: rendr runtime changed during rotation")
+	}
+	retirement := &rendrRetirement{runtime: current, done: make(chan struct{})}
+	p.collectCompletedRetirementsLocked()
+	p.rendr = replacement
+	p.retirements = append(p.retirements, retirement)
+	p.lifecycleMu.Unlock()
+
+	p.revokeRuntimeCarriers(current)
+	current.BeginClose()
+	go func() {
+		retirement.err = closeRendrRuntime(current)
+		close(retirement.done)
+	}()
+	waitCtx, cancel := context.WithTimeout(ctx, rendrRevocationTimeout)
+	defer cancel()
+	if err := closeRendrRuntimeForRevocation(waitCtx, current); err != nil {
+		status := current.Status()
+		return true, errors.Join(
+			err,
+			fmt.Errorf("dataplane: revocation barrier retained client=%d accepted=%d", status.ActiveClient, status.ActiveAccepted),
+		)
+	}
+	return true, nil
+}
+
 func (p *Plane) observeRuntime() {
-	_, _ = p.rendrRetirementSnapshot()
+	retirementErr := p.rendrRetirementHealthError()
 	runtime := p.currentRendr()
 	rendrStatus := rendradapter.RuntimeStatus{State: "unavailable", ObservedAt: time.Now().UTC()}
 	if runtime != nil {
@@ -768,6 +1191,18 @@ func (p *Plane) observeRuntime() {
 	p.status.Rendr = rendrStatus
 	p.status.Xray = xrayStatus
 	p.status.Listeners = listenerStatuses(p.listeners, managedTags, routes)
+	if retirementErr != nil && p.status.State == "running" {
+		p.status.State = "degraded"
+		p.status.LastErrorCode = "runtime.rendr_retirement_failed"
+		p.status.LastError = publicerr.MessageCode(p.status.LastErrorCode)
+	} else if retirementErr == nil &&
+		p.status.State == "degraded" &&
+		!p.status.FailStopped &&
+		p.status.LastErrorCode == "runtime.rendr_retirement_failed" {
+		p.status.State = "running"
+		p.status.LastErrorCode = ""
+		p.status.LastError = ""
+	}
 	p.stateMu.Unlock()
 }
 
@@ -912,6 +1347,25 @@ func routesFrom(compiled xrayconfig.Compiled) *routeTable {
 	return routes
 }
 
+func newEmptyRouteTable() *routeTable {
+	return &routeTable{users: map[string]string{}, carrierPeers: map[string]string{}}
+}
+
+func carrierRevocationRequired(previous, next *routeTable) bool {
+	if previous == nil || len(previous.carrierPeers) == 0 {
+		return false
+	}
+	if next == nil {
+		return true
+	}
+	for account, peer := range previous.carrierPeers {
+		if next.carrierPeers[account] != peer {
+			return true
+		}
+	}
+	return false
+}
+
 func cloneListeners(listeners map[string]string) map[string]string {
 	cloned := make(map[string]string, len(listeners))
 	for tag, address := range listeners {
@@ -1043,7 +1497,7 @@ func (p *Plane) revokeCarriers(shouldRevoke func(carrierAuthorization) bool) {
 	}
 	p.carrierMu.Unlock()
 	for _, conn := range revoke {
-		_ = conn.Close()
+		conn.Interrupt()
 	}
 }
 
@@ -1056,8 +1510,10 @@ func (p *Plane) revokeUnauthorizedCarriers(routes *routeTable) {
 
 type closeObservedConn struct {
 	net.Conn
-	done chan struct{}
-	once sync.Once
+	done      chan struct{}
+	startOnce sync.Once
+	errMu     sync.Mutex
+	closeErr  error
 }
 
 func newCloseObservedConn(conn net.Conn) *closeObservedConn {
@@ -1065,9 +1521,30 @@ func newCloseObservedConn(conn net.Conn) *closeObservedConn {
 }
 
 func (c *closeObservedConn) Close() error {
+	c.startClose()
+	<-c.done
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	return c.closeErr
+}
+
+// Interrupt starts transport retirement without allowing a broken Close
+// implementation to delay authorization revocation. Handoff still waits on
+// done, preserving its connection-ownership contract.
+func (c *closeObservedConn) Interrupt() {
+	c.startClose()
+}
+
+func (c *closeObservedConn) startClose() {
+	c.startOnce.Do(func() { go c.closeUnderlying() })
+}
+
+func (c *closeObservedConn) closeUnderlying() {
 	err := c.Conn.Close()
-	c.once.Do(func() { close(c.done) })
-	return err
+	c.errMu.Lock()
+	c.closeErr = err
+	c.errMu.Unlock()
+	close(c.done)
 }
 
 func (c *closeObservedConn) CloseWrite() error {

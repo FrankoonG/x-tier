@@ -154,6 +154,12 @@ type Runtime struct {
 	clientsMu        sync.Mutex
 	clients          map[*trackedConn]struct{}
 	clientsWG        sync.WaitGroup
+	dialWG           sync.WaitGroup
+	admissionMu      sync.Mutex
+	activeSessions   int64
+	sessionsDrained  bool
+	sessionsClosed   chan struct{}
+	sessionCloseWG   sync.WaitGroup
 	closing          atomic.Bool
 	acceptFailed     atomic.Bool
 	acceptedSlots    chan struct{}
@@ -185,6 +191,7 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		source:           newCarrierListener(),
 		closed:           make(chan struct{}),
 		clients:          make(map[*trackedConn]struct{}),
+		sessionsClosed:   make(chan struct{}),
 		acceptedSlots:    make(chan struct{}, MaxAcceptedSessions),
 		handshakeTimeout: openHandshakeTimeout,
 	}
@@ -253,13 +260,30 @@ func (r *Runtime) Dial(ctx context.Context, peerTag string, target Destination) 
 	if peerTag == "" {
 		return nil, errors.New("rendradapter: peer tag required")
 	}
-	if r.closing.Load() {
-		return nil, net.ErrClosed
-	}
 	if err := target.Validate(); err != nil {
 		return nil, err
 	}
-	conn, err := r.runtime.Dial(ctx, rendr.SessionConfig{Root: rendr.Path(peerTag, rendr.PathSpec{
+	if !r.beginClientAttempt() {
+		return nil, net.ErrClosed
+	}
+	applicationOwned := true
+	defer func() {
+		r.dialWG.Done()
+		if applicationOwned {
+			r.finishSession(&r.activeClient)
+		}
+	}()
+	dialCtx, cancelDial := context.WithCancel(ctx)
+	stopRuntimeCancel := context.AfterFunc(r.ctx, cancelDial)
+	contextOwned := true
+	defer func() {
+		if contextOwned {
+			stopRuntimeCancel()
+			cancelDial()
+		}
+	}()
+
+	conn, err := r.runtime.Dial(dialCtx, rendr.SessionConfig{Root: rendr.Path(peerTag, rendr.PathSpec{
 		Transport: xrayStreamFactory,
 		Address:   peerTag,
 		Opts:      map[string]string{"name": peerTag},
@@ -268,53 +292,70 @@ func (r *Runtime) Dial(ctx context.Context, peerTag string, target Destination) 
 		r.recordError(classifyRendrDialError(err))
 		return nil, err
 	}
-	if err := r.openSession(ctx, conn, target); err != nil {
-		_ = conn.Close()
+	var interruptOnce sync.Once
+	interrupt := func() {
+		interruptOnce.Do(func() { r.scheduleSessionConnInterrupt(conn) })
+	}
+	if err := r.openSession(dialCtx, conn, target, interrupt); err != nil {
+		interrupt()
 		r.recordError(categoryOf(err))
 		return nil, err
 	}
 	tracked := &trackedConn{Conn: conn}
 	tracked.release = func() { r.releaseClient(tracked) }
+	tracked.finishApplication = func() { r.finishSession(&r.activeClient) }
+	tracked.interruptApplication = func() {
+		stopRuntimeCancel()
+		cancelDial()
+		r.scheduleSessionTask(func() { _ = conn.SetDeadline(time.Now()) })
+	}
+	r.admissionMu.Lock()
 	r.clientsMu.Lock()
 	if r.closing.Load() {
 		r.clientsMu.Unlock()
-		_ = tracked.Close()
+		r.admissionMu.Unlock()
+		interrupt()
 		return nil, net.ErrClosed
 	}
 	r.clients[tracked] = struct{}{}
 	r.clientsWG.Add(1)
-	r.activeClient.Add(1)
 	r.totalClient.Add(1)
+	applicationOwned = false
+	contextOwned = false
 	r.clientsMu.Unlock()
+	r.admissionMu.Unlock()
 	return tracked, nil
 }
 
-func (r *Runtime) openSession(ctx context.Context, conn net.Conn, target Destination) error {
+func (r *Runtime) beginClientAttempt() bool {
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+	if r.closing.Load() {
+		return false
+	}
+	r.dialWG.Add(1)
+	r.activeSessions++
+	r.activeClient.Add(1)
+	return true
+}
+
+func (r *Runtime) openSession(ctx context.Context, conn net.Conn, target Destination, interrupts ...func()) error {
 	if r.handshakeTimeout <= 0 {
 		return categorized(runtimeErrorInternal, errors.New("rendradapter: invalid handshake timeout"))
 	}
 	handshakeCtx, cancel := context.WithTimeout(ctx, r.handshakeTimeout)
 	defer cancel()
-
-	done := make(chan struct{})
-	watcherDone := make(chan struct{})
-	go func() {
-		defer close(watcherDone)
-		select {
-		case <-handshakeCtx.Done():
-			_ = conn.Close()
-		case <-r.ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
-	}()
+	interrupt := func() { r.scheduleSessionConnInterrupt(conn) }
+	if len(interrupts) > 0 && interrupts[0] != nil {
+		interrupt = interrupts[0]
+	}
+	stopWatcher := watchConnectionCancellation(handshakeCtx, r.ctx, interrupt)
+	defer stopWatcher()
 
 	err := writeOpen(conn, target)
 	if err == nil {
 		err = readAck(conn)
 	}
-	close(done)
-	<-watcherDone
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return categorized(runtimeErrorCanceled, ctxErr)
@@ -328,14 +369,45 @@ func (r *Runtime) openSession(ctx context.Context, conn net.Conn, target Destina
 	return categorized(classifyOpenError(err), err)
 }
 
+func watchConnectionCancellation(ctx, runtimeCtx context.Context, interrupt func()) func() {
+	done := make(chan struct{})
+	watcherDone := make(chan struct{})
+	var runtimeDone <-chan struct{}
+	if runtimeCtx != nil {
+		runtimeDone = runtimeCtx.Done()
+	}
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-ctx.Done():
+			if interrupt != nil {
+				interrupt()
+			}
+		case <-runtimeDone:
+			if interrupt != nil {
+				interrupt()
+			}
+		case <-done:
+		}
+	}()
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() { close(done) })
+		<-watcherDone
+	}
+}
+
 func (r *Runtime) releaseClient(conn *trackedConn) {
+	released := false
 	r.clientsMu.Lock()
 	if _, ok := r.clients[conn]; ok {
 		delete(r.clients, conn)
-		r.activeClient.Add(-1)
-		r.clientsWG.Done()
+		released = true
 	}
 	r.clientsMu.Unlock()
+	if released {
+		r.clientsWG.Done()
+	}
 }
 
 func (r *Runtime) Status() RuntimeStatus {
@@ -407,6 +479,34 @@ func (r *Runtime) CloseContext(ctx context.Context) error {
 	}
 }
 
+// BeginClose synchronously publishes cancellation to every session owned by
+// this runtime. Callers may then finish the bounded join through CloseContext.
+func (r *Runtime) BeginClose() {
+	if r != nil {
+		r.beginClose()
+	}
+}
+
+// RevokeContext waits only for application sessions owned by this runtime to
+// stop carrying data. Listener and transport retirement continues under the
+// ordinary CloseContext lifecycle and is intentionally not part of this
+// authorization barrier.
+func (r *Runtime) RevokeContext(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.Join(ErrShutdownIncomplete, errors.New("rendradapter: nil revocation context"))
+	}
+	r.beginClose()
+	select {
+	case <-r.sessionsClosed:
+		return nil
+	case <-ctx.Done():
+		return errors.Join(ErrShutdownIncomplete, ctx.Err())
+	}
+}
+
 // ForceClose repeats all non-blocking cancellation and close signals without
 // waiting for a misbehaving transport. It cannot kill a Go goroutine, so an
 // incomplete result remains explicit to the daemon shutdown boundary.
@@ -427,9 +527,40 @@ func (r *Runtime) ForceClose() error {
 func (r *Runtime) beginClose() {
 	r.closeOnce.Do(func() {
 		r.closing.Store(true)
+		r.admissionMu.Lock()
 		r.cancel()
+		r.closeSessionsIfDrainedLocked()
+		r.admissionMu.Unlock()
+		r.revokeClientSessions()
 		go r.shutdown()
 	})
+}
+
+func (r *Runtime) revokeClientSessions() {
+	r.clientsMu.Lock()
+	clients := make([]*trackedConn, 0, len(r.clients))
+	for conn := range r.clients {
+		clients = append(clients, conn)
+	}
+	r.clientsMu.Unlock()
+	for _, conn := range clients {
+		conn.revokeApplicationIO()
+	}
+}
+
+func (r *Runtime) finishSession(active *atomic.Int64) {
+	r.admissionMu.Lock()
+	active.Add(-1)
+	r.activeSessions--
+	r.closeSessionsIfDrainedLocked()
+	r.admissionMu.Unlock()
+}
+
+func (r *Runtime) closeSessionsIfDrainedLocked() {
+	if r.closing.Load() && r.activeSessions == 0 && !r.sessionsDrained {
+		r.sessionsDrained = true
+		close(r.sessionsClosed)
+	}
 }
 
 func (r *Runtime) shutdown() {
@@ -467,7 +598,9 @@ func (r *Runtime) shutdown() {
 		r.closeErr = errors.Join(r.closeErr, actionableCloseError(err))
 	}
 	r.wg.Wait()
+	r.dialWG.Wait()
 	r.clientsWG.Wait()
+	r.sessionCloseWG.Wait()
 	close(r.closed)
 }
 
@@ -551,13 +684,22 @@ func (r *Runtime) acceptLoop() {
 			}
 			return
 		}
+		r.admissionMu.Lock()
+		if r.closing.Load() {
+			r.admissionMu.Unlock()
+			<-r.acceptedSlots
+			r.retireUnadmittedAccepted(conn)
+			return
+		}
 		r.activeAccepted.Add(1)
 		r.totalAccepted.Add(1)
 		r.wg.Add(1)
+		r.activeSessions++
+		r.admissionMu.Unlock()
 		go func() {
 			defer r.wg.Done()
-			defer r.activeAccepted.Add(-1)
 			defer func() { <-r.acceptedSlots }()
+			defer r.finishSession(&r.activeAccepted)
 			if err := r.serveAccepted(conn); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 				r.recordError(categoryOf(err))
 			}
@@ -565,10 +707,23 @@ func (r *Runtime) acceptLoop() {
 	}
 }
 
+func (r *Runtime) retireUnadmittedAccepted(conn net.Conn) {
+	r.scheduleSessionConnClose(conn)
+}
+
 func (r *Runtime) serveAccepted(conn rendr.Conn) error {
-	defer conn.Close()
+	var carrierCloseOnce sync.Once
+	closeCarrier := func() {
+		carrierCloseOnce.Do(func() { r.scheduleSessionConnClose(conn) })
+	}
+	defer closeCarrier()
 	handshakeCtx, cancel := context.WithTimeout(r.ctx, r.handshakeTimeout)
 	defer cancel()
+	stopHandshakeWatcher := watchConnectionCancellation(handshakeCtx, nil, func() {
+		r.scheduleSessionTask(func() { _ = conn.SetDeadline(time.Now()) })
+		closeCarrier()
+	})
+	defer stopHandshakeWatcher()
 	if deadline, ok := handshakeCtx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
 			return categorized(runtimeErrorInternal, err)
@@ -577,10 +732,10 @@ func (r *Runtime) serveAccepted(conn rendr.Conn) error {
 	target, err := readOpen(conn)
 	if err != nil {
 		if errors.Is(handshakeCtx.Err(), context.DeadlineExceeded) {
-			return categorized(runtimeErrorHandshakeTimeout, err)
+			return categorized(runtimeErrorHandshakeTimeout, errors.Join(handshakeCtx.Err(), err))
 		}
 		if errors.Is(handshakeCtx.Err(), context.Canceled) {
-			return categorized(runtimeErrorCanceled, err)
+			return categorized(runtimeErrorCanceled, errors.Join(handshakeCtx.Err(), err))
 		}
 		_ = writeAck(conn, ackInvalidRequest)
 		return categorized(runtimeErrorProtocol, err)
@@ -604,14 +759,55 @@ func (r *Runtime) serveAccepted(conn rendr.Conn) error {
 		_ = writeAck(conn, code)
 		return categorized(category, err)
 	}
-	defer upstream.Close()
+	var upstreamCloseOnce sync.Once
+	closeUpstream := func() {
+		upstreamCloseOnce.Do(func() { r.scheduleSessionConnClose(upstream) })
+	}
+	defer closeUpstream()
 	if err := writeAck(conn, ackOK); err != nil {
 		return categorized(runtimeErrorCarrier, err)
+	}
+	stopHandshakeWatcher()
+	if err := handshakeCtx.Err(); err != nil {
+		category := runtimeErrorCanceled
+		if errors.Is(err, context.DeadlineExceeded) {
+			category = runtimeErrorHandshakeTimeout
+		}
+		return categorized(category, err)
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return categorized(runtimeErrorInternal, err)
 	}
-	return categorized(runtimeErrorStream, proxyStream(r.ctx, conn, upstream))
+	return categorized(runtimeErrorStream, proxyStreamWithInterrupt(r.ctx, conn, upstream, func() {
+		closeCarrier()
+		closeUpstream()
+	}, r.scheduleSessionTask))
+}
+
+func (r *Runtime) scheduleSessionConnClose(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	r.scheduleSessionTask(func() { _ = conn.Close() })
+}
+
+func (r *Runtime) scheduleSessionConnInterrupt(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	r.scheduleSessionTask(func() { _ = conn.SetDeadline(time.Now()) })
+	r.scheduleSessionConnClose(conn)
+}
+
+func (r *Runtime) scheduleSessionTask(task func()) {
+	if task == nil {
+		return
+	}
+	r.sessionCloseWG.Add(1)
+	go func() {
+		defer r.sessionCloseWG.Done()
+		task()
+	}()
 }
 
 func (r *Runtime) recordError(category runtimeErrorCategory) {
@@ -683,13 +879,21 @@ func (category runtimeErrorCategory) statusMessage() string {
 
 type trackedConn struct {
 	net.Conn
-	once     sync.Once
-	release  func()
-	closeErr error
+	closeOnce sync.Once
+	release   func()
+	closeErr  error
+
+	applicationMu        sync.Mutex
+	applicationRevoked   bool
+	applicationActive    int
+	applicationFinished  bool
+	finishApplication    func()
+	interruptApplication func()
 }
 
 func (c *trackedConn) Close() error {
-	c.once.Do(func() {
+	c.revokeApplicationIO()
+	c.closeOnce.Do(func() {
 		c.closeErr = c.Conn.Close()
 		if c.release != nil {
 			c.release()
@@ -698,11 +902,78 @@ func (c *trackedConn) Close() error {
 	return c.closeErr
 }
 
+func (c *trackedConn) Read(payload []byte) (int, error) {
+	if !c.beginApplicationIO() {
+		return 0, net.ErrClosed
+	}
+	defer c.finishApplicationIO()
+	return c.Conn.Read(payload)
+}
+
+func (c *trackedConn) Write(payload []byte) (int, error) {
+	if !c.beginApplicationIO() {
+		return 0, net.ErrClosed
+	}
+	defer c.finishApplicationIO()
+	return c.Conn.Write(payload)
+}
+
 func (c *trackedConn) CloseWrite() error {
+	c.applicationMu.Lock()
+	revoked := c.applicationRevoked
+	c.applicationMu.Unlock()
+	if revoked {
+		return net.ErrClosed
+	}
 	if closer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return closer.CloseWrite()
 	}
 	return ErrHalfCloseUnsupported
+}
+
+func (c *trackedConn) beginApplicationIO() bool {
+	c.applicationMu.Lock()
+	defer c.applicationMu.Unlock()
+	if c.applicationRevoked {
+		return false
+	}
+	c.applicationActive++
+	return true
+}
+
+func (c *trackedConn) finishApplicationIO() {
+	var finish func()
+	c.applicationMu.Lock()
+	c.applicationActive--
+	if c.applicationRevoked && c.applicationActive == 0 && !c.applicationFinished {
+		c.applicationFinished = true
+		finish = c.finishApplication
+	}
+	c.applicationMu.Unlock()
+	if finish != nil {
+		finish()
+	}
+}
+
+func (c *trackedConn) revokeApplicationIO() {
+	var finish func()
+	c.applicationMu.Lock()
+	if !c.applicationRevoked {
+		c.applicationRevoked = true
+		// Scheduling the interrupt while holding applicationMu prevents the
+		// runtime shutdown waiter from racing ahead of the WaitGroup Add.
+		if c.interruptApplication != nil {
+			c.interruptApplication()
+		}
+	}
+	if c.applicationActive == 0 && !c.applicationFinished {
+		c.applicationFinished = true
+		finish = c.finishApplication
+	}
+	c.applicationMu.Unlock()
+	if finish != nil {
+		finish()
+	}
 }
 
 func writeOpen(w io.Writer, target Destination) error {
@@ -833,39 +1104,87 @@ func ackMessage(code ackCode) (string, bool) {
 }
 
 func proxyStream(ctx context.Context, left, right net.Conn) error {
+	schedule := func(task func()) { go task() }
+	return proxyStreamWithInterrupt(ctx, left, right, func() {
+		schedule(func() { _ = left.Close() })
+		schedule(func() { _ = right.Close() })
+	}, schedule)
+}
+
+func proxyStreamWithInterrupt(
+	ctx context.Context,
+	left, right net.Conn,
+	closeBoth func(),
+	schedule func(func()),
+) error {
+	if schedule == nil {
+		schedule = func(task func()) { go task() }
+	}
 	leftHalf, leftOK := left.(interface{ CloseWrite() error })
 	rightHalf, rightOK := right.(interface{ CloseWrite() error })
 	if !leftOK || !rightOK {
-		_ = left.Close()
-		_ = right.Close()
+		if closeBoth != nil {
+			closeBoth()
+		} else {
+			schedule(func() { _ = left.Close() })
+			schedule(func() { _ = right.Close() })
+		}
 		return fmt.Errorf("%w: left=%t right=%t", ErrHalfCloseUnsupported, leftOK, rightOK)
 	}
 	done := make(chan error, 2)
-	var closeOnce sync.Once
-	closeBoth := func() bool {
+	var interruptOnce sync.Once
+	var interrupted atomic.Bool
+	interruptedCh := make(chan struct{})
+	interruptBoth := func() bool {
 		initiated := false
-		closeOnce.Do(func() {
+		interruptOnce.Do(func() {
 			initiated = true
-			_ = left.Close()
-			_ = right.Close()
+			interrupted.Store(true)
+			close(interruptedCh)
+			if closeBoth != nil {
+				closeBoth()
+			}
+			now := time.Now()
+			_ = left.SetDeadline(now)
+			_ = right.SetDeadline(now)
 		})
 		return initiated
 	}
 	copyOne := func(dst, src net.Conn, half interface{ CloseWrite() error }) {
 		_, err := io.Copy(dst, src)
 		if err != nil {
-			initiated := closeBoth()
+			initiated := interruptBoth()
 			if !initiated && isExpectedProxyClose(err) {
 				err = nil
 			}
 			done <- err
 			return
 		}
-		err = half.CloseWrite()
+		if interrupted.Load() {
+			done <- nil
+			return
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			interruptBoth()
+			done <- ctxErr
+			return
+		}
+		halfClosed := make(chan error, 1)
+		schedule(func() { halfClosed <- half.CloseWrite() })
+		select {
+		case err = <-halfClosed:
+		case <-interruptedCh:
+			done <- nil
+			return
+		case <-ctx.Done():
+			interruptBoth()
+			done <- ctx.Err()
+			return
+		}
 		if isExpectedProxyClose(err) {
 			err = nil
 		} else if err != nil {
-			closeBoth()
+			interruptBoth()
 		}
 		done <- err
 	}
@@ -883,7 +1202,7 @@ func proxyStream(ctx context.Context, left, right net.Conn) error {
 		case <-ctxDone:
 			contextErr = ctx.Err()
 			ctxDone = nil
-			closeBoth()
+			interruptBoth()
 		}
 	}
 	return errors.Join(resultErr, contextErr)

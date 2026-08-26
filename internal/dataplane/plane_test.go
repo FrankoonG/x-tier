@@ -278,10 +278,16 @@ func TestRevokingInboundPeerClosesExistingCarrierAndRejectsNewFlows(t *testing.T
 			cfg.Peers[0].GatewayAddr = "127.0.0.1:2443"
 		}},
 		{name: "delete peer", mutate: func(cfg *configstore.Config) { cfg.Peers = nil }},
+		{name: "reassign peer and credential", mutate: func(cfg *configstore.Config) {
+			cfg.Peers[0].NodeID = "node-0000000000000000000000000000000c"
+			profile := cfg.XrayProfiles["carrier-in"]
+			profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+			cfg.XrayProfiles["carrier-in"] = profile
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			origin, received := startObservedEchoOrigin(t)
+			origin, accepted, received := startObservedEchoOrigin(t)
 			bCarrier := reserveAddress(t)
 			aSOCKS := reserveAddress(t)
 			b, err := Start(context.Background(), terminalConfig(bCarrier))
@@ -312,14 +318,27 @@ func TestRevokingInboundPeerClosesExistingCarrierAndRejectsNewFlows(t *testing.T
 			if _, err := io.ReadFull(conn, echo); err != nil || string(echo) != string(before) {
 				t.Fatalf("pre-revocation echo=%q err=%v", echo, err)
 			}
+			select {
+			case <-accepted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("origin did not observe the initial flow")
+			}
 
+			previousRuntime := b.currentRendr()
 			revoked := terminalConfig(bCarrier)
 			revoked.Revision = 2
 			test.mutate(&revoked)
+			revocationDeadline := time.Now().Add(2 * time.Second)
 			if err := b.Apply(context.Background(), revoked); err != nil {
 				t.Fatal(err)
 			}
-			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if time.Now().After(revocationDeadline) {
+				t.Fatal("authorization update exceeded the two-second revocation budget")
+			}
+			if current := b.currentRendr(); current == previousRuntime {
+				t.Fatal("carrier authorization changed without rotating the rendr runtime")
+			}
+			_ = conn.SetDeadline(revocationDeadline)
 			after := []byte("after-revocation")
 			_, writeErr := conn.Write(after)
 			postEcho := make([]byte, len(after))
@@ -327,13 +346,32 @@ func TestRevokingInboundPeerClosesExistingCarrierAndRejectsNewFlows(t *testing.T
 			if writeErr == nil && readErr == nil {
 				t.Fatalf("revoked carrier echoed post-revocation data: %q", postEcho)
 			}
-			select {
-			case all := <-received:
-				if string(all) != string(before) {
-					t.Fatalf("origin received data after revocation: %q", all)
+			assertOriginClosedBefore(t, received, before, revocationDeadline)
+			contextDialer, ok := dialer.(proxy.ContextDialer)
+			if !ok {
+				t.Fatalf("SOCKS dialer %T does not support bounded dialing", dialer)
+			}
+			rejectCtx, cancelReject := context.WithTimeout(context.Background(), 2*time.Second)
+			rejectedConn, rejectedErr := contextDialer.DialContext(rejectCtx, "tcp", origin)
+			cancelReject()
+			if rejectedConn != nil {
+				_ = rejectedConn.SetDeadline(time.Now().Add(2 * time.Second))
+				probe := []byte("new-flow-after-revocation")
+				_, writeErr := rejectedConn.Write(probe)
+				echo := make([]byte, len(probe))
+				_, readErr := io.ReadFull(rejectedConn, echo)
+				_ = rejectedConn.Close()
+				if writeErr == nil && readErr == nil {
+					t.Fatalf("revoked peer carried a new SOCKS payload: %q", echo)
 				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("origin did not observe revoked carrier closure")
+			}
+			if rejectedErr == nil && rejectedConn == nil {
+				t.Fatal("SOCKS dial returned neither a connection nor an error")
+			}
+			select {
+			case <-accepted:
+				t.Fatal("origin accepted a post-revocation flow")
+			case <-time.After(250 * time.Millisecond):
 			}
 			restored := terminalConfig(bCarrier)
 			restored.Revision = 3
@@ -342,6 +380,145 @@ func TestRevokingInboundPeerClosesExistingCarrierAndRejectsNewFlows(t *testing.T
 			}
 		})
 	}
+}
+
+func TestFailStopClosesAcceptedSessionAndSameRevisionRestoresTraffic(t *testing.T) {
+	origin, accepted, received := startObservedEchoOrigin(t)
+	bCarrier := reserveAddress(t)
+	aSOCKS := reserveAddress(t)
+	bConfig := terminalConfig(bCarrier)
+	b, err := Start(context.Background(), bConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, b) })
+	a, err := Start(context.Background(), entryConfig(aSOCKS, bCarrier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, a) })
+	dialer, err := proxy.SOCKS5("tcp", aSOCKS, &proxy.Auth{User: "terminal", Password: "entry-secret"}, proxy.Direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := dialer.Dial("tcp", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	before := []byte("before-fail-stop")
+	if _, err := conn.Write(before); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, len(before))
+	if _, err := io.ReadFull(conn, echo); err != nil || string(echo) != string(before) {
+		t.Fatalf("pre-fail-stop echo=%q err=%v", echo, err)
+	}
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("origin did not observe the initial flow")
+	}
+
+	previousRuntime := b.currentRendr()
+	revocationDeadline := time.Now().Add(2 * time.Second)
+	if err := b.FailStop(context.Background(), "config.read_failed_fail_closed"); err != nil {
+		t.Fatal(err)
+	}
+	if time.Now().After(revocationDeadline) {
+		t.Fatal("fail-stop exceeded the two-second revocation budget")
+	}
+	_ = conn.SetDeadline(revocationDeadline)
+	after := []byte("after-fail-stop")
+	_, writeErr := conn.Write(after)
+	postEcho := make([]byte, len(after))
+	_, readErr := io.ReadFull(conn, postEcho)
+	if writeErr == nil && readErr == nil {
+		t.Fatalf("fail-stopped carrier echoed data: %q", postEcho)
+	}
+	assertOriginClosedBefore(t, received, before, revocationDeadline)
+
+	if err := b.Apply(context.Background(), bConfig); err != nil {
+		t.Fatalf("same-revision recovery: %v", err)
+	}
+	if current := b.currentRendr(); current == previousRuntime {
+		t.Fatal("same-revision recovery reused the revoked rendr runtime")
+	}
+	status := b.Status()
+	if status.State != "running" || status.FailStopped || status.LastError != "" || status.LastErrorCode != "" {
+		t.Fatalf("recovered status=%+v", status)
+	}
+	assertBoundListener(t, status, xrayconfig.NodeVLESSTag, bCarrier)
+
+	recovered, err := dialer.Dial("tcp", origin)
+	if err != nil {
+		t.Fatalf("dial after same-revision recovery: %v", err)
+	}
+	recoveredPayload := []byte("after-recovery")
+	_ = recovered.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := recovered.Write(recoveredPayload); err != nil {
+		_ = recovered.Close()
+		t.Fatal(err)
+	}
+	recoveredEcho := make([]byte, len(recoveredPayload))
+	if _, err := io.ReadFull(recovered, recoveredEcho); err != nil || string(recoveredEcho) != string(recoveredPayload) {
+		_ = recovered.Close()
+		t.Fatalf("recovered echo=%q err=%v", recoveredEcho, err)
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("origin did not accept the recovered flow")
+	}
+	assertOriginClosedBefore(t, received, recoveredPayload, time.Now().Add(2*time.Second))
+}
+
+func TestAddingInboundPeerDoesNotRotateRendrRuntime(t *testing.T) {
+	origin := startEchoOrigin(t)
+	bCarrier := reserveAddress(t)
+	aSOCKS := reserveAddress(t)
+	cfg := terminalConfig(bCarrier)
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, plane) })
+	entry, err := Start(context.Background(), entryConfig(aSOCKS, bCarrier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, entry) })
+	dialer, err := proxy.SOCKS5("tcp", aSOCKS, &proxy.Auth{User: "terminal", Password: "entry-secret"}, proxy.Direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := dialer.Dial("tcp", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	assertConnEcho(t, conn, []byte("before-peer-addition"))
+	previous := plane.currentRendr()
+	candidate := terminalConfig(bCarrier)
+	candidate.Revision = 2
+	profile := vlessProfile("carrier-c")
+	profile.VLESS.UUID = "866c1e04-b137-48a7-a24a-16839ed97c40"
+	candidate.XrayProfiles[profile.ID] = profile
+	candidate.Peers = append(candidate.Peers, configstore.PeerConfig{
+		Name: "C", NodeID: "node-0000000000000000000000000000000c",
+		Direction: route.DirectionInbound, XrayProfileID: profile.ID,
+		Enabled: true, RendrCapable: true,
+	})
+	if err := plane.Apply(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if current := plane.currentRendr(); current != previous {
+		t.Fatal("pure inbound authorization addition disrupted the rendr runtime")
+	}
+	assertConnEcho(t, conn, []byte("after-peer-addition"))
 }
 
 func TestCarrierAdmissionLimitsAreFailClosed(t *testing.T) {
@@ -502,6 +679,121 @@ func TestApplySameRevisionReplacesFailedRendrRuntime(t *testing.T) {
 	}
 }
 
+func TestStatusSurfacesCompletedRendrRetirementFailure(t *testing.T) {
+	plane, err := Start(context.Background(), configstore.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hardRetirementErr := errors.New("injected sensitive retirement detail")
+	retirementErr := errors.Join(
+		rendradapter.ErrShutdownIncomplete,
+		context.DeadlineExceeded,
+		hardRetirementErr,
+	)
+	done := make(chan struct{})
+	close(done)
+	retired := newFakeRendrRuntime("stopping")
+	plane.lifecycleMu.Lock()
+	plane.retirements = append(plane.retirements, &rendrRetirement{
+		runtime: retired,
+		done:    done,
+		err:     retirementErr,
+	})
+	plane.lifecycleMu.Unlock()
+	status := plane.Status()
+	if status.State != "degraded" || status.LastErrorCode != "runtime.rendr_retirement_failed" {
+		t.Fatalf("retirement failure status=%+v", status)
+	}
+	if strings.Contains(status.LastError, "sensitive") {
+		t.Fatalf("retirement detail leaked through status: %q", status.LastError)
+	}
+	retired.mu.Lock()
+	retired.state = "stopped"
+	retired.mu.Unlock()
+	recovered := plane.Status()
+	if recovered.State != "running" || recovered.LastError != "" || recovered.LastErrorCode != "" {
+		t.Fatalf("status after retirement completed=%+v", recovered)
+	}
+	if err := plane.Close(); !errors.Is(err, hardRetirementErr) || errors.Is(err, rendradapter.ErrShutdownIncomplete) {
+		t.Fatalf("Close error=%v, want only completed hard retirement failure", err)
+	}
+}
+
+func TestStoppedRetirementClearsResolvedShutdownTimeout(t *testing.T) {
+	plane, err := Start(context.Background(), configstore.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	close(done)
+	plane.lifecycleMu.Lock()
+	plane.retirements = append(plane.retirements, &rendrRetirement{
+		runtime: newFakeRendrRuntime("stopped"),
+		done:    done,
+		err:     errors.Join(rendradapter.ErrShutdownIncomplete, context.DeadlineExceeded),
+	})
+	plane.lifecycleMu.Unlock()
+	if status := plane.Status(); status.State != "running" || status.LastErrorCode != "" {
+		t.Fatalf("resolved retirement timeout status=%+v", status)
+	}
+	if err := plane.Close(); err != nil {
+		t.Fatalf("resolved retirement timeout poisoned Plane.Close: %v", err)
+	}
+}
+
+func TestRetirementRecoveryCannotReopenStoppedPlane(t *testing.T) {
+	plane, err := Start(context.Background(), configstore.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retirementErr := errors.New("injected retirement failure")
+	done := make(chan struct{})
+	close(done)
+	retired := newFakeRendrRuntime("stopping")
+	plane.lifecycleMu.Lock()
+	plane.retirements = append(plane.retirements, &rendrRetirement{
+		runtime: retired,
+		done:    done,
+		err:     retirementErr,
+	})
+	plane.lifecycleMu.Unlock()
+	if status := plane.Status(); status.State != "degraded" || status.LastErrorCode != "runtime.rendr_retirement_failed" {
+		t.Fatalf("retirement failure status=%+v", status)
+	}
+	if err := plane.Close(); !errors.Is(err, retirementErr) {
+		t.Fatalf("Close error=%v, want retirement failure", err)
+	}
+	retired.mu.Lock()
+	retired.state = "stopped"
+	retired.mu.Unlock()
+	if status := plane.Status(); status.State != "stopped" {
+		t.Fatalf("retirement recovery reopened stopped plane: %+v", status)
+	}
+}
+
+func TestAuthorizationFailStopMarksInboundRemovalFailureIncomplete(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closePlane(t, plane) })
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), time.Second)
+	if err := plane.xray.CloseContext(closeCtx); err != nil {
+		cancelClose()
+		t.Fatal(err)
+	}
+	cancelClose()
+	err = plane.failStopRevocationApply(cfg.Revision+1, ErrRendrAuthorizationUpdateFailStopped)
+	if err == nil {
+		t.Fatal("fail-stop unexpectedly ignored inbound removal failure")
+	}
+	status := plane.Status()
+	if !status.FailStopped || status.LastErrorCode != "runtime.fail_stop_incomplete" {
+		t.Fatalf("status after inbound removal failure=%+v", status)
+	}
+}
+
 func TestRendrRecoveryRejectsFailedReplacementAndAppliesRestartBackoff(t *testing.T) {
 	cfg := configstore.DefaultConfig()
 	plane, err := Start(context.Background(), cfg)
@@ -522,7 +814,7 @@ func TestRendrRecoveryRejectsFailedReplacementAndAppliesRestartBackoff(t *testin
 	}
 	plane.lifecycleMu.Unlock()
 	firstErr := plane.Apply(context.Background(), cfg)
-	if firstErr == nil || !strings.Contains(firstErr.Error(), "restarted rendr runtime is failed") {
+	if firstErr == nil || !strings.Contains(firstErr.Error(), "prepared rendr runtime is failed") {
 		t.Fatalf("failed replacement error=%v", firstErr)
 	}
 	secondErr := plane.Apply(context.Background(), cfg)
@@ -533,6 +825,124 @@ func TestRendrRecoveryRejectsFailedReplacementAndAppliesRestartBackoff(t *testin
 		t.Fatalf("recovery churned runtimes: factory_calls=%d current=%p failed=%p", factoryCalls, plane.currentRendr(), failed)
 	}
 	closePlane(t, plane)
+}
+
+func TestRendrRecoveryRevocationTimeoutFailStopsAuthorizationUpdate(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unblock()
+		closePlane(t, plane)
+	})
+	failed := newFakeRendrRuntime("failed")
+	failed.closeRelease = release
+	replacement := newFakeRendrRuntime("running")
+	factoryCalls := 0
+	plane.lifecycleMu.Lock()
+	plane.rendr = failed
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) {
+		factoryCalls++
+		if factoryCalls == 1 {
+			return replacement, nil
+		}
+		return newFakeRendrRuntime("running"), nil
+	}
+	plane.lifecycleMu.Unlock()
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+
+	applyCtx, cancelApply := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	err = plane.Apply(applyCtx, revoked)
+	cancelApply()
+	if !errors.Is(err, ErrRendrRevocationIncomplete) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Apply error=%v, want failed-runtime revocation timeout", err)
+	}
+	if factoryCalls != 1 {
+		t.Fatalf("rendr factory calls=%d, want recovery only", factoryCalls)
+	}
+	select {
+	case <-failed.closeStarted:
+	default:
+		t.Fatal("failed runtime revocation did not start")
+	}
+	if calls := failed.forceCallCount(); calls == 0 {
+		t.Fatal("failed runtime revocation timeout did not force close")
+	}
+	select {
+	case <-replacement.closeStarted:
+	default:
+		t.Fatal("replacement runtime was not fail-stopped")
+	}
+	routes := plane.routes.Load()
+	if routes == nil || len(routes.users) != 0 || len(routes.carrierPeers) != 0 {
+		t.Fatalf("routes after failed-runtime revocation timeout=%+v, want empty", routes)
+	}
+	status := plane.Status()
+	if !status.FailStopped || status.LastErrorCode != "runtime.fail_stop_incomplete" {
+		t.Fatalf("status after failed-runtime revocation timeout=%+v", status)
+	}
+	if tags := plane.xray.ManagedInboundTags(); len(tags) != 0 {
+		t.Fatalf("managed inbounds after failed-runtime revocation timeout=%v, want none", tags)
+	}
+}
+
+func TestRendrRecoveryFactoryFailureFailStopsAuthorizationUpdate(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	failed := newFakeRendrRuntime("failed")
+	plane.lifecycleMu.Lock()
+	plane.rendr = failed
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) {
+		return nil, errors.New("injected recovery factory failure")
+	}
+	plane.lifecycleMu.Unlock()
+	t.Cleanup(func() { closePlane(t, plane) })
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+
+	err = plane.Apply(context.Background(), revoked)
+	if !errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) || !strings.Contains(err.Error(), "recovery factory failure") {
+		t.Fatalf("Apply error=%v, want fail-stopped recovery factory failure", err)
+	}
+	select {
+	case <-failed.closeStarted:
+	default:
+		t.Fatal("failed runtime was not revoked after recovery factory failure")
+	}
+	routes := plane.routes.Load()
+	if routes == nil || len(routes.users) != 0 || len(routes.carrierPeers) != 0 {
+		t.Fatalf("routes after recovery factory failure=%+v, want empty", routes)
+	}
+	status := plane.Status()
+	if !status.FailStopped || status.LastErrorCode != "runtime.authorization_update_fail_stopped" {
+		t.Fatalf("status after recovery factory failure=%+v", status)
+	}
+	if tags := plane.xray.ManagedInboundTags(); len(tags) != 0 {
+		t.Fatalf("managed inbounds after recovery factory failure=%v, want none", tags)
+	}
 }
 
 func TestFailStopRevokesCarriersClosesInboundAndSameRevisionRecovers(t *testing.T) {
@@ -611,6 +1021,573 @@ func TestFailStopRevokesCarriersClosesInboundAndSameRevisionRecovers(t *testing.
 	closePlane(t, plane)
 }
 
+func TestFailStopRevokesBeforeAnyRendrFactoryWork(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	active := newFakeRendrRuntime("running")
+	factoryCalls := 0
+	plane.lifecycleMu.Lock()
+	plane.rendr = active
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) {
+		factoryCalls++
+		return nil, errors.New("factory must not run during fail-stop")
+	}
+	plane.lifecycleMu.Unlock()
+
+	if err := plane.FailStop(context.Background(), "config.read_failed_fail_closed"); err != nil {
+		t.Fatal(err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("fail-stop invoked rendr factory %d times before revocation", factoryCalls)
+	}
+	select {
+	case <-active.closeStarted:
+	default:
+		t.Fatal("fail-stop did not synchronously cancel the active rendr runtime")
+	}
+	if status := plane.Status(); !status.FailStopped || status.LastErrorCode != "config.read_failed_fail_closed" {
+		t.Fatalf("fail-stop status=%+v", status)
+	}
+	closePlane(t, plane)
+}
+
+func TestAuthorizationRevocationTimeoutFailStopsAndSameRevisionRecovers(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unblock()
+		closePlane(t, plane)
+	})
+	blocked := newFakeRendrRuntime("running")
+	blocked.closeRelease = release
+	replacement := newFakeRendrRuntime("running")
+	plane.lifecycleMu.Lock()
+	plane.rendr = blocked
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) { return replacement, nil }
+	plane.lifecycleMu.Unlock()
+
+	oldAccount := singleCarrierAccount(t, cfg)
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+
+	applyCtx, cancelApply := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	started := time.Now()
+	err = plane.Apply(applyCtx, revoked)
+	cancelApply()
+	if !errors.Is(err, ErrRendrRevocationIncomplete) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Apply error = %v, want incomplete revocation deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("failed authorization update exceeded its bounded recovery: %s", elapsed)
+	}
+	if calls := blocked.forceCallCount(); calls == 0 {
+		t.Fatal("authorization revocation timeout did not force close the old runtime")
+	}
+	if current := plane.currentRendr(); current != replacement {
+		t.Fatalf("current runtime=%p, want fail-stopped replacement %p", current, replacement)
+	}
+	if status := replacement.Status(); status.State != "stopping" {
+		t.Fatalf("replacement state=%q, want stopping", status.State)
+	}
+	routes := plane.routes.Load()
+	if routes == nil || len(routes.users) != 0 || len(routes.carrierPeers) != 0 {
+		t.Fatalf("routes after incomplete revocation=%+v, want fail-stopped empty table", routes)
+	}
+	status := plane.Status()
+	if !status.FailStopped || status.LastErrorCode != "runtime.fail_stop_incomplete" {
+		t.Fatalf("status after incomplete revocation=%+v", status)
+	}
+	if tags := plane.xray.ManagedInboundTags(); len(tags) != 0 {
+		t.Fatalf("managed inbounds after incomplete revocation=%v, want none", tags)
+	}
+	left, right := net.Pipe()
+	if err := plane.Handoff(context.Background(), xraybridge.CarrierRequest{
+		InboundTag: xrayconfig.NodeVLESSTag, AuthenticatedUser: oldAccount,
+	}, left); err == nil || !strings.Contains(err.Error(), "not authorized") {
+		t.Fatalf("old carrier after incomplete revocation error=%v", err)
+	}
+	_ = left.Close()
+	_ = right.Close()
+
+	unblock()
+	recovery := newFakeRendrRuntime("running")
+	plane.lifecycleMu.Lock()
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) { return recovery, nil }
+	plane.lifecycleMu.Unlock()
+	if err := plane.Apply(context.Background(), revoked); err != nil {
+		t.Fatalf("same-revision recovery: %v", err)
+	}
+	if current := plane.currentRendr(); current != recovery {
+		t.Fatalf("current runtime after recovery=%p, want %p", current, recovery)
+	}
+	status = plane.Status()
+	if status.State != "running" || status.FailStopped || status.LastError != "" || status.LastErrorCode != "" {
+		t.Fatalf("recovered status=%+v", status)
+	}
+}
+
+func TestAuthorizationRotationFactoryTimeoutFailStopsAndCleansLateRuntime(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	runtimeRelease := make(chan struct{})
+	factoryRelease := make(chan struct{})
+	var runtimeReleaseOnce, factoryReleaseOnce sync.Once
+	unblockRuntime := func() { runtimeReleaseOnce.Do(func() { close(runtimeRelease) }) }
+	unblockFactory := func() { factoryReleaseOnce.Do(func() { close(factoryRelease) }) }
+	t.Cleanup(func() {
+		unblockRuntime()
+		unblockFactory()
+		closePlane(t, plane)
+	})
+	blocked := newFakeRendrRuntime("running")
+	blocked.closeRelease = runtimeRelease
+	late := newFakeRendrRuntime("running")
+	factoryEntered := make(chan struct{})
+	var factoryEnterOnce sync.Once
+	plane.lifecycleMu.Lock()
+	plane.rendr = blocked
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) {
+		factoryEnterOnce.Do(func() { close(factoryEntered) })
+		<-factoryRelease
+		return late, nil
+	}
+	plane.lifecycleMu.Unlock()
+
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+	applyCtx, cancelApply := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	started := time.Now()
+	err = plane.Apply(applyCtx, revoked)
+	cancelApply()
+	if !errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) ||
+		!errors.Is(err, ErrRendrRevocationIncomplete) ||
+		!errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Apply error=%v, want bounded factory and revocation failure", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("authorization update waited for blocked factory: %s", elapsed)
+	}
+	select {
+	case <-factoryEntered:
+	default:
+		t.Fatal("authorization rotation did not invoke the replacement factory")
+	}
+	select {
+	case <-blocked.closeStarted:
+	default:
+		t.Fatal("factory timeout did not synchronously initiate old runtime revocation")
+	}
+	routes := plane.routes.Load()
+	if routes == nil || len(routes.users) != 0 || len(routes.carrierPeers) != 0 {
+		t.Fatalf("routes after factory timeout=%+v, want fail-stopped empty table", routes)
+	}
+	status := plane.Status()
+	if !status.FailStopped || status.LastErrorCode != "runtime.fail_stop_incomplete" {
+		t.Fatalf("status after factory timeout=%+v", status)
+	}
+	if tags := plane.xray.ManagedInboundTags(); len(tags) != 0 {
+		t.Fatalf("managed inbounds after factory timeout=%v, want none", tags)
+	}
+
+	unblockRuntime()
+	unblockFactory()
+	select {
+	case <-late.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("late factory runtime was not retired")
+	}
+	recovery := newFakeRendrRuntime("running")
+	plane.lifecycleMu.Lock()
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) { return recovery, nil }
+	plane.lifecycleMu.Unlock()
+	if err := plane.Apply(context.Background(), revoked); err != nil {
+		t.Fatalf("same-revision recovery: %v", err)
+	}
+	if current := plane.currentRendr(); current != recovery {
+		t.Fatalf("current runtime after recovery=%p, want %p", current, recovery)
+	}
+	status = plane.Status()
+	if status.State != "running" || status.FailStopped || status.LastError != "" || status.LastErrorCode != "" {
+		t.Fatalf("recovered status=%+v", status)
+	}
+}
+
+func TestAuthorizationRotationBindingTimeoutFailStopsAndCleansLateRuntime(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	active := newFakeRendrRuntime("running")
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unblock()
+		closePlane(t, plane)
+	})
+	replacement := newFakeRendrRuntime("running")
+	replacement.setDialersStart = make(chan struct{})
+	replacement.setDialersWait = release
+	plane.lifecycleMu.Lock()
+	plane.rendr = active
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) { return replacement, nil }
+	plane.lifecycleMu.Unlock()
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+
+	applyCtx, cancelApply := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	started := time.Now()
+	err = plane.Apply(applyCtx, revoked)
+	cancelApply()
+	if !errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) ||
+		!errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Apply error=%v, want bounded binding failure with fail-stop", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("authorization update waited for blocked SetDialers: %s", elapsed)
+	}
+	select {
+	case <-replacement.setDialersStart:
+	default:
+		t.Fatal("replacement SetDialers did not start")
+	}
+	select {
+	case <-active.closeStarted:
+	default:
+		t.Fatal("binding timeout did not initiate old runtime revocation")
+	}
+	routes := plane.routes.Load()
+	if routes == nil || len(routes.users) != 0 || len(routes.carrierPeers) != 0 {
+		t.Fatalf("routes after binding timeout=%+v, want fail-stopped empty table", routes)
+	}
+	if status := plane.Status(); !status.FailStopped || status.LastErrorCode != "runtime.authorization_update_fail_stopped" {
+		t.Fatalf("status after binding timeout=%+v", status)
+	}
+
+	unblock()
+	select {
+	case <-replacement.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("late bound replacement was not retired")
+	}
+	recovery := newFakeRendrRuntime("running")
+	plane.lifecycleMu.Lock()
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) { return recovery, nil }
+	plane.lifecycleMu.Unlock()
+	if err := plane.Apply(context.Background(), revoked); err != nil {
+		t.Fatalf("same-revision recovery: %v", err)
+	}
+	if current := plane.currentRendr(); current != recovery {
+		t.Fatalf("current runtime after recovery=%p, want %p", current, recovery)
+	}
+}
+
+func TestAuthorizationRotationSetupFailureRevokesBeforeBlockedCleanup(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	active := newFakeRendrRuntime("running")
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unblock()
+		closePlane(t, plane)
+	})
+	replacement := newFakeRendrRuntime("running")
+	replacement.setDialersErr = errors.New("injected replacement setup failure")
+	replacement.closeRelease = release
+	plane.lifecycleMu.Lock()
+	plane.rendr = active
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) { return replacement, nil }
+	plane.lifecycleMu.Unlock()
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+
+	started := time.Now()
+	err = plane.Apply(context.Background(), revoked)
+	if !errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) || !strings.Contains(err.Error(), "replacement setup failure") {
+		t.Fatalf("Apply error=%v, want fail-stopped replacement setup failure", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("authorization revocation waited for replacement cleanup: %s", elapsed)
+	}
+	for name, runtime := range map[string]*fakeRendrRuntime{"active": active, "replacement": replacement} {
+		select {
+		case <-runtime.closeStarted:
+		default:
+			t.Fatalf("%s runtime retirement did not start", name)
+		}
+	}
+	routes := plane.routes.Load()
+	if routes == nil || len(routes.users) != 0 || len(routes.carrierPeers) != 0 {
+		t.Fatalf("routes after replacement setup failure=%+v, want empty", routes)
+	}
+	status := plane.Status()
+	if !status.FailStopped || status.LastErrorCode != "runtime.authorization_update_fail_stopped" {
+		t.Fatalf("status after replacement setup failure=%+v", status)
+	}
+	retirements, _ := plane.rendrRetirementSnapshot()
+	if len(retirements) == 0 {
+		t.Fatal("blocked replacement cleanup was not retained")
+	}
+
+	unblock()
+	deadline := time.Now().Add(time.Second)
+	for {
+		retirements, retirementErr := plane.rendrRetirementSnapshot()
+		if retirementErr != nil {
+			t.Fatalf("replacement retirement error after release=%v", retirementErr)
+		}
+		if len(retirements) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("replacement retirement remained tracked after cleanup completed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAuthorizationRotationInstallRejectionLeavesFailStoppedRoutes(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	current := newFakeRendrRuntime("running")
+	current.closeRelease = release
+	changed := newFakeRendrRuntime("running")
+	changed.closeRelease = release
+	replacement := newFakeRendrRuntime("running")
+	plane.lifecycleMu.Lock()
+	plane.rendr = current
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) {
+		plane.lifecycleMu.Lock()
+		plane.rendr = changed
+		plane.lifecycleMu.Unlock()
+		return replacement, nil
+	}
+	plane.lifecycleMu.Unlock()
+	t.Cleanup(func() {
+		unblock()
+		closePlane(t, plane)
+	})
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+
+	applyCtx, cancelApply := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	err = plane.Apply(applyCtx, revoked)
+	cancelApply()
+	if !errors.Is(err, ErrRendrAuthorizationUpdateFailStopped) ||
+		!errors.Is(err, ErrRendrRevocationIncomplete) ||
+		!strings.Contains(err.Error(), "runtime changed during rotation") {
+		t.Fatalf("Apply error=%v, want fail-stopped install rejection", err)
+	}
+	for name, runtime := range map[string]*fakeRendrRuntime{
+		"prepared current": current, "changed current": changed, "replacement": replacement,
+	} {
+		select {
+		case <-runtime.closeStarted:
+		default:
+			t.Fatalf("%s runtime retirement did not start", name)
+		}
+	}
+	if calls := current.forceCallCount(); calls == 0 {
+		t.Fatal("prepared current runtime was not force-closed after its revocation timeout")
+	}
+	if calls := changed.forceCallCount(); calls == 0 {
+		t.Fatal("changed current runtime was not force-closed after its revocation timeout")
+	}
+	routes := plane.routes.Load()
+	if routes == nil || len(routes.users) != 0 || len(routes.carrierPeers) != 0 {
+		t.Fatalf("routes after install rejection=%+v, want empty", routes)
+	}
+	status := plane.Status()
+	if !status.FailStopped || status.LastErrorCode != "runtime.fail_stop_incomplete" {
+		t.Fatalf("status after install rejection=%+v", status)
+	}
+	if tags := plane.xray.ManagedInboundTags(); len(tags) != 0 {
+		t.Fatalf("managed inbounds after install rejection=%v, want none", tags)
+	}
+}
+
+func TestFailStopDoesNotWaitForBlockedCarrierClose(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := plane.currentRendr()
+	if err := closeRendrRuntime(original); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newFakeRendrRuntime("running")
+	runtime.acceptCarrier = true
+	runtime.injected = make(chan net.Conn, 1)
+	plane.lifecycleMu.Lock()
+	plane.rendr = runtime
+	plane.lifecycleMu.Unlock()
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unblock()
+		closePlane(t, plane)
+	})
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	entered := make(chan struct{})
+	blocking := &blockingTestCloseConn{Conn: left, release: release, entered: entered}
+	handoffDone := make(chan error, 1)
+	account := singleCarrierAccount(t, cfg)
+	go func() {
+		handoffDone <- plane.Handoff(context.Background(), xraybridge.CarrierRequest{
+			InboundTag: xrayconfig.NodeVLESSTag, AuthenticatedUser: account,
+		}, blocking)
+	}()
+	select {
+	case <-runtime.injected:
+	case <-time.After(time.Second):
+		t.Fatal("carrier was not injected into the active rendr runtime")
+	}
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	started := time.Now()
+	err = plane.FailStop(stopCtx, "config.read_failed_fail_closed")
+	cancelStop()
+	if err != nil {
+		t.Fatalf("FailStop: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 400*time.Millisecond {
+		t.Fatalf("fail-stop waited for carrier Close: %s", elapsed)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("fail-stop did not start carrier retirement")
+	}
+	select {
+	case err := <-handoffDone:
+		t.Fatalf("handoff returned before transport Close completed: %v", err)
+	default:
+	}
+
+	unblock()
+	select {
+	case err := <-handoffDone:
+		if err != nil {
+			t.Fatalf("handoff after Close release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handoff did not finish after carrier Close was released")
+	}
+}
+
+func TestCarrierInterruptDoesNotWaitBehindCloseFirst(t *testing.T) {
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	entered := make(chan struct{})
+	observed := newCloseObservedConn(&blockingTestCloseConn{
+		Conn: left, release: release, entered: entered,
+	})
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- observed.Close() }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not enter the blocking transport")
+	}
+
+	interruptDone := make(chan struct{})
+	go func() {
+		observed.Interrupt()
+		close(interruptDone)
+	}()
+	select {
+	case <-interruptDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Interrupt waited behind the Close-first transport")
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before transport release: %v", err)
+	default:
+	}
+
+	unblock()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close after release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after transport release")
+	}
+}
+
 func TestFailStopDoesNotWaitForBlockedUserDial(t *testing.T) {
 	peerAddress := reserveAddress(t)
 	socksAddress := reserveAddress(t)
@@ -645,10 +1622,22 @@ func TestFailStopDoesNotWaitForBlockedUserDial(t *testing.T) {
 	}
 	stopCtx, cancelStop := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	started := time.Now()
-	err = plane.FailStop(stopCtx, "config.read_failed_fail_closed")
-	cancelStop()
-	if err != nil {
-		t.Fatalf("fail-stop behind blocked Dial: %v", err)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- plane.FailStop(stopCtx, "config.read_failed_fail_closed") }()
+	select {
+	case err = <-stopDone:
+		cancelStop()
+		if err != nil {
+			t.Fatalf("fail-stop behind blocked Dial: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		cancelStop()
+		cancelDial()
+		select {
+		case <-stopDone:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("blocked Dial retained the apply lock across runtime I/O")
 	}
 	if elapsed := time.Since(started); elapsed >= 400*time.Millisecond {
 		t.Fatalf("blocked Dial held the apply lock for %s", elapsed)
@@ -875,16 +1864,16 @@ func TestPlaneCloseReportsBlockedRetiredRendrRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
 	retired := newFakeRendrRuntime("failed")
 	retired.closeRelease = release
 	replacement := newFakeRendrRuntime("running")
 	plane.lifecycleMu.Lock()
-	plane.rendr = retired
-	plane.rendrFactory = func(context.Context) (rendrRuntime, error) { return replacement, nil }
+	plane.rendr = replacement
 	plane.lifecycleMu.Unlock()
-	if err := plane.Apply(context.Background(), cfg); err != nil {
-		t.Fatal(err)
-	}
+	plane.retireRendrRuntime(retired)
 	select {
 	case <-retired.closeStarted:
 	case <-time.After(time.Second):
@@ -894,10 +1883,10 @@ func TestPlaneCloseReportsBlockedRetiredRendrRuntime(t *testing.T) {
 	err = plane.CloseContext(ctx)
 	cancel()
 	if !errors.Is(err, xrayrt.ErrShutdownIncomplete) || !errors.Is(err, context.DeadlineExceeded) {
-		close(release)
+		unblock()
 		t.Fatalf("CloseContext error=%v, want blocked retirement evidence", err)
 	}
-	close(release)
+	unblock()
 	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := plane.CloseContext(ctx); err != nil {
@@ -945,6 +1934,151 @@ func TestPlaneCloseContextBoundsBlockedRendrShutdown(t *testing.T) {
 		t.Fatalf("ForceClose blocked for %s", elapsed)
 	}
 	close(release)
+}
+
+func TestPlaneCloseTracksFactoryThatIgnoresCancellation(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factoryRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	unblockFactory := func() { releaseOnce.Do(func() { close(factoryRelease) }) }
+	t.Cleanup(func() {
+		unblockFactory()
+		closePlane(t, plane)
+	})
+	late := newFakeRendrRuntime("running")
+	factoryEntered := make(chan struct{})
+	var enterOnce sync.Once
+	plane.lifecycleMu.Lock()
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) {
+		enterOnce.Do(func() { close(factoryEntered) })
+		<-factoryRelease
+		return late, nil
+	}
+	plane.lifecycleMu.Unlock()
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+	applyDone := make(chan error, 1)
+	go func() { applyDone <- plane.Apply(context.Background(), revoked) }()
+	select {
+	case <-factoryEntered:
+	case <-time.After(time.Second):
+		t.Fatal("authorization update did not enter the blocked factory")
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err = plane.CloseContext(closeCtx)
+	cancelClose()
+	if !errors.Is(err, xrayrt.ErrShutdownIncomplete) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext error=%v, want incomplete blocked factory evidence", err)
+	}
+	select {
+	case <-late.closeStarted:
+		t.Fatal("late runtime existed before the blocked factory was released")
+	default:
+	}
+
+	unblockFactory()
+	select {
+	case <-late.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("late runtime was not retired after factory release")
+	}
+	select {
+	case <-applyDone:
+	case <-time.After(time.Second):
+		t.Fatal("Apply did not return after plane cancellation")
+	}
+	finalCtx, cancelFinal := context.WithTimeout(context.Background(), 5*time.Second)
+	err = plane.CloseContext(finalCtx)
+	cancelFinal()
+	if err != nil {
+		t.Fatalf("CloseContext after factory release: %v", err)
+	}
+}
+
+func TestPlaneForceCloseCanRetryLateFactoryRetirement(t *testing.T) {
+	cfg := terminalConfig(reserveAddress(t))
+	plane, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factoryRelease := make(chan struct{})
+	lateRelease := make(chan struct{})
+	var factoryReleaseOnce, lateReleaseOnce sync.Once
+	unblockFactory := func() { factoryReleaseOnce.Do(func() { close(factoryRelease) }) }
+	unblockLate := func() { lateReleaseOnce.Do(func() { close(lateRelease) }) }
+	t.Cleanup(func() {
+		unblockFactory()
+		unblockLate()
+		_ = plane.ForceClose()
+	})
+	late := newFakeRendrRuntime("running")
+	late.closeRelease = lateRelease
+	factoryEntered := make(chan struct{})
+	var enterOnce sync.Once
+	plane.lifecycleMu.Lock()
+	plane.rendrFactory = func(context.Context) (rendrRuntime, error) {
+		enterOnce.Do(func() { close(factoryEntered) })
+		<-factoryRelease
+		return late, nil
+	}
+	plane.lifecycleMu.Unlock()
+	revoked := terminalConfig(cfg.NodeInbound[0].Listen)
+	revoked.Revision = 2
+	profile := revoked.XrayProfiles["carrier-in"]
+	profile.VLESS.UUID = "3de4b54c-c036-48ca-b0d8-58f6e8cd8907"
+	revoked.XrayProfiles["carrier-in"] = profile
+	applyDone := make(chan error, 1)
+	go func() { applyDone <- plane.Apply(context.Background(), revoked) }()
+	select {
+	case <-factoryEntered:
+	case <-time.After(time.Second):
+		t.Fatal("authorization update did not enter the blocked factory")
+	}
+
+	if err := plane.ForceClose(); !errors.Is(err, xrayrt.ErrShutdownIncomplete) {
+		t.Fatalf("first ForceClose error=%v, want incomplete factory evidence", err)
+	}
+	plane.closeMu.Lock()
+	closed := plane.closed
+	plane.closeMu.Unlock()
+	if closed {
+		t.Fatal("incomplete ForceClose permanently closed the Plane")
+	}
+	unblockFactory()
+	select {
+	case <-late.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("late factory runtime was not retired")
+	}
+	select {
+	case <-applyDone:
+	case <-time.After(time.Second):
+		t.Fatal("Apply did not return after plane cancellation")
+	}
+	if calls := late.forceCallCount(); calls != 0 {
+		t.Fatalf("late runtime force calls before retry=%d, want 0", calls)
+	}
+	if err := plane.ForceClose(); !errors.Is(err, xrayrt.ErrShutdownIncomplete) {
+		t.Fatalf("second ForceClose error=%v, want blocked retirement evidence", err)
+	}
+	if calls := late.forceCallCount(); calls == 0 {
+		t.Fatal("ForceClose retry did not capture late factory retirement")
+	}
+	unblockLate()
+	finalCtx, cancelFinal := context.WithTimeout(context.Background(), time.Second)
+	err = plane.CloseContext(finalCtx)
+	cancelFinal()
+	if errors.Is(err, xrayrt.ErrShutdownIncomplete) {
+		t.Fatalf("final CloseContext remained incomplete after release: %v", err)
+	}
 }
 
 func TestPlaneForceCloseCanInterruptBlockedGracefulClose(t *testing.T) {
@@ -1178,39 +2312,70 @@ func startHalfCloseOrigin(t *testing.T) (string, <-chan [sha256.Size]byte) {
 	return listener.Addr().String(), done
 }
 
-func startObservedEchoOrigin(t *testing.T) (string, <-chan []byte) {
+func startObservedEchoOrigin(t *testing.T) (string, <-chan struct{}, <-chan []byte) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	done := make(chan []byte, 1)
+	accepted := make(chan struct{}, 8)
+	done := make(chan []byte, 8)
 	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			done <- nil
-			return
-		}
-		defer conn.Close()
-		var received []byte
-		buffer := make([]byte, 4096)
 		for {
-			count, readErr := conn.Read(buffer)
-			if count > 0 {
-				received = append(received, buffer[:count]...)
-				if _, writeErr := conn.Write(buffer[:count]); writeErr != nil {
-					done <- received
-					return
-				}
-			}
-			if readErr != nil {
-				done <- received
+			conn, err := listener.Accept()
+			if err != nil {
 				return
 			}
+			accepted <- struct{}{}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				var received []byte
+				buffer := make([]byte, 4096)
+				for {
+					count, readErr := conn.Read(buffer)
+					if count > 0 {
+						received = append(received, buffer[:count]...)
+						if _, writeErr := conn.Write(buffer[:count]); writeErr != nil {
+							done <- received
+							return
+						}
+					}
+					if readErr != nil {
+						done <- received
+						return
+					}
+				}
+			}(conn)
 		}
 	}()
-	return listener.Addr().String(), done
+	return listener.Addr().String(), accepted, done
+}
+
+func assertOriginClosedBefore(t *testing.T, received <-chan []byte, want []byte, deadline time.Time) {
+	t.Helper()
+	select {
+	case all := <-received:
+		if string(all) != string(want) {
+			t.Fatalf("origin received data after revocation: %q", all)
+		}
+		return
+	default:
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		t.Fatal("origin did not observe revoked carrier closure within the revocation budget")
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case all := <-received:
+		if string(all) != string(want) {
+			t.Fatalf("origin received data after revocation: %q", all)
+		}
+	case <-timer.C:
+		t.Fatal("origin did not observe revoked carrier closure within the revocation budget")
+	}
 }
 
 func startEchoOrigin(t *testing.T) string {
@@ -1259,6 +2424,23 @@ func assertSOCKSEcho(t *testing.T, socksAddress, origin string) {
 	}
 }
 
+func assertConnEcho(t *testing.T, conn net.Conn, payload []byte) {
+	t.Helper()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("echo=%q, want %q", got, payload)
+	}
+}
+
 func closePlane(t *testing.T, plane *Plane) {
 	t.Helper()
 	done := make(chan error, 1)
@@ -1277,6 +2459,10 @@ type fakeRendrRuntime struct {
 	mu              sync.Mutex
 	state           string
 	setDialersCalls int
+	setDialersErr   error
+	setDialersStart chan struct{}
+	setDialersOnce  sync.Once
+	setDialersWait  <-chan struct{}
 	dialStarted     chan struct{}
 	dialStartOnce   sync.Once
 	dialRelease     <-chan struct{}
@@ -1285,6 +2471,20 @@ type fakeRendrRuntime struct {
 	closeStarted    chan struct{}
 	closeStartOnce  sync.Once
 	closeRelease    <-chan struct{}
+	forceCalls      int
+}
+
+type blockingTestCloseConn struct {
+	net.Conn
+	release   <-chan struct{}
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+func (c *blockingTestCloseConn) Close() error {
+	c.enterOnce.Do(func() { close(c.entered) })
+	<-c.release
+	return c.Conn.Close()
 }
 
 func newFakeRendrRuntime(state string) *fakeRendrRuntime {
@@ -1294,8 +2494,17 @@ func newFakeRendrRuntime(state string) *fakeRendrRuntime {
 func (r *fakeRendrRuntime) SetDialers(rendradapter.StreamDialer, rendradapter.EgressDialer) error {
 	r.mu.Lock()
 	r.setDialersCalls++
+	err := r.setDialersErr
+	started := r.setDialersStart
+	wait := r.setDialersWait
 	r.mu.Unlock()
-	return nil
+	if started != nil {
+		r.setDialersOnce.Do(func() { close(started) })
+	}
+	if wait != nil {
+		<-wait
+	}
+	return err
 }
 
 func (r *fakeRendrRuntime) Dial(ctx context.Context, _ string, _ rendradapter.Destination) (net.Conn, error) {
@@ -1330,8 +2539,29 @@ func (r *fakeRendrRuntime) Status() rendradapter.RuntimeStatus {
 	return rendradapter.RuntimeStatus{State: r.state, ObservedAt: time.Now().UTC()}
 }
 
+func (r *fakeRendrRuntime) BeginClose() {
+	r.closeStartOnce.Do(func() {
+		r.mu.Lock()
+		r.state = "stopping"
+		r.mu.Unlock()
+		close(r.closeStarted)
+	})
+}
+
+func (r *fakeRendrRuntime) RevokeContext(ctx context.Context) error {
+	r.BeginClose()
+	if r.closeRelease != nil {
+		select {
+		case <-r.closeRelease:
+		case <-ctx.Done():
+			return errors.Join(rendradapter.ErrShutdownIncomplete, ctx.Err())
+		}
+	}
+	return nil
+}
+
 func (r *fakeRendrRuntime) CloseContext(ctx context.Context) error {
-	r.closeStartOnce.Do(func() { close(r.closeStarted) })
+	r.BeginClose()
 	if r.closeRelease != nil {
 		select {
 		case <-r.closeRelease:
@@ -1346,11 +2576,21 @@ func (r *fakeRendrRuntime) CloseContext(ctx context.Context) error {
 }
 
 func (r *fakeRendrRuntime) ForceClose() error {
-	if r.closeRelease != nil {
+	r.mu.Lock()
+	r.forceCalls++
+	blocked := r.closeRelease != nil
+	if !blocked {
+		r.state = "stopped"
+	}
+	r.mu.Unlock()
+	if blocked {
 		return rendradapter.ErrShutdownIncomplete
 	}
-	r.mu.Lock()
-	r.state = "stopped"
-	r.mu.Unlock()
 	return nil
+}
+
+func (r *fakeRendrRuntime) forceCallCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.forceCalls
 }

@@ -230,6 +230,275 @@ func TestRuntimeCloseClosesActiveClientSessions(t *testing.T) {
 	}
 }
 
+func TestRuntimeRevokeContextWaitsForApplicationSessions(t *testing.T) {
+	echo := startEcho(t)
+	server := newTestRuntime(t)
+	client := newTestRuntime(t)
+	wireRuntimes(t, client, server, func(ctx context.Context, _ string, _ uint16) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", echo.Addr().String())
+	})
+	conn, err := client.Dial(context.Background(), "peer-b", destinationFromAddr(t, echo.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	payload := []byte("before-revocation")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, response); err != nil || string(response) != string(payload) {
+		t.Fatalf("pre-revocation response=%q err=%v", response, err)
+	}
+	waitRuntimeStatus(t, server, func(status RuntimeStatus) bool { return status.ActiveAccepted == 1 })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err = server.RevokeContext(ctx)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := server.Status()
+	if (status.State != "stopping" && status.State != "stopped") || status.ActiveAccepted != 0 || status.ActiveClient != 0 {
+		t.Fatalf("post-revocation status=%+v", status)
+	}
+}
+
+func TestRuntimeClientRevocationDoesNotWaitForTransportClose(t *testing.T) {
+	runtime, err := NewRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	defer right.Close()
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	blocking := &blockingCloseConn{Conn: left, release: release, entered: entered}
+	tracked := admitTrackedClientForTest(runtime, blocking)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	started := time.Now()
+	err = runtime.RevokeContext(ctx)
+	cancel()
+	if err != nil {
+		t.Fatalf("RevokeContext: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("client revocation waited for transport Close: %s", elapsed)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not start client transport retirement")
+	}
+	if status := runtime.Status(); status.ActiveClient != 0 {
+		t.Fatalf("active clients after revocation = %d, want 0", status.ActiveClient)
+	}
+	if _, err := tracked.Write([]byte("must-not-pass-after-revocation")); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("post-revocation Write error = %v, want net.ErrClosed", err)
+	}
+
+	close(release)
+	select {
+	case <-runtime.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not finish after client Close was released")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("completed Close: %v", err)
+	}
+}
+
+func TestRuntimeRevocationInterruptsOpeningClientBeforeBlockedClose(t *testing.T) {
+	runtime, err := NewRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	entered := make(chan struct{})
+	blocking := &blockingCloseConn{Conn: left, release: release, entered: entered}
+	if !runtime.beginClientAttempt() {
+		t.Fatal("opening client attempt was rejected")
+	}
+	openRead := make(chan error, 1)
+	go func() {
+		_, readErr := readOpen(right)
+		openRead <- readErr
+	}()
+	attemptDone := make(chan error, 1)
+	go func() {
+		defer runtime.dialWG.Done()
+		defer runtime.finishSession(&runtime.activeClient)
+		var interruptOnce sync.Once
+		interrupt := func() {
+			interruptOnce.Do(func() { runtime.scheduleSessionConnInterrupt(blocking) })
+		}
+		openErr := runtime.openSession(context.Background(), blocking, Destination{Host: "pending.test", Port: 443}, interrupt)
+		interrupt()
+		attemptDone <- openErr
+	}()
+	select {
+	case err := <-openRead:
+		if err != nil {
+			t.Fatalf("read opening frame: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("opening client did not write its request")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err = runtime.RevokeContext(ctx)
+	cancel()
+	if err != nil {
+		t.Fatalf("RevokeContext: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("opening client transport Close was not attempted")
+	}
+	select {
+	case err := <-attemptDone:
+		if !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("opening client error=%v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("opening client remained blocked behind transport Close")
+	}
+	if status := runtime.Status(); status.ActiveClient != 0 {
+		t.Fatalf("active clients after opening revocation=%d, want 0", status.ActiveClient)
+	}
+	select {
+	case <-runtime.closed:
+		t.Fatal("runtime reported complete while opening transport Close remained blocked")
+	default:
+	}
+
+	unblock()
+	select {
+	case <-runtime.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not finish after opening transport Close was released")
+	}
+}
+
+func TestRuntimeRevocationInterruptsAcceptedHandshakeBeforeBlockedClose(t *testing.T) {
+	runtime, err := NewRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	closeEntered := make(chan struct{})
+	readEntered := make(chan struct{})
+	observed := &readEnteredConn{Conn: left, entered: readEntered}
+	blocking := &blockingCloseConn{Conn: observed, release: release, entered: closeEntered}
+	conn := fakeRendrConn{Conn: blocking}
+	runtime.admissionMu.Lock()
+	runtime.activeAccepted.Add(1)
+	runtime.activeSessions++
+	runtime.wg.Add(1)
+	runtime.admissionMu.Unlock()
+	acceptedDone := make(chan error, 1)
+	go func() {
+		defer runtime.wg.Done()
+		defer runtime.finishSession(&runtime.activeAccepted)
+		acceptedDone <- runtime.serveAccepted(conn)
+	}()
+	select {
+	case <-readEntered:
+	case <-time.After(time.Second):
+		t.Fatal("accepted session did not enter its opening handshake")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err = runtime.RevokeContext(ctx)
+	cancel()
+	if err != nil {
+		t.Fatalf("RevokeContext: %v", err)
+	}
+	select {
+	case <-closeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("accepted handshake transport Close was not attempted")
+	}
+	select {
+	case err := <-acceptedDone:
+		if !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("accepted handshake error=%v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("accepted handshake remained blocked behind transport Close")
+	}
+	if status := runtime.Status(); status.ActiveAccepted != 0 {
+		t.Fatalf("active accepted sessions after revocation=%d, want 0", status.ActiveAccepted)
+	}
+	select {
+	case <-runtime.closed:
+		t.Fatal("runtime reported complete while accepted transport Close remained blocked")
+	default:
+	}
+
+	unblock()
+	select {
+	case <-runtime.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not finish after accepted transport Close was released")
+	}
+}
+
+func TestRuntimeRejectingUnadmittedAcceptDoesNotWaitForBlockedClose(t *testing.T) {
+	runtime, err := NewRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = right.Close() })
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	entered := make(chan struct{})
+	blocking := &blockingCloseConn{Conn: left, release: release, entered: entered}
+	started := time.Now()
+	runtime.retireUnadmittedAccepted(blocking)
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("unadmitted accept retirement blocked for %s", elapsed)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("unadmitted accepted connection Close was not attempted")
+	}
+	drained := make(chan struct{})
+	go func() {
+		runtime.sessionCloseWG.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		t.Fatal("transport cleanup completed before blocked Close was released")
+	default:
+	}
+	unblock()
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("unadmitted accept cleanup was not tracked to completion")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeCloseContextBoundsBrokenConnectionClose(t *testing.T) {
 	runtime, err := NewRuntime(context.Background())
 	if err != nil {
@@ -240,13 +509,7 @@ func TestRuntimeCloseContextBoundsBrokenConnectionClose(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	blocking := &blockingCloseConn{Conn: left, release: release, entered: entered}
-	tracked := &trackedConn{Conn: blocking}
-	tracked.release = func() { runtime.releaseClient(tracked) }
-	runtime.clientsMu.Lock()
-	runtime.clients[tracked] = struct{}{}
-	runtime.clientsWG.Add(1)
-	runtime.activeClient.Add(1)
-	runtime.clientsMu.Unlock()
+	_ = admitTrackedClientForTest(runtime, blocking)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	started := time.Now()
@@ -275,6 +538,24 @@ func TestRuntimeCloseContextBoundsBrokenConnectionClose(t *testing.T) {
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("completed Close: %v", err)
 	}
+}
+
+func admitTrackedClientForTest(runtime *Runtime, conn net.Conn) *trackedConn {
+	tracked := &trackedConn{Conn: conn}
+	tracked.release = func() { runtime.releaseClient(tracked) }
+	tracked.finishApplication = func() { runtime.finishSession(&runtime.activeClient) }
+	tracked.interruptApplication = func() {
+		runtime.scheduleSessionTask(func() { _ = conn.SetDeadline(time.Now()) })
+	}
+	runtime.admissionMu.Lock()
+	runtime.clientsMu.Lock()
+	runtime.clients[tracked] = struct{}{}
+	runtime.clientsWG.Add(1)
+	runtime.activeSessions++
+	runtime.activeClient.Add(1)
+	runtime.clientsMu.Unlock()
+	runtime.admissionMu.Unlock()
+	return tracked
 }
 
 func TestOpenProtocolRejectsInvalidAndOversizedFrames(t *testing.T) {
@@ -439,7 +720,7 @@ func TestRuntimeStatusRedactsCarrierError(t *testing.T) {
 	}
 }
 
-func TestProxyStreamHardErrorClosesBothAndWaits(t *testing.T) {
+func TestProxyStreamHardErrorInterruptsBothDirections(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -466,8 +747,8 @@ func TestProxyStreamHardErrorClosesBothAndWaits(t *testing.T) {
 				t.Fatal("proxyStream did not wake its blocked copy direction")
 			}
 			for name, signal := range map[string]<-chan struct{}{
-				"left close":      left.closed,
-				"right close":     right.closed,
+				"left deadline":   left.deadlineSet,
+				"right deadline":  right.deadlineSet,
 				"right read exit": right.readExited,
 			} {
 				select {
@@ -476,8 +757,95 @@ func TestProxyStreamHardErrorClosesBothAndWaits(t *testing.T) {
 					t.Fatalf("proxyStream returned before %s", name)
 				}
 			}
+			_ = left.Close()
+			_ = right.Close()
 		})
 	}
+}
+
+func TestProxyStreamCancellationDoesNotWaitForBlockedHalfClose(t *testing.T) {
+	leftPipe, leftPeer := net.Pipe()
+	rightPipe, rightPeer := net.Pipe()
+	defer leftPeer.Close()
+	defer rightPeer.Close()
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var releaseOnce sync.Once
+	unblockHalfClose := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblockHalfClose)
+	left := newObservedReadConn(leftPipe)
+	right := &blockingHalfCloseConn{Conn: rightPipe, release: release, entered: entered}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- proxyStream(ctx, left, right) }()
+
+	if err := leftPeer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("proxy did not enter the terminal half-close")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("proxyStream error=%v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("proxyStream cancellation waited for blocked CloseWrite")
+	}
+	unblockHalfClose()
+}
+
+func TestRuntimeRevocationDoesNotWaitForTransportClose(t *testing.T) {
+	echo := startEcho(t)
+	server := newTestRuntime(t)
+	client := newTestRuntime(t)
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var releaseOnce sync.Once
+	unblockClose := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblockClose)
+	wireRuntimes(t, client, server, func(ctx context.Context, _ string, _ uint16) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", echo.Addr().String())
+		if err != nil {
+			return nil, err
+		}
+		return &blockingCloseConn{Conn: conn, release: release, entered: entered}, nil
+	})
+
+	conn, err := client.Dial(context.Background(), "peer-b", destinationFromAddr(t, echo.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	payload := []byte("before-blocked-close")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, response); err != nil || !bytes.Equal(response, payload) {
+		t.Fatalf("pre-revocation response=%q err=%v", response, err)
+	}
+	waitRuntimeStatus(t, server, func(status RuntimeStatus) bool { return status.ActiveAccepted == 1 })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err = server.RevokeContext(ctx)
+	cancel()
+	if err != nil {
+		t.Fatalf("revocation waited for transport Close: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not start transport retirement")
+	}
+	if status := server.Status(); status.ActiveAccepted != 0 || status.ActiveClient != 0 {
+		t.Fatalf("post-revocation status=%+v", status)
+	}
+	unblockClose()
 }
 
 func TestProxyStreamPreservesBidirectionalHalfClose(t *testing.T) {
@@ -548,6 +916,35 @@ func TestProxyStreamRejectsEndpointWithoutHalfClose(t *testing.T) {
 	}
 }
 
+func TestProxyStreamMissingHalfCloseDoesNotWaitForBlockedClose(t *testing.T) {
+	leftPipe, leftPeer := net.Pipe()
+	rightPipe, rightPeer := net.Pipe()
+	t.Cleanup(func() { _ = leftPeer.Close() })
+	t.Cleanup(func() { _ = rightPeer.Close() })
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	entered := make(chan struct{})
+	left := &blockingCloseOnlyConn{Conn: leftPipe, release: release, entered: entered}
+	done := make(chan error, 1)
+	go func() { done <- proxyStream(context.Background(), left, rightPipe) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrHalfCloseUnsupported) {
+			t.Fatalf("proxyStream error=%v, want ErrHalfCloseUnsupported", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("missing half-close path waited for transport Close")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("missing half-close path did not start transport retirement")
+	}
+	unblock()
+}
+
 func TestRuntimeHardProxyErrorReleasesAcceptedSlot(t *testing.T) {
 	server := newTestRuntime(t)
 	client := newTestRuntime(t)
@@ -590,13 +987,20 @@ func TestRuntimeHardProxyErrorReleasesAcceptedSlot(t *testing.T) {
 
 type readErrorConn struct {
 	net.Conn
-	err       error
-	closeOnce sync.Once
-	closed    chan struct{}
+	err          error
+	closeOnce    sync.Once
+	deadlineOnce sync.Once
+	closed       chan struct{}
+	deadlineSet  chan struct{}
 }
 
 func newReadErrorConn(conn net.Conn, err error) *readErrorConn {
-	return &readErrorConn{Conn: conn, err: err, closed: make(chan struct{})}
+	return &readErrorConn{
+		Conn:        conn,
+		err:         err,
+		closed:      make(chan struct{}),
+		deadlineSet: make(chan struct{}),
+	}
 }
 
 func (c *readErrorConn) Read([]byte) (int, error) { return 0, c.err }
@@ -606,18 +1010,30 @@ func (c *readErrorConn) Close() error {
 	return c.Conn.Close()
 }
 
+func (c *readErrorConn) SetDeadline(deadline time.Time) error {
+	c.deadlineOnce.Do(func() { close(c.deadlineSet) })
+	return c.Conn.SetDeadline(deadline)
+}
+
 func (*readErrorConn) CloseWrite() error { return nil }
 
 type observedReadConn struct {
 	net.Conn
 	closeOnce    sync.Once
+	deadlineOnce sync.Once
 	readExitOnce sync.Once
 	closed       chan struct{}
+	deadlineSet  chan struct{}
 	readExited   chan struct{}
 }
 
 func newObservedReadConn(conn net.Conn) *observedReadConn {
-	return &observedReadConn{Conn: conn, closed: make(chan struct{}), readExited: make(chan struct{})}
+	return &observedReadConn{
+		Conn:        conn,
+		closed:      make(chan struct{}),
+		deadlineSet: make(chan struct{}),
+		readExited:  make(chan struct{}),
+	}
 }
 
 func (c *observedReadConn) Read(payload []byte) (int, error) {
@@ -629,6 +1045,11 @@ func (c *observedReadConn) Read(payload []byte) (int, error) {
 func (c *observedReadConn) Close() error {
 	c.closeOnce.Do(func() { close(c.closed) })
 	return c.Conn.Close()
+}
+
+func (c *observedReadConn) SetDeadline(deadline time.Time) error {
+	c.deadlineOnce.Do(func() { close(c.deadlineSet) })
+	return c.Conn.SetDeadline(deadline)
 }
 
 func (*observedReadConn) CloseWrite() error { return nil }
@@ -648,10 +1069,55 @@ type blockingCloseConn struct {
 	enterOnce sync.Once
 }
 
+type blockingHalfCloseConn struct {
+	net.Conn
+	release   <-chan struct{}
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+type blockingCloseOnlyConn struct {
+	net.Conn
+	release   <-chan struct{}
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+func (c *blockingCloseOnlyConn) Close() error {
+	c.enterOnce.Do(func() { close(c.entered) })
+	<-c.release
+	return c.Conn.Close()
+}
+
+type readEnteredConn struct {
+	net.Conn
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+func (c *readEnteredConn) Read(payload []byte) (int, error) {
+	c.enterOnce.Do(func() { close(c.entered) })
+	return c.Conn.Read(payload)
+}
+
+func (c *blockingHalfCloseConn) CloseWrite() error {
+	c.enterOnce.Do(func() { close(c.entered) })
+	<-c.release
+	return nil
+}
+
 func (c *blockingCloseConn) Close() error {
 	c.enterOnce.Do(func() { close(c.entered) })
 	<-c.release
 	return c.Conn.Close()
+}
+
+func (c *blockingCloseConn) CloseWrite() error {
+	closer, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return ErrHalfCloseUnsupported
+	}
+	return closer.CloseWrite()
 }
 
 func newBlockingWriteErrorConn(err error) *blockingWriteErrorConn {
