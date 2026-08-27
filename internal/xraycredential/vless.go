@@ -1,6 +1,7 @@
 package xraycredential
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 
@@ -9,6 +10,8 @@ import (
 )
 
 var ErrVLESSCredentialFormat = errors.New("VLESS credential must be a canonical lowercase UUID")
+
+const vlessFingerprintDomain = "xtier:vless-credential-fingerprint:v1\x00"
 
 // VLESSLookupKey returns the lookup key Xray uses for any credential spelling
 // accepted by its UUID parser. This is intentionally more permissive than
@@ -33,4 +36,16 @@ func VLESSKey(raw string) (string, error) {
 		return "", ErrVLESSCredentialFormat
 	}
 	return VLESSLookupKey(raw)
+}
+
+// VLESSFingerprint returns a one-way, domain-separated identifier for the
+// exact credential equivalence class enforced by Xray. It is suitable for a
+// durable deny-list without persisting another directly usable credential.
+func VLESSFingerprint(raw string) (string, error) {
+	key, err := VLESSKey(raw)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(vlessFingerprintDomain + key))
+	return hex.EncodeToString(digest[:]), nil
 }

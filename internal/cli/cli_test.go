@@ -17,12 +17,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FrankoonG/x-tier/internal/configops"
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/webbridge"
+	"github.com/FrankoonG/x-tier/internal/xraycredential"
 )
 
 type metadataOnlyError struct{}
@@ -212,7 +214,7 @@ func TestPathCompileHonorsNestedAndDirection(t *testing.T) {
 			NestedEnabled: true,
 			Enabled:       true,
 			RendrCapable:  true,
-			XrayProfileID: "vless",
+			XrayProfileID: "vless-in",
 			InstanceID:    "inst-I",
 		}},
 	})
@@ -1040,6 +1042,45 @@ func TestErrorOutputRedactsSensitiveDetails(t *testing.T) {
 	}
 }
 
+func TestPeerCredentialErrorRemainsActionableInTextOutput(t *testing.T) {
+	g := globals{}
+	var stdout, stderr bytes.Buffer
+	err := commandError{
+		configops.CodePeerCredentialQuarantined,
+		errors.New("peer B must rotate to a new unique VLESS profile before enabling"),
+	}
+	if code := writeCommandError(g, &stdout, &stderr, err); code == 0 {
+		t.Fatal("credential refusal returned success")
+	}
+	message := stderr.String()
+	if !strings.Contains(message, configops.CodePeerCredentialQuarantined) ||
+		!strings.Contains(message, "peer B") || strings.Contains(message, "details were redacted") {
+		t.Fatalf("credential refusal was not actionable: %q", message)
+	}
+}
+
+func TestUncontrolledCredentialErrorsRemainRedacted(t *testing.T) {
+	for _, errorCode := range []string{
+		"config.peer_credential_quarantine_write",
+		"config.peer_credential_quarantine_invalid",
+		"config.peer_credential_quarantine_reason_invalid",
+	} {
+		t.Run(errorCode, func(t *testing.T) {
+			g := globals{}
+			var stdout, stderr bytes.Buffer
+			err := commandError{errorCode, errors.New(`C:\private\token=super-secret-token`)}
+			if code := writeCommandError(g, &stdout, &stderr, err); code == 0 {
+				t.Fatal("credential refusal returned success")
+			}
+			message := stderr.String()
+			if !strings.Contains(message, errorCode) || !strings.Contains(message, "redacted") ||
+				strings.Contains(message, "super-secret-token") {
+				t.Fatalf("uncontrolled credential error was not safely rendered: %q", message)
+			}
+		})
+	}
+}
+
 func TestPeerAddDoesNotForgeRendrInstanceID(t *testing.T) {
 	path := seedConfig(t, configstore.Config{Node: node("A"), System: configstore.DefaultConfig().System, XrayProfiles: runtimeTestProfiles()})
 	code, out := runDaemonCLI(t, "--offline", "--config", path, "--json", "--revision", "0", "local", "peer", "add", "B", "--node-id", "node-b", "--addr", "10.20.0.2:19080", "--profile", "vless")
@@ -1058,11 +1099,191 @@ func TestPeerAddDoesNotForgeRendrInstanceID(t *testing.T) {
 	}
 }
 
+func TestPeerAddRequiresProfileForEveryEnabledDirection(t *testing.T) {
+	for _, direction := range []string{"inbound", "outbound", "bidirectional"} {
+		t.Run(direction, func(t *testing.T) {
+			path := seedConfig(t, configstore.Config{
+				Node:   node("A"),
+				System: configstore.DefaultConfig().System,
+			})
+			code, out := runDaemonCLI(
+				t,
+				"--offline", "--config", path, "--json", "--revision", "0",
+				"local", "peer", "add", "C", "--node-id", "node-c", "--direction", direction,
+			)
+			if code == 0 || jsonField(t, out, "error_code") != configops.CodePeerProfileRequired {
+				t.Fatalf("profile-less %s peer code=%d output=%s", direction, code, out)
+			}
+			cfg, err := configstore.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Revision != 0 || len(cfg.Peers) != 0 {
+				t.Fatalf("rejected %s peer changed config: revision=%d peers=%+v", direction, cfg.Revision, cfg.Peers)
+			}
+		})
+	}
+}
+
+func TestPeerAddPreflightsMissingProfileBeforeOfflineAndRevisionGates(t *testing.T) {
+	path := seedConfig(t, configstore.Config{
+		Node:   node("A"),
+		System: configstore.DefaultConfig().System,
+	})
+	code, out := runCLI(
+		t,
+		"--offline", "--config", path, "--json",
+		"local", "peer", "add", "C", "--node-id", "node-c", "--direction", "inbound",
+	)
+	if code == 0 || jsonField(t, out, "error_code") != configops.CodePeerProfileRequired {
+		t.Fatalf("missing profile preflight code=%d output=%s", code, out)
+	}
+	cfg, err := configstore.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Revision != 0 || len(cfg.Peers) != 0 {
+		t.Fatalf("preflight failure changed config: revision=%d peers=%+v", cfg.Revision, cfg.Peers)
+	}
+}
+
+func TestPeerAddPreflightUsesSharedIdentityCode(t *testing.T) {
+	path := seedConfig(t, configstore.Config{
+		Node:   node("A"),
+		System: configstore.DefaultConfig().System,
+	})
+	code, out := runCLI(
+		t,
+		"--offline", "--config", path, "--json",
+		"local", "peer", "add", "C", "--profile", "vless",
+	)
+	if code == 0 || jsonField(t, out, "error_code") != configops.CodePeerIdentityRequired {
+		t.Fatalf("missing node ID preflight code=%d output=%s", code, out)
+	}
+}
+
+func TestPeerAddPreflightWrapsFlagParserErrors(t *testing.T) {
+	path := seedConfig(t, configstore.Config{
+		Node:   node("A"),
+		System: configstore.DefaultConfig().System,
+	})
+	code, out := runCLI(
+		t,
+		"--offline", "--config", path, "--json",
+		"local", "peer", "add", "C", "--not-a-peer-flag",
+	)
+	if code == 0 || jsonField(t, out, "error_code") != "cli.flag_invalid" {
+		t.Fatalf("invalid flag preflight code=%d output=%s", code, out)
+	}
+}
+
+func TestPeerEnableRejectsMissingRuntimeProfile(t *testing.T) {
+	path := seedConfig(t, configstore.Config{
+		Node:   node("A"),
+		System: configstore.DefaultConfig().System,
+		Peers: []configstore.PeerConfig{{
+			Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, Enabled: false,
+		}},
+	})
+	code, out := runDaemonCLI(
+		t,
+		"--offline", "--config", path, "--json", "--revision", "0",
+		"local", "peer", "enable", "C",
+	)
+	if code == 0 || jsonField(t, out, "error_code") != "config.peer_inbound_profile_incompatible" {
+		t.Fatalf("profile-less peer enable code=%d output=%s", code, out)
+	}
+	cfg, err := configstore.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Revision != 0 || len(cfg.Peers) != 1 || cfg.Peers[0].Enabled {
+		t.Fatalf("rejected enable changed config: revision=%d peers=%+v", cfg.Revision, cfg.Peers)
+	}
+}
+
+func TestCLIRepairsQuarantinedPeerWithoutLosingDurableRevocation(t *testing.T) {
+	cfg := quarantinedPeerCLIConfig(t)
+	path := seedConfig(t, cfg)
+
+	code, out := runDaemonCLI(t,
+		"--offline", "--config", path, "--json", "--revision", "0",
+		"local", "peer", "disable", "B", "--reason", "maintenance",
+	)
+	if code != 0 {
+		t.Fatalf("disable quarantined peer failed: %s", out)
+	}
+	loaded, err := configstore.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != 1 || !configstore.IsPeerCredentialQuarantined(loaded.Peers[0]) {
+		t.Fatalf("disable cleared CLI quarantine: revision=%d peer=%+v", loaded.Revision, loaded.Peers[0])
+	}
+
+	code, out = runDaemonCLI(t,
+		"--offline", "--config", path, "--json", "--revision", "1",
+		"local", "peer", "set", "B", "--profile", "fresh",
+	)
+	if code != 0 {
+		t.Fatalf("profile rotation failed: %s", out)
+	}
+	code, out = runDaemonCLI(t,
+		"--offline", "--config", path, "--json", "--revision", "2",
+		"local", "peer", "enable", "B",
+	)
+	if code != 0 {
+		t.Fatalf("enable after rotation failed: %s", out)
+	}
+
+	loaded, err = configstore.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != 3 || !loaded.Peers[0].Enabled || loaded.Peers[0].XrayProfileID != "fresh" || loaded.Peers[0].DisabledCause != "" {
+		t.Fatalf("CLI repair result = revision:%d peer:%+v", loaded.Revision, loaded.Peers[0])
+	}
+	if len(loaded.PeerCredentialQuarantines) != 1 {
+		t.Fatalf("CLI repair removed durable revocation: %+v", loaded.PeerCredentialQuarantines)
+	}
+}
+
+func quarantinedPeerCLIConfig(t *testing.T) configstore.Config {
+	t.Helper()
+	cfg := configstore.DefaultConfig()
+	cfg.Node = node("A")
+	cfg.XrayProfiles = runtimeTestProfiles()
+	fingerprint, err := xraycredential.VLESSFingerprint(cfg.XrayProfiles["vless"].VLESS.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Peers = []configstore.PeerConfig{{
+		Name: "B", NodeID: "node-b", Direction: route.DirectionInbound,
+		XrayProfileID: "vless", Enabled: false, DisabledCause: configstore.PeerCredentialQuarantineCause,
+	}}
+	cfg.XrayProfiles["fresh"] = configstore.XrayProfile{
+		ID: "fresh", Kind: "vless", VLESS: &configstore.VLESSProfile{
+			UUID: "16f5cc3e-8186-4751-b6cd-45cc70d4b4fe", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+		},
+	}
+	cfg.PeerCredentialQuarantines = []configstore.PeerCredentialQuarantine{{
+		CredentialFingerprint: fingerprint,
+		PeerNodeIDs:           []string{"node-b", "retired-node"},
+		Reason:                configstore.PeerCredentialCollisionReason,
+	}}
+	return cfg
+}
+
 func runtimeTestProfiles() map[string]configstore.XrayProfile {
 	return map[string]configstore.XrayProfile{
 		"vless": {
 			ID: "vless", Kind: "vless", VLESS: &configstore.VLESSProfile{
 				UUID: "66ad4540-b58c-4ad2-9926-ea63445a9b57", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+			},
+		},
+		"vless-in": {
+			ID: "vless-in", Kind: "vless", VLESS: &configstore.VLESSProfile{
+				UUID: "f3c9805c-12ea-48f0-b762-5739f2365620", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
 			},
 		},
 	}

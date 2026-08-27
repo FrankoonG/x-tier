@@ -85,6 +85,14 @@ func TestCompileRejectsXrayEquivalentInboundCredentials(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsCrossDirectionCredentialReuse(t *testing.T) {
+	cfg := testConfig()
+	cfg.Peers[1].XrayProfileID = "vless"
+	if _, err := Compile(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
+		t.Fatalf("Compile error = %v, want cross-direction reuse rejection", err)
+	}
+}
+
 func TestCompileRejectsConflictingEnabledInboundListeners(t *testing.T) {
 	cfg := testConfig()
 	cfg.NodeInbound[1].Listen = cfg.NodeInbound[0].Listen

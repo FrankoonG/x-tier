@@ -214,6 +214,9 @@ export interface SettingsResponse {
 export interface XrayProfile {
   id: string;
   kind: string;
+  /** Equality-only label generated from public profile IDs after the daemon
+   * groups Xray-equivalent credentials. It contains no credential material. */
+  credential_group_id?: string;
 }
 
 export interface XrayProfilesResponse {

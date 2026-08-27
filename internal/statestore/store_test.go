@@ -40,6 +40,80 @@ func TestStoreObjectsAreIsolatedByConfigName(t *testing.T) {
 	}
 }
 
+func TestObjectNamesPreserveEnumerationAndMapToOwnedFiles(t *testing.T) {
+	tests := []struct {
+		object Object
+		value  Object
+		name   string
+	}{
+		{ConfigLock, 1, "config.lock"},
+		{DaemonLock, 2, "daemon.lock"},
+		{ControlToken, 3, "control-token.v1"},
+		{WebToken, 4, "web-token.v1"},
+		{IdentitySeed, 5, "identity-seed.v1.json"},
+		{LastKnownGood, 6, "last-known-good.json"},
+		{PeerCredentialQuarantineLedger, 7, "peer-credential-quarantines.v1.json"},
+		{ConfigRevisionHighWater, 8, "config-revision-high-water.v1.json"},
+		{RejectedConfig, 9, "rejected-config.json"},
+		{PreMigrationConfig, 10, "pre-migration-config.json"},
+	}
+	for _, test := range tests {
+		if test.object != test.value {
+			t.Errorf("object %q value=%d, want %d", test.name, test.object, test.value)
+		}
+		name, err := objectName(test.object)
+		if err != nil {
+			t.Errorf("objectName(%d): %v", test.object, err)
+			continue
+		}
+		if name != test.name {
+			t.Errorf("objectName(%d)=%q, want %q", test.object, name, test.name)
+		}
+	}
+	if _, err := objectName(0); err == nil {
+		t.Fatal("objectName accepted zero Object")
+	}
+	if _, err := objectName(PreMigrationConfig + 1); err == nil {
+		t.Fatal("objectName accepted Object after the known enumeration")
+	}
+}
+
+func TestPeerCredentialQuarantineLedgerSecureReadWrite(t *testing.T) {
+	dir := canonicalTempDir(t)
+	store := openTestStore(t, filepath.Join(dir, "config.json"))
+	defer store.Close()
+
+	initial := []byte(`{"version":1,"peers":{"peer-a":{"reason":"credential-mismatch"}}}`)
+	if err := store.CreateExclusive(PeerCredentialQuarantineLedger, initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateExclusive(PeerCredentialQuarantineLedger, []byte("overwrite")); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("second exclusive create error=%v, want fs.ErrExist", err)
+	}
+	if _, err := store.Read(PeerCredentialQuarantineLedger, int64(len(initial)-1)); err == nil {
+		t.Fatal("ledger read ignored size limit")
+	}
+	payload, err := store.Read(PeerCredentialQuarantineLedger, int64(len(initial)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(payload, initial) {
+		t.Fatalf("initial ledger=%q, want %q", payload, initial)
+	}
+
+	replacement := []byte(`{"version":1,"peers":{}}`)
+	if err := store.Replace(PeerCredentialQuarantineLedger, replacement); err != nil {
+		t.Fatal(err)
+	}
+	payload, err = store.Read(PeerCredentialQuarantineLedger, int64(len(replacement)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(payload, replacement) {
+		t.Fatalf("replacement ledger=%q, want %q", payload, replacement)
+	}
+}
+
 func TestStoreRejectsReservedConfigPath(t *testing.T) {
 	dir := canonicalTempDir(t)
 	for _, path := range []string{
@@ -311,6 +385,12 @@ func TestBackupPruningOccursAfterPublicationAndTemporaryRecoveryIsExplicit(t *te
 	}
 	if len(names) != 3 {
 		t.Fatalf("backup count=%d, want 3", len(names))
+	}
+	if payload, err := store.ReadBackup(names[0], 16); err != nil || len(payload) == 0 {
+		t.Fatalf("read backup payload=%q err=%v", payload, err)
+	}
+	if _, err := store.ReadBackup("../config.json", 16); err == nil {
+		t.Fatal("ReadBackup accepted a non-owned name")
 	}
 	if err := store.PruneBackups(2); err != nil {
 		t.Fatal(err)

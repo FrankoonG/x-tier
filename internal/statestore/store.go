@@ -37,6 +37,10 @@ const (
 	WebToken
 	IdentitySeed
 	LastKnownGood
+	PeerCredentialQuarantineLedger
+	ConfigRevisionHighWater
+	RejectedConfig
+	PreMigrationConfig
 )
 
 var (
@@ -307,6 +311,21 @@ func (s *Store) BackupNames() ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+// ReadBackup reads one store-owned backup selected from BackupNames. Runtime
+// callers must not turn the diagnostic state path back into an authority.
+func (s *Store) ReadBackup(name string, limit int64) ([]byte, error) {
+	if s == nil || s.state == nil {
+		return nil, fmt.Errorf("statestore.closed")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("statestore.read_limit_invalid")
+	}
+	if !validBackupName(name) {
+		return nil, fmt.Errorf("statestore.backup_name_invalid")
+	}
+	return readFromRoot(s.state, name, limit)
 }
 
 // PruneBackups must be called only after the corresponding config publication
@@ -674,6 +693,14 @@ func objectName(object Object) (string, error) {
 		return "identity-seed.v1.json", nil
 	case LastKnownGood:
 		return "last-known-good.json", nil
+	case PeerCredentialQuarantineLedger:
+		return "peer-credential-quarantines.v1.json", nil
+	case ConfigRevisionHighWater:
+		return "config-revision-high-water.v1.json", nil
+	case RejectedConfig:
+		return "rejected-config.json", nil
+	case PreMigrationConfig:
+		return "pre-migration-config.json", nil
 	default:
 		return "", fmt.Errorf("statestore.object_invalid")
 	}

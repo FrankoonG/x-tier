@@ -3,6 +3,7 @@
 package configstore
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -20,6 +21,10 @@ func lockFileExclusive(file *os.File) error {
 		wholeFileLockLength,
 		&overlapped,
 	)
+}
+
+func isLockContention(err error) bool {
+	return errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }
 
 func unlockFile(file *os.File) error {

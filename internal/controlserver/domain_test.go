@@ -22,6 +22,8 @@ import (
 	"github.com/FrankoonG/x-tier/internal/controlapi"
 	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
+	"github.com/FrankoonG/x-tier/internal/route"
+	"github.com/FrankoonG/x-tier/internal/xraycredential"
 )
 
 type domainTestProvider struct {
@@ -1372,6 +1374,14 @@ func TestDomainReadsRedactProfileCredentials(t *testing.T) {
 		ID: "vless", Kind: "vless",
 		VLESS: &configstore.VLESSProfile{UUID: "11111111-1111-4111-8111-111111111111", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true},
 	}
+	cfg.XrayProfiles["vless-alias"] = configstore.XrayProfile{
+		ID: "vless-alias", Kind: "vless",
+		VLESS: &configstore.VLESSProfile{UUID: "11111111-1111-4ead-8111-111111111111", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true},
+	}
+	cfg.XrayProfiles["vless-other"] = configstore.XrayProfile{
+		ID: "vless-other", Kind: "vless",
+		VLESS: &configstore.VLESSProfile{UUID: "22222222-2222-4222-8222-222222222222", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true},
+	}
 	cfg.XrayProfiles["socks"] = configstore.XrayProfile{
 		ID: "socks", Kind: "socks", SOCKS: &configstore.SOCKSProfile{Username: "operator", Password: "do-not-return-this"},
 	}
@@ -1390,6 +1400,22 @@ func TestDomainReadsRedactProfileCredentials(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte(`"id":"vless"`)) || !bytes.Contains(body, []byte(`"kind":"socks"`)) {
 		t.Fatalf("profile identity was not preserved: %s", body)
+	}
+	var response struct {
+		Profiles map[string]publicXrayProfile `json:"xray_profiles"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatal(err)
+	}
+	primary := response.Profiles["vless"].CredentialGroupID
+	if primary == "" || response.Profiles["vless-alias"].CredentialGroupID != primary {
+		t.Fatalf("equivalent VLESS profiles were not grouped: %+v", response.Profiles)
+	}
+	if response.Profiles["vless-other"].CredentialGroupID == "" || response.Profiles["vless-other"].CredentialGroupID == primary {
+		t.Fatalf("distinct VLESS profiles shared a group: %+v", response.Profiles)
+	}
+	if response.Profiles["socks"].CredentialGroupID != "" {
+		t.Fatalf("non-VLESS profile received credential group: %+v", response.Profiles["socks"])
 	}
 }
 
@@ -1509,6 +1535,147 @@ func TestDomainProfileValidationNeverEchoesCredential(t *testing.T) {
 		!bytes.Contains(body, []byte(`"message":"profile validation failed; credential details were redacted"`)) {
 		t.Fatalf("credential validation status=%d body=%s", status, body)
 	}
+}
+
+func TestDomainPeerCreateRequiresProfileWithoutInvokingCLI(t *testing.T) {
+	for index, direction := range []string{"inbound", "outbound", "bidirectional"} {
+		t.Run(direction, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
+				t.Fatal(err)
+			}
+			server := startTestServer(t, path)
+			forbidDomainCLIExecution(server)
+
+			status, body := requestDomain(t, server, http.MethodPost, controlapi.DomainPeersPath, controlapi.PeerCreateRequest{
+				DomainMutationRequest: domainMutationRequest(0, fmt.Sprintf("%032x", 0x420+index)),
+				Name:                  "B",
+				NodeID:                "node-b",
+				Addr:                  "127.0.0.1:24443",
+				Direction:             direction,
+			})
+			if status != http.StatusUnprocessableEntity ||
+				!bytes.Contains(body, []byte(`"error_code":"config.peer_profile_required"`)) {
+				t.Fatalf("profile-less %s peer status=%d body=%s", direction, status, body)
+			}
+			cfg, err := configstore.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Revision != 0 || len(cfg.Peers) != 0 {
+				t.Fatalf("rejected %s peer changed config: revision=%d peers=%+v", direction, cfg.Revision, cfg.Peers)
+			}
+			assertDomainNeverEnteredCLI(t, server)
+		})
+	}
+}
+
+func TestDomainPeerEnableValidatesRuntimeProfileWithoutInvokingCLI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := configstore.DefaultConfig()
+	cfg.Peers = []configstore.PeerConfig{{
+		Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, Enabled: false,
+	}}
+	if err := configstore.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	server := startTestServer(t, path)
+	forbidDomainCLIExecution(server)
+
+	status, body := requestDomain(t, server, http.MethodPatch, controlapi.DomainPeerStatePath, controlapi.PeerStateRequest{
+		DomainMutationRequest: domainMutationRequest(0, "43000000000000000000000000000000"),
+		Name:                  "C",
+		Enabled:               true,
+	})
+	if status != http.StatusUnprocessableEntity ||
+		!bytes.Contains(body, []byte(`"error_code":"config.peer_inbound_profile_incompatible"`)) {
+		t.Fatalf("profile-less peer enable status=%d body=%s", status, body)
+	}
+	stored, err := configstore.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != 0 || len(stored.Peers) != 1 || stored.Peers[0].Enabled {
+		t.Fatalf("rejected enable changed config: revision=%d peers=%+v", stored.Revision, stored.Peers)
+	}
+	assertDomainNeverEnteredCLI(t, server)
+}
+
+func TestDomainRepairsQuarantinedPeerWithoutCLIOrRevocationLoss(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := configstore.DefaultConfig()
+	cfg.XrayProfiles["retired"] = configstore.XrayProfile{
+		ID: "retired", Kind: "vless", VLESS: &configstore.VLESSProfile{
+			UUID: "66ad4540-b58c-4ad2-9926-ea63445a9b57", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+		},
+	}
+	cfg.XrayProfiles["fresh"] = configstore.XrayProfile{
+		ID: "fresh", Kind: "vless", VLESS: &configstore.VLESSProfile{
+			UUID: "16f5cc3e-8186-4751-b6cd-45cc70d4b4fe", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+		},
+	}
+	fingerprint, err := xraycredential.VLESSFingerprint(cfg.XrayProfiles["retired"].VLESS.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Peers = []configstore.PeerConfig{{
+		Name: "B", NodeID: "node-b", Direction: route.DirectionInbound,
+		XrayProfileID: "retired", Enabled: false, DisabledCause: configstore.PeerCredentialQuarantineCause,
+	}}
+	cfg.PeerCredentialQuarantines = []configstore.PeerCredentialQuarantine{{
+		CredentialFingerprint: fingerprint,
+		PeerNodeIDs:           []string{"node-b", "retired-node"},
+		Reason:                configstore.PeerCredentialCollisionReason,
+	}}
+	if err := configstore.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	server := startTestServer(t, path)
+	forbidDomainCLIExecution(server)
+
+	status, body := requestDomain(t, server, http.MethodPatch, controlapi.DomainPeerStatePath, controlapi.PeerStateRequest{
+		DomainMutationRequest: domainMutationRequest(0, "43100000000000000000000000000000"),
+		Name:                  "B",
+		Enabled:               false,
+		Reason:                "maintenance",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("disable quarantined peer status=%d body=%s", status, body)
+	}
+	loaded, err := configstore.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != 1 || !configstore.IsPeerCredentialQuarantined(loaded.Peers[0]) {
+		t.Fatalf("HTTP disable cleared quarantine: revision=%d peer=%+v", loaded.Revision, loaded.Peers[0])
+	}
+
+	profileID := "fresh"
+	status, body = requestDomain(t, server, http.MethodPatch, controlapi.DomainPeersPath, controlapi.PeerUpdateRequest{
+		DomainMutationRequest: domainMutationRequest(1, "43100000000000000000000000000001"),
+		Name:                  "B",
+		Patch:                 controlapi.PeerPatch{XrayProfileID: &profileID},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("profile rotation status=%d body=%s", status, body)
+	}
+	status, body = requestDomain(t, server, http.MethodPatch, controlapi.DomainPeerStatePath, controlapi.PeerStateRequest{
+		DomainMutationRequest: domainMutationRequest(2, "43100000000000000000000000000002"),
+		Name:                  "B",
+		Enabled:               true,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("enable after rotation status=%d body=%s", status, body)
+	}
+	loaded, err = configstore.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != 3 || !loaded.Peers[0].Enabled || loaded.Peers[0].XrayProfileID != "fresh" ||
+		loaded.Peers[0].DisabledCause != "" || len(loaded.PeerCredentialQuarantines) != 1 {
+		t.Fatalf("HTTP repair result = revision:%d peer:%+v quarantines:%+v", loaded.Revision, loaded.Peers[0], loaded.PeerCredentialQuarantines)
+	}
+	assertDomainNeverEnteredCLI(t, server)
 }
 
 func TestDomainCurrentWebOperationsEndToEndWithoutCLI(t *testing.T) {

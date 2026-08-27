@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,20 +27,26 @@ import (
 )
 
 type Config struct {
-	SchemaVersion    int                        `json:"schema_version"`
-	Revision         int64                      `json:"revision"`
-	Node             NodeConfig                 `json:"node"`
-	System           settings.Config            `json:"system"`
-	NodeInbound      []InboundConfig            `json:"node_inbound,omitempty"`
-	Peers            []PeerConfig               `json:"peers,omitempty"`
-	XrayProfiles     map[string]XrayProfile     `json:"xray_profiles,omitempty"`
-	PeerTrust        map[string]PeerTrustGrant  `json:"peer_trust,omitempty"`
-	NodeEgressGrants map[string]NodeEgressGrant `json:"node_egress_grants,omitempty"`
+	SchemaVersion             int                        `json:"schema_version"`
+	Revision                  int64                      `json:"revision"`
+	Node                      NodeConfig                 `json:"node"`
+	System                    settings.Config            `json:"system"`
+	NodeInbound               []InboundConfig            `json:"node_inbound,omitempty"`
+	Peers                     []PeerConfig               `json:"peers,omitempty"`
+	XrayProfiles              map[string]XrayProfile     `json:"xray_profiles,omitempty"`
+	PeerTrust                 map[string]PeerTrustGrant  `json:"peer_trust,omitempty"`
+	NodeEgressGrants          map[string]NodeEgressGrant `json:"node_egress_grants,omitempty"`
+	PeerCredentialQuarantines []PeerCredentialQuarantine `json:"peer_credential_quarantines,omitempty"`
 }
 
 const (
-	CurrentSchemaVersion = 2
-	maxConfigBackups     = 5
+	CurrentSchemaVersion          = 2
+	maxConfigBackups              = 5
+	preMigrationConfigSuffix      = ".pre-migration"
+	rejectedConfigSuffix          = ".rejected"
+	PeerCredentialQuarantineCause = "disabled during migration: shared VLESS credential quarantined; assign a new unique profile before enabling"
+	PeerCredentialRotatedDisabled = "disabled after credential rotation; enable explicitly"
+	PeerCredentialCollisionReason = "shared_vless_credential"
 )
 
 type NodeConfig struct {
@@ -78,6 +85,29 @@ type PeerConfig struct {
 	RendrCapable  bool            `json:"rendr_capable"`
 	InstanceID    string          `json:"rendr_instance_id,omitempty"`
 	Children      []PeerConfig    `json:"children,omitempty"`
+}
+
+func IsPeerCredentialQuarantined(peer PeerConfig) bool {
+	return peer.DisabledCause == PeerCredentialQuarantineCause
+}
+
+type PeerCredentialQuarantine struct {
+	CredentialFingerprint string   `json:"credential_fingerprint"`
+	PeerNodeIDs           []string `json:"peer_node_ids"`
+	Reason                string   `json:"reason"`
+}
+
+func IsVLESSCredentialQuarantined(cfg Config, rawCredential string) bool {
+	fingerprint, err := xraycredential.VLESSFingerprint(rawCredential)
+	if err != nil {
+		return false
+	}
+	for _, quarantine := range cfg.PeerCredentialQuarantines {
+		if quarantine.CredentialFingerprint == fingerprint {
+			return true
+		}
+	}
+	return false
 }
 
 type XrayProfile struct {
@@ -256,7 +286,7 @@ func loadOrMigrateWithLock(path string, persistMissing bool, withLock func(func(
 		if os.IsNotExist(readErr) {
 			cfg = DefaultConfig()
 			if persistMissing {
-				if saveErr := Save(lockedPath, cfg); saveErr != nil {
+				if saveErr := savePathUnlocked(lockedPath, cfg); saveErr != nil {
 					return configErrorf("config.initial_write: %w", saveErr)
 				}
 			}
@@ -273,11 +303,41 @@ func loadOrMigrateWithLock(path string, persistMissing bool, withLock func(func(
 			return configErrorf("config.schema_newer: have %d support %d", schemaVersion, CurrentSchemaVersion)
 		}
 		if versioned && schemaVersion == CurrentSchemaVersion {
-			strict, strictErr := decodeConfig(payload)
-			if strictErr != nil {
-				return strictErr
+			current, currentErr := decodeRepairableConfig(payload)
+			if currentErr != nil {
+				return currentErr
 			}
-			cfg = strict
+			cfg = current
+			ledger, ledgerExists, ledgerErr := loadPathPeerCredentialLedger(lockedPath)
+			if ledgerErr != nil {
+				return ledgerErr
+			}
+			changed, quarantineErr := mergeCredentialLedgerIntoConfig(&cfg, ledger)
+			if quarantineErr != nil {
+				return markContentError(quarantineErr)
+			}
+			ledgerCurrent := ledgerExists && reflect.DeepEqual(ledger, cfg.PeerCredentialQuarantines)
+			if !changed {
+				if !ledgerCurrent {
+					if _, err := persistPathPeerCredentialLedger(lockedPath, cfg.PeerCredentialQuarantines); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			if cfg.Revision == math.MaxInt64 {
+				return configErrorf("config.revision_exhausted")
+			}
+			cfg.Revision++
+			saveErr := savePathUnlocked(lockedPath, cfg)
+			if saveErr = confirmMigrationWrite(cfg, saveErr, func() (Config, error) {
+				return loadExisting(lockedPath)
+			}, func() error {
+				return syncParentDirectory(filepath.Dir(lockedPath))
+			}); saveErr != nil {
+				return configErrorf("config.peer_credential_quarantine_write: %w", saveErr)
+			}
+			migrated = true
 			return nil
 		}
 		legacy, legacyErr := decodeMigratableConfig(payload, schemaVersion, versioned)
@@ -288,8 +348,20 @@ func loadOrMigrateWithLock(path string, persistMissing bool, withLock func(func(
 			return configErrorf("config.revision_exhausted")
 		}
 		legacy.SchemaVersion = CurrentSchemaVersion
+		ledger, _, ledgerErr := loadPathPeerCredentialLedger(lockedPath)
+		if ledgerErr != nil {
+			return ledgerErr
+		}
+		if _, quarantineErr := mergeCredentialLedgerIntoConfig(&legacy, ledger); quarantineErr != nil {
+			return markContentError(quarantineErr)
+		}
 		legacy.Revision++
-		if saveErr := Save(lockedPath, legacy); saveErr != nil {
+		saveErr := saveMigratedPath(lockedPath, legacy, payload)
+		if saveErr = confirmMigrationWrite(legacy, saveErr, func() (Config, error) {
+			return loadExisting(lockedPath)
+		}, func() error {
+			return syncParentDirectory(filepath.Dir(lockedPath))
+		}); saveErr != nil {
 			return configErrorf("config.legacy_migration_write: %w", saveErr)
 		}
 		cfg = legacy
@@ -312,9 +384,11 @@ func decodeMigratableConfig(payload []byte, schemaVersion int, versioned bool) (
 			schemaVersion, CurrentSchemaVersion,
 		))
 	}
-	// A strict current-shape decode proves an unversioned file contains no field
-	// this binary would silently discard before the schema marker is added.
-	return decodeConfig(payload)
+	// A field-strict current-shape decode proves an unversioned file contains no
+	// field this binary would silently discard before the schema marker is added.
+	// Runtime-invalid historical credential sharing remains available only so
+	// this migration path can quarantine it before publication.
+	return decodeRepairableConfig(payload)
 }
 
 func decodeConfigV1(payload []byte) (Config, error) {
@@ -348,7 +422,7 @@ func decodeConfigV1(payload []byte) (Config, error) {
 		NodeEgressGrants: map[string]NodeEgressGrant{},
 	}
 	normalize(&cfg)
-	if err := Validate(cfg); err != nil {
+	if err := validateLoadableConfig(cfg); err != nil {
 		return Config{}, markContentError(err)
 	}
 	return cfg, nil
@@ -397,10 +471,32 @@ func loadExisting(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return decodeConfig(b)
+	cfg, err := decodeConfig(b)
+	if err != nil {
+		return Config{}, err
+	}
+	ledger, exists, err := loadPathPeerCredentialLedger(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := validateConfigMatchesCredentialLedger(cfg, ledger, exists); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func decodeConfig(b []byte) (Config, error) {
+	return decodeConfigWithValidation(b, Validate)
+}
+
+// decodeRepairableConfig accepts only the historical peer-credential states
+// that the dedicated migration and recovery flows can quarantine before the
+// configuration reaches a runtime reader.
+func decodeRepairableConfig(b []byte) (Config, error) {
+	return decodeConfigWithValidation(b, validateLoadableConfig)
+}
+
+func decodeConfigWithValidation(b []byte, validate func(Config) error) (Config, error) {
 	if err := preflightConfigJSON(b); err != nil {
 		return Config{}, err
 	}
@@ -417,14 +513,14 @@ func decodeConfig(b []byte) (Config, error) {
 		return Config{}, markContentError(err)
 	}
 	normalize(&cfg)
-	if err := Validate(cfg); err != nil {
+	if err := validate(cfg); err != nil {
 		return Config{}, markContentError(err)
 	}
 	return cfg, nil
 }
 
-// DecodeDocument strictly decodes one complete configuration document. It is
-// the shared boundary for path-backed, object-backed, and migration reads.
+// DecodeDocument strictly decodes one complete, runtime-valid configuration
+// document.
 func DecodeDocument(payload []byte) (Config, error) {
 	return decodeConfig(payload)
 }
@@ -455,10 +551,17 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 }
 
 func Save(path string, cfg Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	canonical, err := CanonicalPath(path)
+	if err != nil {
+		return configErrorf("config.backup_read: %w", err)
 	}
-	b, err := EncodeDocument(cfg)
+	return withLockedPathKey(canonical, canonical, false, true, func(lockedPath string) error {
+		return savePathUnlocked(lockedPath, cfg)
+	})
+}
+
+func savePathUnlocked(path string, cfg Config) error {
+	b, err := preparePathConfigPublication(path, cfg)
 	if err != nil {
 		return err
 	}
@@ -475,6 +578,36 @@ func Save(path string, cfg Config) error {
 		return configErrorf("config.backup_read: %w", err)
 	}
 	if err := writeFileAtomic(path, b, 0o600); err != nil {
+		return configErrorf("config.write: %w", err)
+	}
+	return nil
+}
+
+func saveMigratedPath(path string, cfg Config, source []byte) error {
+	payload, err := preparePathConfigPublication(path, cfg)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(path+preMigrationConfigSuffix, source, 0o600); err != nil {
+		return configErrorf("config.pre_migration_write: %w", err)
+	}
+	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+		return configErrorf("config.write: %w", err)
+	}
+	return nil
+}
+
+// saveRestoredPath retains the most recently replaced active payload in one
+// secure, non-authoritative diagnostic slot.
+func saveRestoredPath(path string, cfg Config, rejected []byte) error {
+	payload, err := preparePathConfigPublication(path, cfg)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(path+rejectedConfigSuffix, rejected, 0o600); err != nil {
+		return configErrorf("config.rejected_write: %w", err)
+	}
+	if err := writeFileAtomic(path, payload, 0o600); err != nil {
 		return configErrorf("config.write: %w", err)
 	}
 	return nil
@@ -545,7 +678,7 @@ func withLockedPathKey(path, ownershipKey string, acquireStable, pinPath bool, f
 		return configErrorf("config.lock_open: %w", err)
 	}
 	defer f.Close()
-	if err := lockFileExclusive(f); err != nil {
+	if err := lockFileExclusiveBounded(f); err != nil {
 		return configErrorf("config.locked: %w", err)
 	}
 	defer unlockFile(f)
@@ -572,7 +705,7 @@ func UpdateCAS(path string, expectedRevision int64, mutate func(*Config) error) 
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	return updateCASWith(canonical, expectedRevision, mutate, LoadExisting, Save)
+	return updateCASWith(canonical, expectedRevision, mutate, LoadExisting, savePathUnlocked)
 }
 
 // UpdatePinnedCAS is for a daemon that already holds the lifetime ownership
@@ -582,9 +715,36 @@ func UpdatePinnedCAS(configPath, canonicalKey string, expectedRevision int64, mu
 	if canonicalKey == "" {
 		return UpdateResult{}, configErrorf("config.ownership_key_required")
 	}
-	return updateCASWithLock(configPath, expectedRevision, mutate, LoadExisting, Save, func(fn func(string) error) error {
+	return updateCASWithLock(configPath, expectedRevision, mutate, LoadExisting, savePathUnlocked, func(fn func(string) error) error {
 		return withLockedPathKey(configPath, canonicalKey, false, false, fn)
 	})
+}
+
+func confirmMigrationWrite(
+	cfg Config,
+	saveErr error,
+	loadConfig func() (Config, error),
+	syncConfigParent func() error,
+) error {
+	if saveErr == nil || CommitVisible(saveErr) {
+		return nil
+	}
+	if !errors.Is(saveErr, ErrCommitOutcomeUnknown) {
+		return saveErr
+	}
+	observed, loadErr := loadConfig()
+	expected := cfg
+	normalize(&expected)
+	if loadErr == nil && reflect.DeepEqual(observed, expected) {
+		if syncErr := syncConfigParent(); syncErr != nil {
+			return errors.Join(saveErr, configErrorf("config.migration_commit_confirmation_sync: %w", syncErr))
+		}
+		return nil
+	}
+	if loadErr == nil {
+		loadErr = configErrorf("config.migration_commit_confirmation_mismatch")
+	}
+	return errors.Join(saveErr, loadErr)
 }
 
 func updateCASWith(
@@ -662,6 +822,14 @@ func updateCASWithLock(
 }
 
 func Validate(cfg Config) error {
+	return validateConfig(cfg, true)
+}
+
+func validateLoadableConfig(cfg Config) error {
+	return validateConfig(cfg, false)
+}
+
+func validateConfig(cfg Config, enforceAllPeerCredentials bool) error {
 	if cfg.SchemaVersion != CurrentSchemaVersion {
 		return configErrorf("config.schema_unsupported: have %d support %d", cfg.SchemaVersion, CurrentSchemaVersion)
 	}
@@ -690,10 +858,14 @@ func Validate(cfg Config) error {
 	if err := validateCredentialSeparation(cfg.XrayProfiles); err != nil {
 		return err
 	}
+	quarantinedCredentials, err := validatePeerCredentialQuarantines(cfg.PeerCredentialQuarantines)
+	if err != nil {
+		return err
+	}
 	if cfg.Node.Role != "" && cfg.Node.Role != "fat" && cfg.Node.Role != "thin" {
 		return configErrorf("config.role_invalid: %s", cfg.Node.Role)
 	}
-	if err := validatePeers(cfg.Peers, cfg.XrayProfiles); err != nil {
+	if err := validatePeers(cfg.Peers, cfg.XrayProfiles, quarantinedCredentials, enforceAllPeerCredentials); err != nil {
 		return err
 	}
 	if err := validateNodeEgressGrants(cfg.NodeEgressGrants, cfg.Peers); err != nil {
@@ -778,6 +950,12 @@ func LocalProfileInUse(cfg Config, id string) bool {
 func SortStable(cfg *Config) {
 	sort.SliceStable(cfg.Peers, func(i, j int) bool { return cfg.Peers[i].Name < cfg.Peers[j].Name })
 	sort.SliceStable(cfg.NodeInbound, func(i, j int) bool { return cfg.NodeInbound[i].Kind < cfg.NodeInbound[j].Kind })
+	for index := range cfg.PeerCredentialQuarantines {
+		sort.Strings(cfg.PeerCredentialQuarantines[index].PeerNodeIDs)
+	}
+	sort.SliceStable(cfg.PeerCredentialQuarantines, func(i, j int) bool {
+		return cfg.PeerCredentialQuarantines[i].CredentialFingerprint < cfg.PeerCredentialQuarantines[j].CredentialFingerprint
+	})
 }
 
 func normalize(cfg *Config) {
@@ -994,10 +1172,47 @@ func normalizePeers(peers []PeerConfig) {
 	}
 }
 
-func validatePeers(peers []PeerConfig, profiles map[string]XrayProfile) error {
+func validatePeerCredentialQuarantines(quarantines []PeerCredentialQuarantine) (map[string]struct{}, error) {
+	fingerprints := make(map[string]struct{}, len(quarantines))
+	for _, quarantine := range quarantines {
+		fingerprint := quarantine.CredentialFingerprint
+		decoded, err := hex.DecodeString(fingerprint)
+		if err != nil || len(decoded) != 32 || fingerprint != strings.ToLower(fingerprint) {
+			return nil, configErrorf("config.peer_credential_quarantine_fingerprint_invalid")
+		}
+		if _, duplicate := fingerprints[fingerprint]; duplicate {
+			return nil, configErrorf("config.peer_credential_quarantine_duplicate: %s", fingerprint)
+		}
+		if quarantine.Reason != PeerCredentialCollisionReason {
+			return nil, configErrorf("config.peer_credential_quarantine_reason_invalid: %s", quarantine.Reason)
+		}
+		if len(quarantine.PeerNodeIDs) == 0 {
+			return nil, configErrorf("config.peer_credential_quarantine_peers_required: %s", fingerprint)
+		}
+		seenNodeIDs := make(map[string]struct{}, len(quarantine.PeerNodeIDs))
+		for _, nodeID := range quarantine.PeerNodeIDs {
+			if nodeID == "" || strings.TrimSpace(nodeID) != nodeID {
+				return nil, configErrorf("config.peer_credential_quarantine_peer_invalid: %s", fingerprint)
+			}
+			if _, duplicate := seenNodeIDs[nodeID]; duplicate {
+				return nil, configErrorf("config.peer_credential_quarantine_peer_duplicate: %s %s", fingerprint, nodeID)
+			}
+			seenNodeIDs[nodeID] = struct{}{}
+		}
+		fingerprints[fingerprint] = struct{}{}
+	}
+	return fingerprints, nil
+}
+
+func validatePeers(
+	peers []PeerConfig,
+	profiles map[string]XrayProfile,
+	quarantinedCredentials map[string]struct{},
+	enforceAllPeerCredentials bool,
+) error {
 	seenNames := map[string]bool{}
 	seenNodeIDs := map[string]bool{}
-	inboundCredentials := map[string]string{}
+	peerCredentials := map[string]string{}
 	var walk func([]PeerConfig, bool) error
 	walk = func(level []PeerConfig, directlyManaged bool) error {
 		for _, p := range level {
@@ -1036,15 +1251,31 @@ func validatePeers(peers []PeerConfig, profiles map[string]XrayProfile) error {
 				if p.Enabled && p.Direction.CanAcceptInbound() && (!hasProfile || profile.Kind != "vless" || profile.VLESS == nil) {
 					return configErrorf("config.peer_inbound_profile_incompatible: %s", p.Name)
 				}
-				if p.Enabled && p.Direction.CanAcceptInbound() && hasProfile && profile.VLESS != nil {
+				if IsPeerCredentialQuarantined(p) && enforceAllPeerCredentials && hasProfile && profile.Kind == "vless" && profile.VLESS != nil {
+					fingerprint, err := xraycredential.VLESSFingerprint(profile.VLESS.UUID)
+					if err != nil {
+						return configErrorf("config.peer_credential_invalid: %s", p.Name)
+					}
+					if _, recorded := quarantinedCredentials[fingerprint]; !recorded {
+						return configErrorf("config.peer_credential_quarantine_record_missing: %s", p.Name)
+					}
+				}
+				if p.Enabled && hasProfile && profile.Kind == "vless" && profile.VLESS != nil && enforceAllPeerCredentials {
 					credentialKey, err := xraycredential.VLESSKey(profile.VLESS.UUID)
 					if err != nil {
-						return configErrorf("config.peer_inbound_credential_invalid: %s", p.Name)
+						return configErrorf("config.peer_credential_invalid: %s", p.Name)
 					}
-					if previous := inboundCredentials[credentialKey]; previous != "" && previous != p.NodeID {
-						return configErrorf("config.peer_inbound_credential_duplicate: %s %s", previous, p.NodeID)
+					fingerprint, err := xraycredential.VLESSFingerprint(profile.VLESS.UUID)
+					if err != nil {
+						return configErrorf("config.peer_credential_invalid: %s", p.Name)
 					}
-					inboundCredentials[credentialKey] = p.NodeID
+					if _, quarantined := quarantinedCredentials[fingerprint]; quarantined {
+						return configErrorf("config.peer_credential_quarantined: %s", p.Name)
+					}
+					if previous := peerCredentials[credentialKey]; previous != "" && previous != p.NodeID {
+						return configErrorf("config.peer_credential_duplicate: %s %s", previous, p.NodeID)
+					}
+					peerCredentials[credentialKey] = p.NodeID
 				}
 				if p.Enabled && p.Direction.CanDialOutbound() && hasProfile && profile.Kind == "vless" && profile.VLESS != nil {
 					address := p.GatewayAddr
@@ -1063,6 +1294,107 @@ func validatePeers(peers []PeerConfig, profiles map[string]XrayProfile) error {
 		return nil
 	}
 	return walk(peers, true)
+}
+
+func quarantinePeerCredentialCollisions(cfg *Config) (bool, error) {
+	type credentialGroup struct {
+		bound   []int
+		enabled int
+		marked  bool
+		revoked bool
+		nodeIDs map[string]struct{}
+	}
+	groups := make(map[string]*credentialGroup, len(cfg.Peers)+len(cfg.PeerCredentialQuarantines))
+	recordIndexes := make(map[string]int, len(cfg.PeerCredentialQuarantines))
+	for index, quarantine := range cfg.PeerCredentialQuarantines {
+		group := &credentialGroup{revoked: true, nodeIDs: make(map[string]struct{}, len(quarantine.PeerNodeIDs))}
+		for _, nodeID := range quarantine.PeerNodeIDs {
+			group.nodeIDs[nodeID] = struct{}{}
+		}
+		groups[quarantine.CredentialFingerprint] = group
+		recordIndexes[quarantine.CredentialFingerprint] = index
+	}
+	for index := range cfg.Peers {
+		peer := cfg.Peers[index]
+		profile, ok := cfg.XrayProfiles[peer.XrayProfileID]
+		if !ok || profile.Kind != "vless" || profile.VLESS == nil {
+			continue
+		}
+		fingerprint, err := xraycredential.VLESSFingerprint(profile.VLESS.UUID)
+		if err != nil {
+			continue
+		}
+		group := groups[fingerprint]
+		if group == nil {
+			group = &credentialGroup{nodeIDs: map[string]struct{}{}}
+			groups[fingerprint] = group
+		}
+		group.bound = append(group.bound, index)
+		if peer.Enabled {
+			group.enabled++
+		}
+		if IsPeerCredentialQuarantined(peer) {
+			group.marked = true
+		}
+	}
+
+	quarantinedNodeIDs := make(map[string]struct{}, len(cfg.Peers))
+	quarantinedNames := make(map[string]struct{}, len(cfg.Peers))
+	changed := false
+	for fingerprint, group := range groups {
+		if !group.revoked && !group.marked && group.enabled < 2 {
+			continue
+		}
+		for _, index := range group.bound {
+			peer := &cfg.Peers[index]
+			group.nodeIDs[peer.NodeID] = struct{}{}
+			quarantinedNodeIDs[peer.NodeID] = struct{}{}
+			quarantinedNames[peer.Name] = struct{}{}
+			if peer.Enabled || peer.DisabledCause != PeerCredentialQuarantineCause {
+				peer.Enabled = false
+				peer.DisabledCause = PeerCredentialQuarantineCause
+				changed = true
+			}
+		}
+
+		nodeIDs := make([]string, 0, len(group.nodeIDs))
+		for nodeID := range group.nodeIDs {
+			nodeIDs = append(nodeIDs, nodeID)
+		}
+		sort.Strings(nodeIDs)
+		if recordIndex, exists := recordIndexes[fingerprint]; exists {
+			record := &cfg.PeerCredentialQuarantines[recordIndex]
+			if !reflect.DeepEqual(record.PeerNodeIDs, nodeIDs) {
+				record.PeerNodeIDs = nodeIDs
+				changed = true
+			}
+		} else {
+			cfg.PeerCredentialQuarantines = append(cfg.PeerCredentialQuarantines, PeerCredentialQuarantine{
+				CredentialFingerprint: fingerprint,
+				PeerNodeIDs:           nodeIDs,
+				Reason:                PeerCredentialCollisionReason,
+			})
+			changed = true
+		}
+	}
+
+	for index := range cfg.NodeInbound {
+		inbound := &cfg.NodeInbound[index]
+		if !inbound.Enabled || inbound.ExitPeer == "" {
+			continue
+		}
+		_, byNodeID := quarantinedNodeIDs[inbound.ExitPeer]
+		_, byName := quarantinedNames[inbound.ExitPeer]
+		if byNodeID || byName {
+			inbound.Enabled = false
+			inbound.DisabledCause = "disabled during migration: exit peer credential was quarantined"
+			changed = true
+		}
+	}
+	if err := Validate(*cfg); err != nil {
+		return false, configErrorf("config.peer_credential_quarantine_invalid: %w", err)
+	}
+	return changed, nil
 }
 
 // ValidateIsolatedPlaintextEndpoint confines the initial VLESS/TCP plaintext

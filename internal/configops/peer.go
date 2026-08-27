@@ -7,9 +7,14 @@ import (
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/route"
+	"github.com/FrankoonG/x-tier/internal/xraycredential"
 )
 
 const (
+	CodePeerIdentityRequired          = "config.peer_identity_required"
+	CodePeerExists                    = "config.peer_exists"
+	CodePeerProfileRequired           = "config.peer_profile_required"
+	CodePeerCredentialQuarantined     = "config.peer_credential_quarantined"
 	CodePeerUnknown                   = "config.peer_unknown"
 	CodePeerInUse                     = "config.peer_in_use"
 	CodePeerDirectionInvalid          = "config.peer_direction_invalid"
@@ -22,6 +27,42 @@ type PeerMutationResult struct {
 	Config                 configstore.Config
 	Peer                   configstore.PeerConfig
 	NodeEgressGrantRevoked bool
+}
+
+// AddPeer appends one directly managed peer to a detached Config value. All
+// enabled peer directions participate in the VLESS carrier and therefore need
+// an explicit profile before the candidate reaches persistent validation.
+func AddPeer(source configstore.Config, peer configstore.PeerConfig) (PeerMutationResult, error) {
+	if peer.Name == "" || peer.NodeID == "" {
+		return PeerMutationResult{}, publicerr.Errorf(
+			CodePeerIdentityRequired,
+			"peer name and node ID are required",
+		)
+	}
+	if !validDirection(peer.Direction) {
+		return PeerMutationResult{}, publicerr.Errorf(
+			CodePeerDirectionInvalid,
+			"peer direction %q is invalid",
+			peer.Direction,
+		)
+	}
+	if peer.Enabled && peer.XrayProfileID == "" {
+		return PeerMutationResult{}, publicerr.Errorf(
+			CodePeerProfileRequired,
+			"enabled peer %q requires a VLESS profile",
+			peer.Name,
+		)
+	}
+
+	candidate := cloneConfig(source)
+	if _, _, found := configstore.FindPeer(candidate.Peers, peer.Name); found {
+		return PeerMutationResult{}, publicerr.Errorf(CodePeerExists, "peer %q already exists", peer.Name)
+	}
+	if _, _, found := configstore.FindPeer(candidate.Peers, peer.NodeID); found {
+		return PeerMutationResult{}, publicerr.Errorf(CodePeerExists, "peer node ID %q already exists", peer.NodeID)
+	}
+	candidate.Peers = append(candidate.Peers, peer)
+	return PeerMutationResult{Config: candidate, Peer: peer}, nil
 }
 
 // RemovePeer removes a directly managed peer and its node egress grant from a
@@ -104,6 +145,23 @@ func UpdatePeerDirection(
 	}, nil
 }
 
+// UpdatePeerProfile changes a peer's profile binding. A security quarantine is
+// cleared only when the replacement credential is not Xray-equivalent to the
+// compromised credential; enabling remains a separate explicit operation.
+func UpdatePeerProfile(source configstore.Config, peerRef, profileID string) (PeerMutationResult, error) {
+	candidate := cloneConfig(source)
+	peer, index, found := configstore.FindPeer(candidate.Peers, peerRef)
+	if !found {
+		return PeerMutationResult{}, publicerr.Errorf(CodePeerUnknown, "peer %q was not found", peerRef)
+	}
+	peer.XrayProfileID = profileID
+	if configstore.IsPeerCredentialQuarantined(peer) && replacementCredentialAllowed(candidate, peer.NodeID, profileID) {
+		peer.DisabledCause = configstore.PeerCredentialRotatedDisabled
+	}
+	candidate.Peers[index] = peer
+	return PeerMutationResult{Config: candidate, Peer: peer}, nil
+}
+
 // SetPeerEnabled changes one peer's enabled state in a detached Config value.
 // Node egress grants intentionally survive temporary disable operations.
 func SetPeerEnabled(
@@ -118,16 +176,28 @@ func SetPeerEnabled(
 	if !found {
 		return PeerMutationResult{}, publicerr.Errorf(CodePeerUnknown, "peer %q was not found", peerRef)
 	}
+	if enabled && configstore.IsPeerCredentialQuarantined(peer) {
+		return PeerMutationResult{}, publicerr.Errorf(
+			CodePeerCredentialQuarantined,
+			"peer %q must rotate to a new unique VLESS credential before enabling",
+			peer.Name,
+		)
+	}
 	peer.Enabled = enabled
 	if enabled {
 		peer.DisabledCause = ""
-	} else {
+	} else if !configstore.IsPeerCredentialQuarantined(peer) {
 		peer.DisabledCause = disabledCause
 		if peer.DisabledCause == "" {
 			peer.DisabledCause = "disabled"
 		}
 	}
 	candidate.Peers[index] = peer
+	if enabled {
+		if err := configstore.Validate(candidate); err != nil {
+			return PeerMutationResult{}, err
+		}
+	}
 	return PeerMutationResult{Config: candidate, Peer: peer}, nil
 }
 
@@ -138,6 +208,7 @@ func cloneConfig(source configstore.Config) configstore.Config {
 	clone.XrayProfiles = cloneXrayProfiles(source.XrayProfiles)
 	clone.PeerTrust = clonePeerTrust(source.PeerTrust)
 	clone.NodeEgressGrants = cloneNodeEgressGrants(source.NodeEgressGrants)
+	clone.PeerCredentialQuarantines = clonePeerCredentialQuarantines(source.PeerCredentialQuarantines)
 	return clone
 }
 
@@ -187,6 +258,14 @@ func cloneNodeEgressGrants(source map[string]configstore.NodeEgressGrant) map[st
 	return clone
 }
 
+func clonePeerCredentialQuarantines(source []configstore.PeerCredentialQuarantine) []configstore.PeerCredentialQuarantine {
+	clone := slices.Clone(source)
+	for index := range clone {
+		clone[index].PeerNodeIDs = slices.Clone(source[index].PeerNodeIDs)
+	}
+	return clone
+}
+
 func validDirection(direction route.Direction) bool {
 	switch direction {
 	case route.DirectionInbound, route.DirectionOutbound, route.DirectionBidirectional:
@@ -194,4 +273,36 @@ func validDirection(direction route.Direction) bool {
 	default:
 		return false
 	}
+}
+
+func replacementCredentialAllowed(cfg configstore.Config, peerNodeID, replacementProfileID string) bool {
+	if replacementProfileID == "" {
+		return false
+	}
+	replacement, replacementOK := cfg.XrayProfiles[replacementProfileID]
+	if !replacementOK || replacement.Kind != "vless" || replacement.VLESS == nil {
+		return false
+	}
+	if configstore.IsVLESSCredentialQuarantined(cfg, replacement.VLESS.UUID) {
+		return false
+	}
+	for _, other := range cfg.Peers {
+		if other.NodeID == peerNodeID {
+			continue
+		}
+		profile, ok := cfg.XrayProfiles[other.XrayProfileID]
+		if !ok || profile.Kind != "vless" || profile.VLESS == nil {
+			continue
+		}
+		if sameVLESSCredential(replacement.VLESS.UUID, profile.VLESS.UUID) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameVLESSCredential(first, second string) bool {
+	firstKey, firstErr := xraycredential.VLESSKey(first)
+	secondKey, secondErr := xraycredential.VLESSKey(second)
+	return firstErr == nil && secondErr == nil && firstKey == secondKey
 }

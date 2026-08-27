@@ -52,6 +52,11 @@ import {
 import type { SelectOption } from '@stratum/ui';
 import type { Direction, PeerConfig, XrayProfile } from '../../api/types';
 import { mutations, type DomainMutation, type PeerPatchInput } from '../../api/control';
+import {
+  peerCredentialGroupOwners,
+  peerProfileErrors,
+  peerProfileOwner,
+} from './peerProfileValidation';
 
 export interface PeerFormProps {
   /** `null` composes an add; a peer composes a patch. */
@@ -115,6 +120,7 @@ export function PeerForm({
 
   const all = useMemo(() => flatten(existing), [existing]);
   const dialable = draft.direction !== 'inbound';
+  const profileRequired = peer?.enabled ?? true;
   const losesInboundPermission = peer !== null
     && peer.direction !== 'outbound'
     && draft.direction === 'outbound';
@@ -122,6 +128,10 @@ export function PeerForm({
     () => (profiles ?? []).filter((profile) => profile.kind === 'vless'),
     [profiles],
   );
+  const profileOwners = useMemo(() => {
+    return peerCredentialGroupOwners(existing, profiles, peer?.name);
+  }, [existing, peer?.name, profiles]);
+  const selectedProfileOwner = peerProfileOwner(draft.xray_profile_id, profiles, profileOwners);
 
   /* Local validation covers only what the panel can know without asking. The
    * daemon remains authoritative — these exist to avoid a round trip for a
@@ -158,37 +168,30 @@ export function PeerForm({
     if (losesInboundPermission && hasNodeEgressGrant === null) {
       e.direction = 'Node egress grants were not read, so an attached grant cannot be revoked atomically.';
     }
-    const profileID = draft.xray_profile_id.trim();
-    if (dialable && !profileID) {
-      e.xray_profile_id = 'Required for a peer this node may dial.';
-    } else if (profileID && profiles === null) {
-      e.xray_profile_id = 'Profiles were not read, so this selection cannot be verified.';
-    } else if (profileID) {
-      const selected = profiles?.find((profile) => profile.id === profileID);
-      if (!selected) {
-        e.xray_profile_id = `The configuration does not define profile ${profileID}.`;
-      } else if (selected.kind !== 'vless') {
-        e.xray_profile_id = `Peer outbounds require a VLESS profile; ${profileID} is ${selected.kind}.`;
-      }
+    Object.assign(e, peerProfileErrors(draft.xray_profile_id, profiles, profileRequired));
+    if (profileRequired && !e.xray_profile_id && selectedProfileOwner) {
+      e.xray_profile_id = `This profile is already assigned to enabled peer ${selectedProfileOwner}.`;
     }
     return e;
-  }, [draft, all, dialable, isNew, profiles, losesInboundPermission, hasNodeEgressGrant]);
+  }, [draft, all, dialable, isNew, profiles, profileRequired, selectedProfileOwner, losesInboundPermission, hasNodeEgressGrant]);
 
-  const valid = Object.keys(errors).length === 0;
+  const valid = Object.values(errors).every((message) => message === undefined);
 
   const profileOptions = useMemo(
     () => {
       const options: SelectOption[] = [
-        ...(!dialable ? [{ value: '', label: 'None' }] : []),
-        ...vlessProfiles.map((p) => ({
-          value: p.id,
-          label: p.id,
-          /* `kind` is the only descriptive field a profile has. `options` exists
-           * but the CLI replaces it with "[REDACTED]" before it leaves the
-           * process, because it can carry key material — so a profile is
-           * identifiable and classifiable here, never inspectable. */
-          description: 'VLESS',
-        })),
+        ...(!profileRequired ? [{ value: '', label: 'None' }] : []),
+        ...vlessProfiles.map((p) => {
+          const owner = peerProfileOwner(p.id, profiles, profileOwners);
+          return {
+            value: p.id,
+            label: p.id,
+            /* The equality-only group comes from the daemon; key material is
+             * never available to this panel. */
+            description: owner ? `VLESS; assigned to ${owner}` : 'VLESS',
+            disabled: profileRequired && owner !== undefined,
+          };
+        }),
       ];
       const selected = draft.xray_profile_id.trim();
       if (selected && !vlessProfiles.some((profile) => profile.id === selected)) {
@@ -202,7 +205,7 @@ export function PeerForm({
       }
       return options;
     },
-    [dialable, draft.xray_profile_id, profiles, vlessProfiles],
+    [draft.xray_profile_id, profileOwners, profileRequired, profiles, vlessProfiles],
   );
 
   const submission = useMemo(() => {
@@ -348,20 +351,24 @@ export function PeerForm({
         <FormGridItem span="full">
           <Field
             label="Transport profile"
-            required={dialable}
-            optional={!dialable}
+            required={profileRequired}
+            optional={!profileRequired}
             error={touched.xray_profile_id || touched.direction ? errors.xray_profile_id : undefined}
             description={
-              dialable
-                ? 'Required. Enabled dialable peers compile through a VLESS outbound.'
-                : 'Optional for an inbound-only peer. When selected, only VLESS profiles are valid here.'
+              !profileRequired
+                ? 'Optional while this peer is disabled. Enabling it requires a unique VLESS profile.'
+                : draft.direction === 'inbound'
+                  ? 'Required. Identifies the VLESS credential accepted from this peer.'
+                  : draft.direction === 'bidirectional'
+                    ? 'Required. Used for both the VLESS outbound and inbound peer identity.'
+                    : 'Required. Enabled dialable peers compile through a VLESS outbound.'
             }
           >
             <Select
               options={profileOptions}
               value={draft.xray_profile_id || ''}
               onChange={(v) => set('xray_profile_id', v ?? '')}
-              placeholder={dialable ? 'Select a VLESS profile' : 'None'}
+              placeholder={profileRequired ? 'Select a VLESS profile' : 'None'}
               emptyLabel="No VLESS profiles available"
               disabled={profiles === null}
               invalid={Boolean(
@@ -372,6 +379,16 @@ export function PeerForm({
             />
           </Field>
         </FormGridItem>
+
+        {!profileRequired && selectedProfileOwner && (
+          <FormGridItem span="full">
+            <InlineMessage variant="warning">
+              This profile is already active on peer {selectedProfileOwner}. This peer can stay
+              disabled with that value, but it cannot be enabled until a unique VLESS profile is
+              selected.
+            </InlineMessage>
+          </FormGridItem>
+        )}
 
         <FormGridItem span="full">
           <Switch

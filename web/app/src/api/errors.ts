@@ -174,6 +174,229 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
     severity: 'warning',
     blocked: true,
   },
+  'config.peer_profile_required': {
+    title: 'The peer needs a transport profile',
+    guidance:
+      'Every enabled peer needs its own VLESS profile. Select one in the peer form before '
+      + 'creating or enabling this entry.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.peer_profile_incompatible': {
+    title: 'The outbound peer profile cannot be used',
+    guidance:
+      'This enabled peer needs a defined VLESS profile for outbound traffic. Edit the peer and '
+      + 'select a compatible profile before enabling it.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.peer_inbound_profile_incompatible': {
+    title: 'The inbound peer credential is unavailable',
+    guidance:
+      'This enabled peer needs a defined VLESS profile so its inbound identity can be verified. '
+      + 'Edit the peer and select a compatible profile before enabling it.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.peer_credential_duplicate': {
+    title: 'That peer credential is already assigned',
+    guidance:
+      'Different node IDs cannot share a VLESS credential. Edit this peer and choose a unique '
+      + 'profile; an existing disabled entry may keep the value but cannot be enabled with it.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.peer_credential_quarantined': {
+    title: 'That peer credential was quarantined',
+    guidance:
+      'This credential previously crossed peer identity boundaries. Bind the peer to a new '
+      + 'unique VLESS profile, apply that change, and then enable the peer explicitly.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.peer_credential_invalid': {
+    title: 'The peer credential is invalid',
+    guidance:
+      'The selected VLESS profile does not contain a usable canonical credential. Repair or '
+      + 'replace that profile before enabling the peer.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_fingerprint_invalid': {
+    title: 'Credential quarantine evidence is malformed',
+    guidance:
+      'A durable quarantine fingerprint is not canonical. The daemon refused to guess which '
+      + 'credential it represents; recover the configuration from trusted evidence.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_duplicate': {
+    title: 'Credential quarantine evidence is duplicated',
+    guidance:
+      'The same retired credential appears in more than one durable quarantine record. Repair '
+      + 'the stored evidence before attempting another peer change.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_reason_invalid': {
+    title: 'Credential quarantine evidence has an invalid reason',
+    guidance:
+      'The durable record is not a recognized shared-credential quarantine. Recover or repair '
+      + 'the configuration before enabling any affected peer.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_peers_required': {
+    title: 'Credential quarantine evidence has no affected peers',
+    guidance:
+      'A durable record must retain the node IDs involved in the credential collision. Recover '
+      + 'that evidence before changing the affected peers.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_peer_invalid': {
+    title: 'Credential quarantine evidence has an invalid node ID',
+    guidance:
+      'One affected node ID is empty or non-canonical. The daemon will not discard that evidence '
+      + 'automatically; repair it from a trusted source.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_peer_duplicate': {
+    title: 'Credential quarantine evidence repeats a node ID',
+    guidance:
+      'An affected node is listed twice in one durable record. Repair the stored evidence before '
+      + 'attempting another peer mutation.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_record_missing': {
+    title: 'Credential quarantine evidence is incomplete',
+    guidance:
+      'A peer is marked quarantined but its durable credential record is missing. Recover the '
+      + 'record before rotating or enabling that peer.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_reason_conflict': {
+    title: 'Credential quarantine records conflict',
+    guidance:
+      'Two durable records disagree about why the same credential was retired. The daemon '
+      + 'refused to merge them; recover the evidence from a trusted source.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_quarantine_write': {
+    title: 'Credential quarantine was not safely persisted',
+    guidance:
+      'The daemon could not confirm the durable quarantine write. Re-read the configuration and '
+      + 'repair the storage failure before retrying.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.peer_credential_quarantine_invalid': {
+    title: 'Credential quarantine could not produce a valid configuration',
+    guidance:
+      'The daemon contained the collision in memory but strict validation still failed. No unsafe '
+      + 'runtime was published; inspect the stored configuration before retrying.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.peer_credential_ledger_read': {
+    title: 'Credential retirement ledger is unavailable',
+    guidance:
+      'The daemon cannot read the private monotonic credential ledger. Repair its ownership, '
+      + 'permissions, or storage before changing peers; the configuration was not trusted alone.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_ledger_decode': {
+    title: 'Credential retirement ledger is malformed',
+    guidance:
+      'The private ledger is not a complete supported document. Recover it from trusted host '
+      + 'evidence; the daemon will not discard retired credentials.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_ledger_version': {
+    title: 'Credential retirement ledger needs a different daemon version',
+    guidance:
+      'This daemon cannot interpret the stored ledger version. Use a compatible build before '
+      + 'performing peer or recovery operations.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_ledger_invalid': {
+    title: 'Credential retirement ledger contains invalid evidence',
+    guidance: 'Repair the private ledger from trusted evidence before retrying.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_ledger_missing': {
+    title: 'Credential retirement ledger has not been established',
+    guidance:
+      'A configuration containing retired credentials cannot be used until the daemon migrates '
+      + 'those records into its private monotonic ledger.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.peer_credential_ledger_mismatch': {
+    title: 'Configuration and credential ledger disagree',
+    guidance:
+      'The daemon refused the ordinary read so retired credentials cannot disappear during '
+      + 'rollback. Run the supported migration or restore path, then refresh.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.peer_credential_ledger_stale': {
+    title: 'The write would discard retired credentials',
+    guidance:
+      'The private ledger contains tombstones missing from this candidate. Re-read the current '
+      + 'configuration and retry through the daemon; do not overwrite the ledger.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.peer_credential_ledger_merge': {
+    title: 'Credential retirement evidence could not be merged',
+    guidance: 'Conflicting durable records require repair from trusted host evidence.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_ledger_write': {
+    title: 'Credential retirement evidence was not persisted',
+    guidance:
+      'The daemon stopped before publishing the configuration. Repair private-state storage and '
+      + 'retry; repeating the same peer change is not safe until then.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.peer_credential_ledger_directory': {
+    title: 'Credential retirement ledger directory is unavailable',
+    guidance: 'Repair the configuration directory on the host before retrying the write.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.peer_credential_ledger_encode': {
+    title: 'Credential retirement evidence could not be encoded',
+    guidance: 'No configuration was published. Inspect the daemon build and stored evidence.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.last_good_credential_ledger': {
+    title: 'The runtime checkpoint could not retain credential tombstones',
+    guidance:
+      'The daemon refused to advance last-known-good state without the monotonic credential '
+      + 'ledger. Repair private-state storage before reloading.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
   'config.profile_unknown': {
     title: 'No such transport profile',
     guidance:
@@ -528,6 +751,14 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
     blocked: true,
     needsRefresh: true,
   },
+  'config.peer_identity_required': {
+    title: 'The peer identity is incomplete',
+    guidance:
+      'A peer needs both a unique name and a node ID. Supply both values before reviewing the '
+      + 'change; no configuration was written.',
+    severity: 'warning',
+    blocked: true,
+  },
   'service.reload_applied_unhealthy': {
     title: 'The new runtime revision is unhealthy',
     guidance:
@@ -598,6 +829,148 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
     blocked: true,
   },
 
+  'config.restore_schema_newer': {
+    title: 'This configuration needs a newer daemon',
+    guidance:
+      'Restore was refused so an older binary cannot replace forward-compatible configuration data. '
+      + 'Start a daemon version that supports the stored schema.',
+    severity: 'danger',
+    blocked: true,
+  },
+
+  'config.restore_backup_list': {
+    title: 'Configuration history cannot be enumerated safely',
+    guidance:
+      'The daemon could not establish the durable revision high-water mark. Repair the private '
+      + 'state directory before restoring; revision reuse is not allowed.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_backup_read': {
+    title: 'Configuration history cannot be read safely',
+    guidance:
+      'A retained backup could not be opened as a protected regular file. Repair that storage '
+      + 'condition before restoring; the daemon will not guess a revision bound.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_backup_revision_unavailable': {
+    title: 'Configuration history has an unreadable revision',
+    guidance:
+      'A retained backup cannot prove its revision. Restore is blocked to prevent reusing a CAS '
+      + 'identity for different content.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_active_quarantine_invalid': {
+    title: 'Active credential quarantine evidence is invalid',
+    guidance:
+      'The active document contains quarantine evidence that cannot be carried forward safely. '
+      + 'Recover that evidence before restoring older content.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_credential_ledger_unavailable': {
+    title: 'Credential retirement ledger cannot authorize recovery',
+    guidance:
+      'Restore is blocked because the monotonic deny-list cannot be read safely. Repair the '
+      + 'private state before retrying.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_credential_ledger_missing': {
+    title: 'Recovery has no trustworthy credential ledger',
+    guidance:
+      'The active document is unreadable and no monotonic deny-list exists. Recover trusted '
+      + 'credential evidence on the host before restoring an older checkpoint.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_revision_high_water_unavailable': {
+    title: 'Recovery revision history is unavailable',
+    guidance:
+      'The daemon cannot read its monotonic revision reservation. Repair private-state storage '
+      + 'before restoring; revision identities must never be reused.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_revision_reserve': {
+    title: 'The recovery revision could not be reserved',
+    guidance:
+      'No configuration was published. Repair private-state storage before retrying so a failed '
+      + 'restore cannot reuse the same revision later.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.restore_write': {
+    title: 'The recovered configuration was not published',
+    guidance:
+      'The revision was reserved, but the active configuration write could not be confirmed. '
+      + 'Re-read status and repair host storage before retrying.',
+    severity: 'danger',
+    blocked: true,
+    needsRefresh: true,
+  },
+  'config.recovery_active_unavailable': {
+    title: 'Startup recovery cannot inspect the active configuration',
+    guidance: 'Repair the active file path or private state before restarting the daemon.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.revision_high_water_read': {
+    title: 'Revision reservation is unavailable',
+    guidance: 'Repair private-state storage; recovery cannot safely reuse revision identities.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.revision_high_water_decode': {
+    title: 'Revision reservation is malformed',
+    guidance: 'Recover the private reservation document from trusted host evidence.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.revision_high_water_version': {
+    title: 'Revision reservation needs a different daemon version',
+    guidance: 'Use a compatible daemon build before attempting configuration recovery.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.revision_high_water_negative': {
+    title: 'Revision reservation is invalid',
+    guidance: 'The stored high-water mark is negative. Repair it from trusted host evidence.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.revision_high_water_write': {
+    title: 'Revision reservation was not persisted',
+    guidance: 'No recovery should be retried until private-state storage is repaired.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.revision_high_water_encode': {
+    title: 'Revision reservation could not be encoded',
+    guidance: 'No recovery was published. Inspect the daemon build before retrying.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_quarantine_merge': {
+    title: 'Credential quarantine evidence could not be merged',
+    guidance:
+      'The active document and checkpoint disagree about durable credential retirement. Restore '
+      + 'was refused so neither record is silently discarded.',
+    severity: 'danger',
+    blocked: true,
+  },
+  'config.restore_quarantine_apply': {
+    title: 'The restored checkpoint cannot enforce credential quarantine',
+    guidance:
+      'Carrying the durable deny-list into the checkpoint did not produce a valid configuration. '
+      + 'Inspect the checkpoint and affected peers before retrying.',
+    severity: 'danger',
+    blocked: true,
+  },
+
   'config.content_invalid': {
     title: 'The active configuration is invalid',
     guidance:
@@ -610,6 +983,12 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
   'cli.argument_required': {
     title: 'A required argument is missing',
     guidance: 'The daemon rejected the command as incomplete. The detail names the argument.',
+    severity: 'warning',
+    blocked: true,
+  },
+  'cli.flag_invalid': {
+    title: 'A command option is invalid',
+    guidance: 'The request contains an unknown option or an invalid option value. Nothing was changed.',
     severity: 'warning',
     blocked: true,
   },

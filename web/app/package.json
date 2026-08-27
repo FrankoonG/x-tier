@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test:unit": "node --experimental-strip-types --test src/api/control.test.ts src/api/errors.test.ts src/screens/diagnosticLog.test.ts src/screens/profileDraft.test.ts src/screens/peers/nodeEgressGrantEditor.test.ts src/state/refreshCoordinator.test.ts",
+    "test:unit": "node --experimental-strip-types --test src/api/control.test.ts src/api/errors.test.ts src/screens/diagnosticLog.test.ts src/screens/profileDraft.test.ts src/screens/peers/nodeEgressGrantEditor.test.ts src/screens/peers/peerProfileValidation.test.ts src/state/refreshCoordinator.test.ts src/state/versionedRead.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

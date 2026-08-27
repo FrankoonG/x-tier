@@ -26,7 +26,18 @@ func LoadStoreExisting(store *statestore.Store) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return decodeConfig(payload)
+	cfg, err := decodeConfig(payload)
+	if err != nil {
+		return Config{}, err
+	}
+	ledger, exists, err := loadStorePeerCredentialLedger(store)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := validateConfigMatchesCredentialLedger(cfg, ledger, exists); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func SaveStore(store *statestore.Store, cfg Config) error {
@@ -39,7 +50,7 @@ func SaveStore(store *statestore.Store, cfg Config) error {
 }
 
 func saveStoreUnlocked(store *statestore.Store, cfg Config) error {
-	payload, err := EncodeDocument(cfg)
+	payload, err := prepareStoreConfigPublication(store, cfg)
 	if err != nil {
 		return err
 	}
@@ -73,6 +84,42 @@ func saveStoreUnlocked(store *statestore.Store, cfg Config) error {
 	return nil
 }
 
+func saveMigratedStoreUnlocked(store *statestore.Store, cfg Config, source []byte) error {
+	payload, err := prepareStoreConfigPublication(store, cfg)
+	if err != nil {
+		return err
+	}
+	if err := store.Replace(statestore.PreMigrationConfig, source); err != nil {
+		return configErrorf("config.pre_migration_write: %w", err)
+	}
+	if err := store.ReplaceConfig(payload); err != nil {
+		if errors.Is(err, statestore.ErrCommitOutcomeUnknown) {
+			return fmt.Errorf("%w: config.store_write: %v", ErrCommitOutcomeUnknown, err)
+		}
+		return configErrorf("config.write: %w", err)
+	}
+	return nil
+}
+
+// saveRestoredStoreUnlocked retains the most recently replaced active payload
+// in one secure, non-authoritative diagnostic object.
+func saveRestoredStoreUnlocked(store *statestore.Store, cfg Config, rejected []byte) error {
+	payload, err := prepareStoreConfigPublication(store, cfg)
+	if err != nil {
+		return err
+	}
+	if err := store.Replace(statestore.RejectedConfig, rejected); err != nil {
+		return configErrorf("config.rejected_write: %w", err)
+	}
+	if err := store.ReplaceConfig(payload); err != nil {
+		if errors.Is(err, statestore.ErrCommitOutcomeUnknown) {
+			return fmt.Errorf("%w: config.store_write: %v", ErrCommitOutcomeUnknown, err)
+		}
+		return configErrorf("config.write: %w", err)
+	}
+	return nil
+}
+
 func LoadStoreOrMigrate(store *statestore.Store, persistMissing bool) (Config, bool, error) {
 	if store == nil {
 		return Config{}, false, configErrorf("config.store_required")
@@ -101,8 +148,39 @@ func LoadStoreOrMigrate(store *statestore.Store, persistMissing bool) (Config, b
 			return configErrorf("config.schema_newer: have %d support %d", schemaVersion, CurrentSchemaVersion)
 		}
 		if versioned && schemaVersion == CurrentSchemaVersion {
-			cfg, err = decodeConfig(payload)
-			return err
+			cfg, err = decodeRepairableConfig(payload)
+			if err != nil {
+				return err
+			}
+			ledger, ledgerExists, ledgerErr := loadStorePeerCredentialLedger(store)
+			if ledgerErr != nil {
+				return ledgerErr
+			}
+			changed, quarantineErr := mergeCredentialLedgerIntoConfig(&cfg, ledger)
+			if quarantineErr != nil {
+				return markContentError(quarantineErr)
+			}
+			ledgerCurrent := ledgerExists && reflect.DeepEqual(ledger, cfg.PeerCredentialQuarantines)
+			if !changed {
+				if !ledgerCurrent {
+					if _, err := persistStorePeerCredentialLedger(store, cfg.PeerCredentialQuarantines); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			if cfg.Revision == math.MaxInt64 {
+				return configErrorf("config.revision_exhausted")
+			}
+			cfg.Revision++
+			saveErr := saveStoreUnlocked(store, cfg)
+			if saveErr = confirmMigrationWrite(cfg, saveErr, func() (Config, error) {
+				return LoadStoreExisting(store)
+			}, store.SyncConfigParent); saveErr != nil {
+				return configErrorf("config.peer_credential_quarantine_write: %w", saveErr)
+			}
+			migrated = true
+			return nil
 		}
 		cfg, err = decodeMigratableConfig(payload, schemaVersion, versioned)
 		if err != nil {
@@ -112,9 +190,19 @@ func LoadStoreOrMigrate(store *statestore.Store, persistMissing bool) (Config, b
 			return configErrorf("config.revision_exhausted")
 		}
 		cfg.SchemaVersion = CurrentSchemaVersion
+		ledger, _, ledgerErr := loadStorePeerCredentialLedger(store)
+		if ledgerErr != nil {
+			return ledgerErr
+		}
+		if _, quarantineErr := mergeCredentialLedgerIntoConfig(&cfg, ledger); quarantineErr != nil {
+			return markContentError(quarantineErr)
+		}
 		cfg.Revision++
-		if err := saveStoreUnlocked(store, cfg); err != nil {
-			return configErrorf("config.legacy_migration_write: %w", err)
+		saveErr := saveMigratedStoreUnlocked(store, cfg, payload)
+		if saveErr = confirmMigrationWrite(cfg, saveErr, func() (Config, error) {
+			return LoadStoreExisting(store)
+		}, store.SyncConfigParent); saveErr != nil {
+			return configErrorf("config.legacy_migration_write: %w", saveErr)
 		}
 		migrated = true
 		return nil
@@ -192,9 +280,30 @@ func SaveStoreLastKnownGood(store *statestore.Store, cfg Config) error {
 	if store == nil {
 		return configErrorf("config.store_required")
 	}
+	return withStoreConfigLock(store, func() error {
+		return saveStoreLastKnownGoodUnlocked(store, cfg)
+	})
+}
+
+func saveStoreLastKnownGoodUnlocked(store *statestore.Store, cfg Config) error {
+	normalize(&cfg)
 	payload, err := EncodeDocument(cfg)
 	if err != nil {
 		return configErrorf("config.last_good_validate: %w", err)
+	}
+	ledger, ledgerExists, err := loadStorePeerCredentialLedger(store)
+	if err != nil {
+		return configErrorf("config.last_good_credential_ledger: %w", err)
+	}
+	if err := requireConfigCoversCredentialLedger(cfg, ledger, ledgerExists); err != nil {
+		return configErrorf("config.last_good_credential_ledger: %w", err)
+	}
+	persistedLedger, err := persistStorePeerCredentialLedger(store, cfg.PeerCredentialQuarantines)
+	if err != nil {
+		return configErrorf("config.last_good_credential_ledger: %w", err)
+	}
+	if err := validateConfigMatchesCredentialLedger(cfg, persistedLedger, true); err != nil {
+		return configErrorf("config.last_good_credential_ledger: %w", err)
 	}
 	if err := store.Replace(statestore.LastKnownGood, payload); err != nil {
 		return configErrorf("config.last_good_write: %w", err)
@@ -222,28 +331,85 @@ func RestoreStoreLastKnownGood(store *statestore.Store, expectedRevision int64, 
 	}
 	var result UpdateResult
 	err := withStoreConfigLock(store, func() error {
-		if _, activeErr := LoadStoreExisting(store); activeErr == nil {
-			return configErrorf("config.restore_not_required")
-		} else if !IsContentError(activeErr) {
+		activePayload, activeReadErr := store.ReadConfig(maxConfigFileBytes)
+		active := Config{}
+		activeErr := activeReadErr
+		if activeReadErr == nil {
+			if err := guardRestoreSchema(activePayload); err != nil {
+				return err
+			}
+			active, activeErr = decodeRepairableConfig(activePayload)
+		}
+		activeRevision, activeRevisionKnown := recoverableDocumentRevision(activePayload, activeReadErr)
+		if activeErr == nil {
+			activeRevision = active.Revision
+			activeRevisionKnown = true
+		}
+		if activeErr == nil {
+			activeErr = Validate(active)
+			if activeErr != nil {
+				activeErr = markContentError(activeErr)
+			}
+		}
+		if activeErr != nil && !IsContentError(activeErr) {
 			return configErrorf("config.restore_active_unavailable: %w", activeErr)
+		}
+		ledger, ledgerExists, err := loadStorePeerCredentialLedger(store)
+		if err != nil {
+			return configErrorf("config.restore_credential_ledger_unavailable: %w", err)
+		}
+		if activeErr == nil {
+			activeErr = validateConfigMatchesCredentialLedger(active, ledger, ledgerExists)
+			if activeErr == nil {
+				return configErrorf("config.restore_not_required")
+			}
 		}
 		checkpoint, err := LoadStoreLastKnownGood(store)
 		if err != nil {
 			return configErrorf("config.restore_checkpoint_unavailable: %w", err)
 		}
-		if err := ValidateRevision(checkpoint, expectedRevision); err != nil {
+		checkpoint, _, err = prepareLastKnownGoodRestore(
+			checkpoint,
+			activePayload,
+			activeReadErr,
+			ledger,
+			ledgerExists,
+		)
+		if err != nil {
 			return err
 		}
-		if checkpoint.Revision == math.MaxInt64 {
-			return configErrorf("config.revision_exhausted")
+		backupRevisionHighWater, err := storeBackupRevisionHighWater(store)
+		if err != nil {
+			return err
 		}
-		result.BeforeRevision = checkpoint.Revision
-		result.AfterRevision = checkpoint.Revision + 1
+		reservedRevisionHighWater, reservationExists, err := loadStoreConfigRevisionHighWater(store)
+		if err != nil {
+			return configErrorf("config.restore_revision_high_water_unavailable: %w", err)
+		}
+		if !reservationExists {
+			reservedRevisionHighWater = -1
+		}
+		beforeRevision, afterRevision, err := lastKnownGoodRestoreRevisions(
+			activeRevision,
+			activeRevisionKnown,
+			backupRevisionHighWater,
+			reservedRevisionHighWater,
+			checkpoint,
+			expectedRevision,
+		)
+		if err != nil {
+			return err
+		}
+		result.BeforeRevision = beforeRevision
+		result.AfterRevision = afterRevision
 		if dryRun {
 			return nil
 		}
+		if err := persistStoreConfigRevisionHighWater(store, result.AfterRevision); err != nil {
+			return configErrorf("config.restore_revision_reserve: %w", err)
+		}
 		checkpoint.Revision = result.AfterRevision
-		if err := saveStoreUnlocked(store, checkpoint); err != nil {
+		if err := saveRestoredStoreUnlocked(store, checkpoint, activePayload); err != nil {
 			return configErrorf("config.restore_write: %w", err)
 		}
 		return nil
@@ -254,13 +420,75 @@ func RestoreStoreLastKnownGood(store *statestore.Store, expectedRevision int64, 
 	return result, nil
 }
 
+// LoadStoreLastKnownGoodForRecovery constructs and durably anchors a
+// fail-closed checkpoint candidate without replacing the active config.
+func LoadStoreLastKnownGoodForRecovery(store *statestore.Store) (Config, error) {
+	if store == nil {
+		return Config{}, configErrorf("config.store_required")
+	}
+	var recovered Config
+	err := withStoreConfigLock(store, func() error {
+		activePayload, activeReadErr := store.ReadConfig(maxConfigFileBytes)
+		if activeReadErr != nil {
+			return configErrorf("config.recovery_active_unavailable: %w", activeReadErr)
+		}
+		checkpoint, err := LoadStoreLastKnownGood(store)
+		if err != nil {
+			return err
+		}
+		ledger, ledgerExists, err := loadStorePeerCredentialLedger(store)
+		if err != nil {
+			return err
+		}
+		var authority []PeerCredentialQuarantine
+		recovered, authority, err = prepareLastKnownGoodRestore(
+			checkpoint,
+			activePayload,
+			nil,
+			ledger,
+			ledgerExists,
+		)
+		if err != nil {
+			return err
+		}
+		persisted, err := persistStorePeerCredentialLedger(store, authority)
+		if err != nil {
+			return err
+		}
+		return validateConfigMatchesCredentialLedger(recovered, persisted, true)
+	})
+	return recovered, err
+}
+
+func storeBackupRevisionHighWater(store *statestore.Store) (int64, error) {
+	names, err := store.BackupNames()
+	if err != nil {
+		return 0, configErrorf("config.restore_backup_list: %w", err)
+	}
+	highWater := int64(-1)
+	for _, name := range names {
+		payload, readErr := store.ReadBackup(name, maxConfigFileBytes)
+		if readErr != nil {
+			return 0, configErrorf("config.restore_backup_read: %s: %w", name, readErr)
+		}
+		revision, known := recoverableBackupRevision(payload)
+		if !known {
+			return 0, configErrorf("config.restore_backup_revision_unavailable: %s", name)
+		}
+		if revision > highWater {
+			highWater = revision
+		}
+	}
+	return highWater, nil
+}
+
 func withStoreConfigLock(store *statestore.Store, fn func() error) (err error) {
 	current, err := store.OpenLock(statestore.ConfigLock)
 	if err != nil {
 		return configErrorf("config.lock_open: %w", err)
 	}
 	defer func() { err = errors.Join(err, current.Close()) }()
-	if err := lockFileExclusive(current); err != nil {
+	if err := lockFileExclusiveBounded(current); err != nil {
 		return configErrorf("config.locked: %w", err)
 	}
 	defer func() { err = errors.Join(err, unlockFile(current)) }()

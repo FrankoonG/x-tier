@@ -177,6 +177,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, daemon bo
 		}
 		return ExecutionResult{ExitCode: runDaemonStatus(g, stdout, stderr)}
 	}
+	if err := preflightStaticCommand(rest); err != nil {
+		return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, err)}
+	}
 	if !daemon && !g.offline {
 		return ExecutionResult{ExitCode: runViaDaemon(g, rest, stdout, stderr)}
 	}
@@ -297,13 +300,7 @@ func runViaDaemon(g globals, args []string, stdout, stderr io.Writer) int {
 			}
 			return writeRejectedMutation(g, stdout, stderr, requestID, err)
 		}
-		message := sanitizeErrorMessage(err.Error())
-		if g.json {
-			_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error_code": errorCode(err), "message": message})
-		} else {
-			fmt.Fprintln(stderr, message)
-		}
-		return 1
+		return writeCommandError(g, stdout, stderr, err)
 	}
 	if mutates {
 		if resp.Outcome == "" {
@@ -363,7 +360,7 @@ func writeDaemonMutationResponse(g globals, stdout, stderr io.Writer, requestID 
 }
 
 func writeIndeterminateMutation(g globals, stdout, stderr io.Writer, requestID string, err error) int {
-	message := sanitizeErrorMessage(err.Error())
+	message := sanitizeCommandError(err)
 	if g.json {
 		_ = json.NewEncoder(stdout).Encode(map[string]any{
 			"ok":         false,
@@ -386,7 +383,7 @@ func writeIndeterminateMutation(g globals, stdout, stderr io.Writer, requestID s
 }
 
 func writeRejectedMutation(g globals, stdout, stderr io.Writer, requestID string, err error) int {
-	message := sanitizeErrorMessage(err.Error())
+	message := sanitizeCommandError(err)
 	if g.json {
 		_ = json.NewEncoder(stdout).Encode(map[string]any{
 			"ok":         false,
@@ -433,13 +430,37 @@ func readConfigStoreToken(configPath string, object statestore.Object) (token st
 }
 
 func writeCommandError(g globals, stdout, stderr io.Writer, err error) int {
-	message := sanitizeErrorMessage(err.Error())
+	code := errorCode(err)
+	message := sanitizeCommandError(err)
 	if g.json {
-		_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error_code": errorCode(err), "message": message})
+		_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": false, "error_code": code, "message": message})
 	} else {
-		fmt.Fprintln(stderr, message)
+		if message == code || strings.HasPrefix(message, code+":") {
+			fmt.Fprintln(stderr, message)
+		} else {
+			fmt.Fprintf(stderr, "%s: %s\n", code, message)
+		}
 	}
 	return 1
+}
+
+func sanitizeCommandError(err error) string {
+	if _, safe := actionablePeerCredentialCodes[errorCode(err)]; safe {
+		return err.Error()
+	}
+	return sanitizeErrorMessage(err.Error())
+}
+
+var actionablePeerCredentialCodes = map[string]struct{}{
+	"config.peer_credential_duplicate":                      {},
+	"config.peer_credential_invalid":                        {},
+	"config.peer_credential_quarantined":                    {},
+	"config.peer_credential_quarantine_duplicate":           {},
+	"config.peer_credential_quarantine_fingerprint_invalid": {},
+	"config.peer_credential_quarantine_peer_duplicate":      {},
+	"config.peer_credential_quarantine_peer_invalid":        {},
+	"config.peer_credential_quarantine_peers_required":      {},
+	"config.peer_credential_quarantine_record_missing":      {},
 }
 
 func sanitizeErrorMessage(message string) string {
@@ -912,6 +933,64 @@ func localPeers(g globals, out io.Writer) error {
 	return writeOutput(g, out, map[string]any{"ok": true, "revision": cfg.Revision, "target_local_node_id": cfg.Node.NodeID, "peers": cfg.Peers})
 }
 
+type peerAddOptions struct {
+	name      string
+	nodeID    string
+	addr      string
+	direction route.Direction
+	profile   string
+	nested    bool
+}
+
+func preflightStaticCommand(args []string) error {
+	if len(args) >= 3 && args[0] == "local" && args[1] == "peer" && args[2] == "add" {
+		options, err := parsePeerAdd(args[2:])
+		if err != nil {
+			return err
+		}
+		_, err = configops.AddPeer(configstore.DefaultConfig(), peerFromAddOptions(options))
+		return err
+	}
+	return nil
+}
+
+func parsePeerAdd(args []string) (peerAddOptions, error) {
+	fs := flag.NewFlagSet("peer add", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	nodeID := fs.String("node-id", "", "")
+	addr := fs.String("addr", "", "")
+	direction := fs.String("direction", string(route.DirectionOutbound), "")
+	profile := fs.String("profile", "", "")
+	nested := fs.Bool("nested", false, "")
+	name := ""
+	flagArgs := []string(nil)
+	if len(args) >= 2 {
+		name = args[1]
+		flagArgs = args[2:]
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return peerAddOptions{}, commandError{"cli.flag_invalid", err}
+	}
+	return peerAddOptions{
+		name: name, nodeID: *nodeID, addr: *addr, direction: route.Direction(*direction), profile: *profile, nested: *nested,
+	}, nil
+}
+
+func peerFromAddOptions(options peerAddOptions) configstore.PeerConfig {
+	return configstore.PeerConfig{
+		Name:          options.name,
+		NodeID:        options.nodeID,
+		DisplayName:   options.name,
+		Addr:          options.addr,
+		GatewayAddr:   options.addr,
+		Direction:     options.direction,
+		XrayProfileID: options.profile,
+		NestedEnabled: options.nested,
+		Enabled:       true,
+		RendrCapable:  true,
+	}
+}
+
 func localPeer(g globals, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return commandError{"cli.command_required", fmt.Errorf("peer subcommand is required")}
@@ -924,44 +1003,18 @@ func localPeer(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "add":
-		if len(args) < 2 {
-			return commandError{"cli.argument_required", fmt.Errorf("peer name is required")}
-		}
-		name := args[1]
-		fs := flag.NewFlagSet("peer add", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		nodeID := fs.String("node-id", "", "")
-		addr := fs.String("addr", "", "")
-		direction := fs.String("direction", string(route.DirectionOutbound), "")
-		profile := fs.String("profile", "", "")
-		nested := fs.Bool("nested", false, "")
-		if err := fs.Parse(args[2:]); err != nil {
+		options, err := parsePeerAdd(args)
+		if err != nil {
 			return err
 		}
-		if *nodeID == "" {
-			return commandError{"cli.argument_required", fmt.Errorf("--node-id is required")}
-		}
-		if route.Direction(*direction).CanDialOutbound() && *profile == "" {
-			return commandError{"cli.argument_required", fmt.Errorf("--profile is required for an outbound peer")}
-		}
 		return mutate(g, out, func(cfg *configstore.Config) (any, error) {
-			if _, _, ok := configstore.FindPeer(cfg.Peers, name); ok {
-				return nil, commandError{"config.peer_exists", fmt.Errorf("%s", name)}
+			p := peerFromAddOptions(options)
+			result, err := configops.AddPeer(*cfg, p)
+			if err != nil {
+				return nil, err
 			}
-			p := configstore.PeerConfig{
-				Name:          name,
-				NodeID:        *nodeID,
-				DisplayName:   name,
-				Addr:          *addr,
-				GatewayAddr:   *addr,
-				Direction:     route.Direction(*direction),
-				XrayProfileID: *profile,
-				NestedEnabled: *nested,
-				Enabled:       true,
-				RendrCapable:  true,
-			}
-			cfg.Peers = append(cfg.Peers, p)
-			return map[string]any{"peer": p}, nil
+			*cfg = result.Config
+			return map[string]any{"peer": result.Peer}, nil
 		})
 	case "set":
 		if len(args) < 2 {
@@ -1007,7 +1060,14 @@ func localPeer(g globals, args []string, out io.Writer) error {
 				p.GatewayAddr = *addr
 			}
 			if visited["profile"] {
-				p.XrayProfileID = *profile
+				cfg.Peers[i] = p
+				result, err := configops.UpdatePeerProfile(*cfg, p.NodeID, *profile)
+				if err != nil {
+					return nil, err
+				}
+				*cfg = result.Config
+				p = result.Peer
+				_, i, _ = configstore.FindPeer(cfg.Peers, p.NodeID)
 			}
 			cfg.Peers[i] = p
 			return map[string]any{

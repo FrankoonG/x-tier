@@ -1,6 +1,7 @@
 package xraycredential
 
 import (
+	"crypto/sha256"
 	"errors"
 	"testing"
 
@@ -18,6 +19,30 @@ func TestVLESSKeyMatchesXrayCredentialEquivalence(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("Xray-equivalent credentials produced distinct keys: %q != %q", first, second)
+	}
+}
+
+func TestVLESSFingerprintMatchesOnlyXrayEquivalentCredentials(t *testing.T) {
+	first, err := VLESSFingerprint("66ad4540-b58c-4ad2-9926-ea63445a9b57")
+	if err != nil {
+		t.Fatal(err)
+	}
+	equivalent, err := VLESSFingerprint("66ad4540-b58c-4ead-9926-ea63445a9b57")
+	if err != nil {
+		t.Fatal(err)
+	}
+	distinct, err := VLESSFingerprint("f3c9805c-12ea-48f0-b762-5739f2365620")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != equivalent {
+		t.Fatalf("equivalent credentials produced distinct fingerprints: %q != %q", first, equivalent)
+	}
+	if first == distinct {
+		t.Fatalf("distinct credentials produced the same fingerprint: %q", first)
+	}
+	if len(first) != sha256.Size*2 {
+		t.Fatalf("fingerprint length = %d", len(first))
 	}
 }
 

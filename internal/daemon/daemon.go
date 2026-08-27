@@ -1527,29 +1527,32 @@ func startRuntimePlane(ctx context.Context, configPath string, store *statestore
 
 func loadInitialConfig(store *statestore.Store, runtimeConfigPath, ownershipKey string) (configstore.Config, bool, *controlapi.StartupRollbackStatus, error) {
 	if _, err := loadExistingConfig(store, runtimeConfigPath); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			if configstore.IsContentError(err) {
-				return recoverInitialConfigFromLastKnownGood(store, runtimeConfigPath, err)
+		if errors.Is(err, os.ErrNotExist) {
+			if _, checkpointErr := loadLastKnownGood(store, runtimeConfigPath); checkpointErr == nil {
+				return configstore.Config{}, false, nil, publicerr.Errorf(
+					"config.missing_with_last_good",
+					"configured file is missing while a last-known-good checkpoint exists",
+				)
+			} else if !errors.Is(checkpointErr, os.ErrNotExist) {
+				return configstore.Config{}, false, nil, fmt.Errorf("load last-known-good before initialization: %w", checkpointErr)
 			}
-			return configstore.Config{}, false, nil, err
-		}
-		if _, checkpointErr := loadLastKnownGood(store, runtimeConfigPath); checkpointErr == nil {
-			return configstore.Config{}, false, nil, publicerr.Errorf(
-				"config.missing_with_last_good",
-				"configured file is missing while a last-known-good checkpoint exists",
-			)
-		} else if !errors.Is(checkpointErr, os.ErrNotExist) {
-			return configstore.Config{}, false, nil, fmt.Errorf("load last-known-good before initialization: %w", checkpointErr)
-		}
-		ambiguous, inspectErr := hasAmbiguousLegacyRecovery(store)
-		if inspectErr != nil {
-			return configstore.Config{}, false, nil, inspectErr
-		}
-		if ambiguous {
-			return configstore.Config{}, false, nil, publicerr.Errorf(
-				legacyRecoveryAmbiguousError,
-				"configured file is missing while an ownership-ambiguous legacy recovery file exists",
-			)
+			ambiguous, inspectErr := hasAmbiguousLegacyRecovery(store)
+			if inspectErr != nil {
+				return configstore.Config{}, false, nil, inspectErr
+			}
+			if ambiguous {
+				return configstore.Config{}, false, nil, publicerr.Errorf(
+					legacyRecoveryAmbiguousError,
+					"configured file is missing while an ownership-ambiguous legacy recovery file exists",
+				)
+			}
+		} else {
+			if !configstore.IsContentError(err) {
+				return configstore.Config{}, false, nil, err
+			}
+			// The dedicated migration read below can safely quarantine the
+			// narrow set of historical credential states rejected by ordinary
+			// runtime readers. Other content failures still fall back to LKG.
 		}
 	}
 	var cfg configstore.Config
@@ -1562,15 +1565,26 @@ func loadInitialConfig(store *statestore.Store, runtimeConfigPath, ownershipKey 
 	}
 	if err != nil {
 		if configstore.IsContentError(err) {
-			return recoverInitialConfigFromLastKnownGood(store, runtimeConfigPath, err)
+			return recoverInitialConfigFromLastKnownGood(store, runtimeConfigPath, ownershipKey, err)
 		}
 		return configstore.Config{}, false, nil, err
 	}
 	return cfg, migrated, nil, nil
 }
 
-func recoverInitialConfigFromLastKnownGood(store *statestore.Store, runtimeConfigPath string, cause error) (configstore.Config, bool, *controlapi.StartupRollbackStatus, error) {
-	checkpoint, err := loadLastKnownGood(store, runtimeConfigPath)
+func recoverInitialConfigFromLastKnownGood(
+	store *statestore.Store,
+	runtimeConfigPath string,
+	ownershipKey string,
+	cause error,
+) (configstore.Config, bool, *controlapi.StartupRollbackStatus, error) {
+	var checkpoint configstore.Config
+	var err error
+	if store != nil {
+		checkpoint, err = configstore.LoadStoreLastKnownGoodForRecovery(store)
+	} else {
+		checkpoint, err = configstore.LoadPinnedLastKnownGoodForRecovery(runtimeConfigPath, ownershipKey)
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			ambiguous, inspectErr := hasAmbiguousLegacyRecovery(store)

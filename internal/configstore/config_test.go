@@ -8,12 +8,15 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/route"
+	"github.com/FrankoonG/x-tier/internal/xraycredential"
 	"github.com/xtls/xray-core/common/uuid"
 )
 
@@ -377,7 +380,7 @@ func TestUpdateCASReportsUnknownEvenWhenVisibleCommitCanBeConfirmed(t *testing.T
 		candidate.Node.DisplayName = "committed"
 		return nil
 	}, Load, func(path string, candidate Config) error {
-		if err := Save(path, candidate); err != nil {
+		if err := savePathUnlocked(path, candidate); err != nil {
 			return err
 		}
 		return fmt.Errorf("%w: injected parent sync failure", ErrCommitOutcomeUnknown)
@@ -704,6 +707,14 @@ func TestLoadOrMigrateVersionsUnversionedConfigWithoutUnknownFields(t *testing.T
 	}
 	if !bytes.Contains(payload, []byte(`"schema_version": 2`)) {
 		t.Fatalf("migrated file is not versioned: %s", payload)
+	}
+	archived, err := readSecureFile(path + preMigrationConfigSuffix)
+	if err != nil || !bytes.Equal(archived, legacy) {
+		t.Fatalf("pre-migration archive=%s error=%v", archived, err)
+	}
+	backups, err := filepath.Glob(path + ".bak.*")
+	if err != nil || len(backups) != 0 {
+		t.Fatalf("legacy migration created authoritative backups=%v error=%v", backups, err)
 	}
 }
 
@@ -1216,9 +1227,454 @@ func TestValidateRequiresDistinctVLESSCredentialPerInboundPeer(t *testing.T) {
 		{Name: "A", NodeID: "node-a", Direction: route.DirectionInbound, XrayProfileID: "shared", Enabled: true},
 		{Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, XrayProfileID: "shared", Enabled: true},
 	}
-	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_inbound_credential_duplicate") {
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
 		t.Fatalf("error = %v, want inbound credential reuse rejection", err)
 	}
+}
+
+func TestValidateRejectsVLESSCredentialReuseAcrossPeerDirections(t *testing.T) {
+	cfg := peerCredentialCollisionConfig()
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
+		t.Fatalf("error = %v, want cross-direction credential reuse rejection", err)
+	}
+
+	cfg.Peers[1].Enabled = false
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("disabled address-book peer reserved a runtime credential: %v", err)
+	}
+}
+
+func TestCurrentCredentialCollisionIsReadableOnlyByDedicatedRepairPath(t *testing.T) {
+	cfg := peerCredentialCollisionConfig()
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadExisting(path); err == nil || !IsContentError(err) || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
+		t.Fatalf("ordinary load accepted historical collision: %v", err)
+	}
+	if _, err := DecodeDocument(payload); err == nil || !IsContentError(err) || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
+		t.Fatalf("strict document decoder accepted historical collision: %v", err)
+	}
+	if _, err := EncodeDocument(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
+		t.Fatalf("unsafe document encoded: %v", err)
+	}
+
+	if _, err := UpdateCAS(path, 0, func(candidate *Config) error {
+		candidate.Node.DisplayName = "unrelated change"
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
+		t.Fatalf("unrelated mutation bypassed quarantine: %v", err)
+	}
+
+}
+
+func TestCurrentCredentialCollisionLoadOrMigrateQuarantinesBeforeRuntime(t *testing.T) {
+	cfg := peerCredentialCollisionConfig()
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	quarantined, changed, err := LoadOrMigrate(path)
+	if err != nil {
+		t.Fatalf("LoadOrMigrate: %v", err)
+	}
+	if !changed || quarantined.Revision != 1 {
+		t.Fatalf("current-schema quarantine = changed:%v config:%+v", changed, quarantined)
+	}
+	for _, name := range []string{"B", "C"} {
+		peer, _, found := FindPeer(quarantined.Peers, name)
+		if !found || peer.Enabled || peer.XrayProfileID != "shared" || !IsPeerCredentialQuarantined(peer) {
+			t.Fatalf("credential collision peer %q remained active: %+v", name, peer)
+		}
+	}
+	safe, _, found := FindPeer(quarantined.Peers, "D")
+	if !found || !safe.Enabled || safe.XrayProfileID != "safe" || safe.DisabledCause != "" {
+		t.Fatalf("unrelated peer changed during quarantine: %+v", safe)
+	}
+	if len(quarantined.NodeEgressGrants) != 1 || len(quarantined.PeerTrust) != 2 {
+		t.Fatalf("quarantine destroyed repair evidence: grants=%+v trust=%+v", quarantined.NodeEgressGrants, quarantined.PeerTrust)
+	}
+	assertCredentialQuarantineRecord(t, quarantined, "shared", []string{"node-b", "node-c"})
+	if err := Validate(quarantined); err != nil {
+		t.Fatalf("quarantined current config is not runtime-valid: %v", err)
+	}
+
+	second, changedAgain, err := LoadOrMigrate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedAgain || !reflect.DeepEqual(second, quarantined) {
+		t.Fatalf("quarantine repeated = changed:%v config:%+v", changedAgain, second)
+	}
+	backups, err := filepath.Glob(path + ".bak.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backup count=%d, want exactly one quarantine write", len(backups))
+	}
+}
+
+func TestCurrentPartialCredentialQuarantineIsCompletedBeforeRuntime(t *testing.T) {
+	cfg := peerCredentialCollisionConfig()
+	cfg.Revision = 9
+	cfg.Peers[1].Enabled = false
+	cfg.Peers[1].DisabledCause = PeerCredentialQuarantineCause
+	if err := validateLoadableConfig(cfg); err != nil {
+		t.Fatalf("partial historical quarantine is not repair-readable: %v", err)
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_quarantine_record_missing") {
+		t.Fatalf("partial quarantine passed strict validation: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, changed, err := LoadOrMigrate(path)
+	if err != nil {
+		t.Fatalf("LoadOrMigrate: %v", err)
+	}
+	if !changed || repaired.Revision != 10 {
+		t.Fatalf("partial quarantine metadata = changed:%v config:%+v", changed, repaired)
+	}
+	for _, name := range []string{"B", "C"} {
+		peer, _, found := FindPeer(repaired.Peers, name)
+		if !found || peer.Enabled || !IsPeerCredentialQuarantined(peer) {
+			t.Fatalf("partial quarantine peer %q was not contained: %+v", name, peer)
+		}
+	}
+	assertCredentialQuarantineRecord(t, repaired, "shared", []string{"node-b", "node-c"})
+	if err := Validate(repaired); err != nil {
+		t.Fatalf("repaired partial quarantine crossed runtime invalid: %v", err)
+	}
+}
+
+func TestValidateRejectsMalformedOrReusedCredentialQuarantine(t *testing.T) {
+	fingerprint, err := xraycredential.VLESSFingerprint("e2f7cbec-a847-44ed-b3df-ceae1f9aa252")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := PeerCredentialQuarantine{
+		CredentialFingerprint: fingerprint,
+		PeerNodeIDs:           []string{"node-a", "node-b"},
+		Reason:                PeerCredentialCollisionReason,
+	}
+	for _, test := range []struct {
+		name     string
+		mutate   func(*Config)
+		wantCode string
+	}{
+		{"fingerprint", func(cfg *Config) { cfg.PeerCredentialQuarantines[0].CredentialFingerprint = "AA" }, "config.peer_credential_quarantine_fingerprint_invalid"},
+		{"reason", func(cfg *Config) { cfg.PeerCredentialQuarantines[0].Reason = "operator_note" }, "config.peer_credential_quarantine_reason_invalid"},
+		{"empty peers", func(cfg *Config) { cfg.PeerCredentialQuarantines[0].PeerNodeIDs = nil }, "config.peer_credential_quarantine_peers_required"},
+		{"duplicate peer", func(cfg *Config) { cfg.PeerCredentialQuarantines[0].PeerNodeIDs = []string{"node-a", "node-a"} }, "config.peer_credential_quarantine_peer_duplicate"},
+		{"duplicate record", func(cfg *Config) { cfg.PeerCredentialQuarantines = append(cfg.PeerCredentialQuarantines, valid) }, "config.peer_credential_quarantine_duplicate"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.PeerCredentialQuarantines = []PeerCredentialQuarantine{valid}
+			test.mutate(&cfg)
+			if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), test.wantCode) {
+				t.Fatalf("error = %v, want %s", err, test.wantCode)
+			}
+		})
+	}
+
+	cfg := DefaultConfig()
+	cfg.XrayProfiles["retired"] = XrayProfile{ID: "retired", Kind: "vless", VLESS: &VLESSProfile{
+		UUID: "e2f7cbec-a847-44ed-b3df-ceae1f9aa252", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+	}}
+	cfg.PeerCredentialQuarantines = []PeerCredentialQuarantine{valid}
+	cfg.Peers = []PeerConfig{{
+		Name: "A", NodeID: "node-a", Addr: "10.20.0.2:2443", GatewayAddr: "10.20.0.2:2443",
+		Direction: route.DirectionOutbound, XrayProfileID: "retired", Enabled: true,
+	}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_quarantined") {
+		t.Fatalf("durably retired credential became runtime-valid: %v", err)
+	}
+}
+
+func TestCurrentCredentialCollisionAtMaxRevisionIsNotRewritten(t *testing.T) {
+	cfg := peerCredentialCollisionConfig()
+	cfg.Revision = math.MaxInt64
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = append(payload, '\n')
+	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, changed, err := LoadOrMigrate(path); err == nil || changed || !strings.Contains(err.Error(), "config.revision_exhausted") {
+		t.Fatalf("max-revision quarantine = changed:%v error:%v", changed, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, payload) {
+		t.Fatalf("max-revision config was rewritten\nbefore=%s\nafter=%s", payload, after)
+	}
+	backups, err := filepath.Glob(path + ".bak.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("max-revision rejection created backups: %v", backups)
+	}
+}
+
+func TestConfirmMigrationWriteRequiresMatchingDurablePublication(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Revision = 8
+	unknown := fmt.Errorf("%w: injected publication uncertainty", ErrCommitOutcomeUnknown)
+
+	loadCalls := 0
+	syncCalls := 0
+	if err := confirmMigrationWrite(cfg, unknown, func() (Config, error) {
+		loadCalls++
+		return cfg, nil
+	}, func() error {
+		syncCalls++
+		return nil
+	}); err != nil {
+		t.Fatalf("confirmed migration publication: %v", err)
+	}
+	if loadCalls != 1 || syncCalls != 1 {
+		t.Fatalf("confirmation calls = load:%d sync:%d", loadCalls, syncCalls)
+	}
+
+	different := cfg
+	different.Node.DisplayName = "different"
+	if err := confirmMigrationWrite(cfg, unknown, func() (Config, error) {
+		return different, nil
+	}, func() error {
+		t.Fatal("mismatched publication was synced")
+		return nil
+	}); !errors.Is(err, ErrCommitOutcomeUnknown) || !strings.Contains(err.Error(), "config.migration_commit_confirmation_mismatch") {
+		t.Fatalf("mismatched publication error = %v", err)
+	}
+
+	if err := confirmMigrationWrite(cfg, unknown, func() (Config, error) {
+		return cfg, nil
+	}, func() error {
+		return errors.New("injected sync failure")
+	}); !errors.Is(err, ErrCommitOutcomeUnknown) || !strings.Contains(err.Error(), "config.migration_commit_confirmation_sync") {
+		t.Fatalf("unsynced publication error = %v", err)
+	}
+
+	visible := &commitVisibleError{revision: cfg.Revision, cause: errors.New("injected backup prune failure")}
+	if err := confirmMigrationWrite(cfg, visible, func() (Config, error) {
+		t.Fatal("already visible publication was reloaded")
+		return Config{}, nil
+	}, func() error {
+		t.Fatal("already durable publication was resynced")
+		return nil
+	}); err != nil {
+		t.Fatalf("visible migration publication remained fatal: %v", err)
+	}
+}
+
+func TestV1MigrationQuarantinesCredentialCollision(t *testing.T) {
+	cfg := peerCredentialCollisionMigrationConfig()
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, changed, err := LoadOrMigrate(path)
+	if err != nil {
+		t.Fatalf("LoadOrMigrate: %v", err)
+	}
+	if !changed || migrated.SchemaVersion != CurrentSchemaVersion || migrated.Revision != 8 {
+		t.Fatalf("migration metadata = changed:%v config:%+v", changed, migrated)
+	}
+	for _, name := range []string{"alpha", "zeta"} {
+		peer, _, found := FindPeer(migrated.Peers, name)
+		if !found || peer.Enabled || peer.XrayProfileID != "shared" || !IsPeerCredentialQuarantined(peer) {
+			t.Fatalf("credential collision peer %q was not quarantined: %+v", name, migrated.Peers)
+		}
+	}
+	safe, _, found := FindPeer(migrated.Peers, "D")
+	if !found || !safe.Enabled || safe.XrayProfileID != "safe" || safe.DisabledCause != "" {
+		t.Fatalf("unrelated peer changed during migration: %+v", safe)
+	}
+	if len(migrated.NodeInbound) != 1 || migrated.NodeInbound[0].Enabled || migrated.NodeInbound[0].ExitPeer != "zeta" ||
+		!strings.Contains(migrated.NodeInbound[0].DisabledCause, "exit peer credential was quarantined") {
+		t.Fatalf("unsafe exit dependency was not disabled: %+v", migrated.NodeInbound)
+	}
+	if len(migrated.PeerTrust) != 2 {
+		t.Fatalf("migration destroyed peer trust repair evidence: %+v", migrated.PeerTrust)
+	}
+	assertCredentialQuarantineRecord(t, migrated, "shared", []string{"node-b", "node-c"})
+	if err := Validate(migrated); err != nil {
+		t.Fatalf("migrated config is not runtime-valid: %v", err)
+	}
+	persisted, err := LoadExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(persisted, migrated) {
+		t.Fatalf("persisted migration differs\ngot:  %+v\nwant: %+v", persisted, migrated)
+	}
+}
+
+func peerCredentialCollisionConfig() Config {
+	cfg := DefaultConfig()
+	cfg.XrayProfiles["shared"] = XrayProfile{ID: "shared", Kind: "vless", VLESS: &VLESSProfile{
+		UUID: "e2f7cbec-a847-44ed-b3df-ceae1f9aa252", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+	}}
+	cfg.XrayProfiles["safe"] = XrayProfile{ID: "safe", Kind: "vless", VLESS: &VLESSProfile{
+		UUID: "7b88c03e-610b-47f8-83f9-522cb62719cd", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+	}}
+	cfg.Peers = []PeerConfig{
+		{
+			Name: "B", NodeID: "node-b", Addr: "10.20.0.2:2443", GatewayAddr: "10.20.0.2:2443",
+			Direction: route.DirectionOutbound, XrayProfileID: "shared", Enabled: true,
+		},
+		{Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, XrayProfileID: "shared", Enabled: true},
+		{
+			Name: "D", NodeID: "node-d", Addr: "10.20.0.4:2443", GatewayAddr: "10.20.0.4:2443",
+			Direction: route.DirectionOutbound, XrayProfileID: "safe", Enabled: true,
+		},
+	}
+	cfg.PeerTrust = map[string]PeerTrustGrant{
+		"node-b": {PeerNodeID: "node-b", Allow: []string{"node.read"}, Audit: true},
+		"C":      {PeerNodeID: "C", Allow: []string{"node.read"}, Audit: true},
+	}
+	cfg.NodeEgressGrants["node-c"] = NodeEgressGrant{
+		SourceNodeID: "node-c", Network: "tcp", AllowCIDRs: []string{"8.0.0.0/8"},
+		AllowPorts: []EgressPortRange{{From: 443, To: 443}},
+	}
+	return cfg
+}
+
+func assertCredentialQuarantineRecord(t *testing.T, cfg Config, profileID string, wantNodeIDs []string) {
+	t.Helper()
+	profile := cfg.XrayProfiles[profileID]
+	fingerprint, err := xraycredential.VLESSFingerprint(profile.VLESS.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.PeerCredentialQuarantines) != 1 {
+		t.Fatalf("credential quarantine records = %+v", cfg.PeerCredentialQuarantines)
+	}
+	record := cfg.PeerCredentialQuarantines[0]
+	sort.Strings(wantNodeIDs)
+	if record.CredentialFingerprint != fingerprint || record.Reason != PeerCredentialCollisionReason || !reflect.DeepEqual(record.PeerNodeIDs, wantNodeIDs) {
+		t.Fatalf("credential quarantine record = %+v, want fingerprint=%s peers=%v", record, fingerprint, wantNodeIDs)
+	}
+}
+
+func TestCredentialCollisionQuarantineDisablesWholeGroupIndependentOfOrder(t *testing.T) {
+	orders := [][]string{{"one", "two", "three"}, {"three", "one", "two"}}
+	for _, order := range orders {
+		t.Run(strings.Join(order, "-"), func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.XrayProfiles["shared"] = XrayProfile{ID: "shared", Kind: "vless", VLESS: &VLESSProfile{
+				UUID: "b689d1c8-0c28-474d-b841-9f213b25131e", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+			}}
+			cfg.XrayProfiles["safe"] = XrayProfile{ID: "safe", Kind: "vless", VLESS: &VLESSProfile{
+				UUID: "6ae9d655-c910-4791-b756-117347fc333d", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+			}}
+			for index, name := range order {
+				nodeID := "node-" + name
+				cfg.Peers = append(cfg.Peers, PeerConfig{
+					Name: name, NodeID: nodeID, Addr: fmt.Sprintf("10.30.0.%d:2443", index+2),
+					Direction: route.DirectionOutbound, XrayProfileID: "shared", Enabled: true,
+				})
+				cfg.PeerTrust[nodeID] = PeerTrustGrant{PeerNodeID: nodeID, Allow: []string{"node.read"}, Audit: true}
+			}
+			cfg.Peers = append(cfg.Peers, PeerConfig{
+				Name: "safe", NodeID: "node-safe", Addr: "10.30.0.10:2443",
+				Direction: route.DirectionOutbound, XrayProfileID: "safe", Enabled: true,
+			})
+			cfg.PeerTrust["node-safe"] = PeerTrustGrant{PeerNodeID: "node-safe", Allow: []string{"node.read"}, Audit: true}
+			cfg.NodeInbound = []InboundConfig{{
+				Kind: "socks", Purpose: "user", Listen: "127.0.0.1:1080", Enabled: true,
+				XrayProfileID: "terminal", ExitPeer: "node-two",
+			}}
+			cfg.XrayProfiles["terminal"] = XrayProfile{
+				ID: "terminal", Kind: "socks", SOCKS: &SOCKSProfile{Username: "terminal", Password: "terminal-password"},
+			}
+			normalize(&cfg)
+			if err := validateLoadableConfig(cfg); err != nil {
+				t.Fatalf("historical fixture is not loadable: %v", err)
+			}
+
+			changed, err := quarantinePeerCredentialCollisions(&cfg)
+			if err != nil || !changed {
+				t.Fatalf("quarantine changed=%v error=%v", changed, err)
+			}
+			for _, name := range []string{"one", "two", "three"} {
+				peer, _, found := FindPeer(cfg.Peers, name)
+				if !found || peer.Enabled || peer.XrayProfileID != "shared" || !IsPeerCredentialQuarantined(peer) {
+					t.Fatalf("peer %q survived collision quarantine: %+v", name, peer)
+				}
+				if _, trusted := cfg.PeerTrust["node-"+name]; !trusted {
+					t.Fatalf("peer %q lost trust repair evidence", name)
+				}
+			}
+			safe, _, found := FindPeer(cfg.Peers, "safe")
+			if !found || !safe.Enabled || safe.XrayProfileID != "safe" || cfg.PeerTrust["node-safe"].PeerNodeID != "node-safe" {
+				t.Fatalf("safe peer or trust changed: peer=%+v trust=%+v", safe, cfg.PeerTrust)
+			}
+			if cfg.NodeInbound[0].Enabled || !strings.Contains(cfg.NodeInbound[0].DisabledCause, "exit peer credential was quarantined") {
+				t.Fatalf("node-id exit reference survived quarantine: %+v", cfg.NodeInbound[0])
+			}
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("quarantined config is not strict: %v", err)
+			}
+			changedAgain, err := quarantinePeerCredentialCollisions(&cfg)
+			if err != nil || changedAgain {
+				t.Fatalf("quarantine was not idempotent: changed=%v error=%v", changedAgain, err)
+			}
+		})
+	}
+}
+
+func peerCredentialCollisionMigrationConfig() Config {
+	cfg := peerCredentialCollisionConfig()
+	cfg.SchemaVersion = 1
+	cfg.Revision = 7
+	cfg.NodeEgressGrants = map[string]NodeEgressGrant{}
+	cfg.Peers[0].Name = "zeta"
+	cfg.Peers[0].DisplayName = ""
+	cfg.Peers[1].Name = "alpha"
+	cfg.Peers[1].DisplayName = ""
+	delete(cfg.PeerTrust, "C")
+	cfg.PeerTrust["alpha"] = PeerTrustGrant{PeerNodeID: "alpha", Allow: []string{"node.read"}, Audit: true}
+	cfg.XrayProfiles["terminal"] = XrayProfile{
+		ID: "terminal", Kind: "socks", SOCKS: &SOCKSProfile{Username: "terminal", Password: "terminal-password"},
+	}
+	cfg.NodeInbound = []InboundConfig{{
+		Kind: "socks", Purpose: "user", Listen: "127.0.0.1:1080", Enabled: true,
+		XrayProfileID: "terminal", ExitPeer: "zeta",
+	}}
+	return cfg
 }
 
 func TestValidateRejectsXrayEquivalentInboundVLESSCredentials(t *testing.T) {
@@ -1233,7 +1689,7 @@ func TestValidateRejectsXrayEquivalentInboundVLESSCredentials(t *testing.T) {
 		{Name: "A", NodeID: "node-a", Direction: route.DirectionInbound, XrayProfileID: "first", Enabled: true},
 		{Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, XrayProfileID: "collision", Enabled: true},
 	}
-	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_inbound_credential_duplicate") {
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_duplicate") {
 		t.Fatalf("error = %v, want Xray-equivalent credential rejection", err)
 	}
 }

@@ -7,7 +7,48 @@ import (
 	"github.com/FrankoonG/x-tier/internal/configstore"
 	"github.com/FrankoonG/x-tier/internal/publicerr"
 	"github.com/FrankoonG/x-tier/internal/route"
+	"github.com/FrankoonG/x-tier/internal/xraycredential"
 )
+
+func TestAddPeerRequiresProfileForEveryEnabledDirection(t *testing.T) {
+	for _, direction := range []route.Direction{
+		route.DirectionInbound,
+		route.DirectionOutbound,
+		route.DirectionBidirectional,
+	} {
+		t.Run(string(direction), func(t *testing.T) {
+			source := configstore.DefaultConfig()
+			wantSource := cloneForTest(t, source)
+			result, err := AddPeer(source, configstore.PeerConfig{
+				Name: "B", NodeID: "node-b", Direction: direction, Enabled: true,
+			})
+			if code := publicerr.Code(err, "operation.failed"); code != CodePeerProfileRequired {
+				t.Fatalf("error code = %q, err = %v", code, err)
+			}
+			if !reflect.DeepEqual(result, PeerMutationResult{}) {
+				t.Fatalf("failed result = %+v", result)
+			}
+			assertConfigEqual(t, source, wantSource)
+		})
+	}
+}
+
+func TestAddPeerAllowsDisabledAddressBookEntryWithoutProfile(t *testing.T) {
+	source := configstore.DefaultConfig()
+	peer := configstore.PeerConfig{
+		Name: "B", NodeID: "node-b", Direction: route.DirectionInbound, Enabled: false,
+	}
+	result, err := AddPeer(source, peer)
+	if err != nil {
+		t.Fatalf("AddPeer: %v", err)
+	}
+	if len(result.Config.Peers) != 1 || !reflect.DeepEqual(result.Peer, peer) {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(source.Peers) != 0 {
+		t.Fatalf("source peers changed: %+v", source.Peers)
+	}
+}
 
 func TestRemovePeerCascadesNodeEgressGrantWithoutMutatingSource(t *testing.T) {
 	source := lifecycleConfig()
@@ -32,10 +73,7 @@ func TestRemovePeerCascadesNodeEgressGrantWithoutMutatingSource(t *testing.T) {
 	assertConfigEqual(t, source, wantSource)
 
 	result.Config.Peers[0].Children[0].Name = "changed"
-	result.Config.XrayProfiles["peer"].VLESS.UUID = "changed"
-	profile := result.Config.XrayProfiles["peer"]
-	profile.Options["marker"] = "changed"
-	result.Config.XrayProfiles["peer"] = profile
+	result.Config.XrayProfiles["peer-a"].VLESS.UUID = "changed"
 	trust := result.Config.PeerTrust["node-b"]
 	trust.Allow[0] = "changed"
 	result.Config.PeerTrust["node-b"] = trust
@@ -150,6 +188,152 @@ func TestSetPeerEnabledPreservesGrant(t *testing.T) {
 	}
 }
 
+func TestSetPeerEnabledRejectsMissingOrReusedCredential(t *testing.T) {
+	t.Run("missing profile", func(t *testing.T) {
+		source := configstore.DefaultConfig()
+		source.Peers = []configstore.PeerConfig{{
+			Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, Enabled: false,
+		}}
+		wantSource := cloneForTest(t, source)
+		result, err := SetPeerEnabled(source, "C", true, "")
+		if code := publicerr.Code(err, "operation.failed"); code != "config.peer_inbound_profile_incompatible" {
+			t.Fatalf("error code = %q, err = %v", code, err)
+		}
+		if !reflect.DeepEqual(result, PeerMutationResult{}) {
+			t.Fatalf("failed result = %+v", result)
+		}
+		assertConfigEqual(t, source, wantSource)
+	})
+
+	t.Run("credential already active", func(t *testing.T) {
+		source := configstore.DefaultConfig()
+		source.XrayProfiles["shared"] = configstore.XrayProfile{
+			ID: "shared", Kind: "vless", VLESS: &configstore.VLESSProfile{
+				UUID: "66ad4540-b58c-4ad2-9926-ea63445a9b57", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+			},
+		}
+		source.Peers = []configstore.PeerConfig{
+			{
+				Name: "B", NodeID: "node-b", Addr: "10.20.0.2:2443", GatewayAddr: "10.20.0.2:2443",
+				Direction: route.DirectionOutbound, XrayProfileID: "shared", Enabled: true,
+			},
+			{Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, XrayProfileID: "shared", Enabled: false},
+		}
+		wantSource := cloneForTest(t, source)
+		result, err := SetPeerEnabled(source, "C", true, "")
+		if code := publicerr.Code(err, "operation.failed"); code != "config.peer_credential_duplicate" {
+			t.Fatalf("error code = %q, err = %v", code, err)
+		}
+		if !reflect.DeepEqual(result, PeerMutationResult{}) {
+			t.Fatalf("failed result = %+v", result)
+		}
+		assertConfigEqual(t, source, wantSource)
+	})
+}
+
+func TestQuarantinedPeerRequiresCredentialRotationAndExplicitEnable(t *testing.T) {
+	source := lifecycleConfig()
+	source.Peers[0].Enabled = false
+	source.Peers[0].DisabledCause = configstore.PeerCredentialQuarantineCause
+	fingerprint, err := xraycredential.VLESSFingerprint(source.XrayProfiles["peer-a"].VLESS.UUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.PeerCredentialQuarantines = []configstore.PeerCredentialQuarantine{{
+		CredentialFingerprint: fingerprint,
+		PeerNodeIDs:           []string{"node-a", "retired-node"},
+		Reason:                configstore.PeerCredentialCollisionReason,
+	}}
+	source.XrayProfiles["peer-a-alias"] = configstore.XrayProfile{
+		ID: "peer-a-alias", Kind: "vless", VLESS: &configstore.VLESSProfile{
+			UUID: "66ad4540-b58c-4ead-9926-ea63445a9b57", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+		},
+	}
+	source.XrayProfiles["peer-c"] = configstore.XrayProfile{
+		ID: "peer-c", Kind: "vless", VLESS: &configstore.VLESSProfile{
+			UUID: "16f5cc3e-8186-4751-b6cd-45cc70d4b4fe", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+		},
+	}
+	wantSource := cloneForTest(t, source)
+
+	disabledAgain, err := SetPeerEnabled(source, "A", false, "maintenance")
+	if err != nil {
+		t.Fatalf("SetPeerEnabled(disable quarantined): %v", err)
+	}
+	if !configstore.IsPeerCredentialQuarantined(disabledAgain.Peer) {
+		t.Fatalf("disable cleared quarantine: %+v", disabledAgain.Peer)
+	}
+	assertConfigEqual(t, source, wantSource)
+
+	rejected, err := SetPeerEnabled(source, "A", true, "")
+	if code := publicerr.Code(err, "operation.failed"); code != CodePeerCredentialQuarantined {
+		t.Fatalf("quarantined enable code = %q, err = %v", code, err)
+	}
+	if !reflect.DeepEqual(rejected, PeerMutationResult{}) {
+		t.Fatalf("failed enable result = %+v", rejected)
+	}
+	assertConfigEqual(t, source, wantSource)
+
+	equivalent, err := UpdatePeerProfile(source, "node-a", "peer-a-alias")
+	if err != nil {
+		t.Fatalf("UpdatePeerProfile(equivalent): %v", err)
+	}
+	if equivalent.Peer.XrayProfileID != "peer-a-alias" || !configstore.IsPeerCredentialQuarantined(equivalent.Peer) {
+		t.Fatalf("equivalent credential cleared quarantine: %+v", equivalent.Peer)
+	}
+	if _, err := SetPeerEnabled(equivalent.Config, "A", true, ""); publicerr.Code(err, "operation.failed") != CodePeerCredentialQuarantined {
+		t.Fatalf("equivalent credential became enableable: %v", err)
+	}
+	assertConfigEqual(t, source, wantSource)
+
+	reusedActive, err := UpdatePeerProfile(source, "A", "peer-b")
+	if err != nil {
+		t.Fatalf("UpdatePeerProfile(active credential): %v", err)
+	}
+	if !configstore.IsPeerCredentialQuarantined(reusedActive.Peer) {
+		t.Fatalf("credential bound to another peer cleared quarantine: %+v", reusedActive.Peer)
+	}
+	assertConfigEqual(t, source, wantSource)
+
+	empty, err := UpdatePeerProfile(source, "A", "")
+	if err != nil {
+		t.Fatalf("UpdatePeerProfile(empty): %v", err)
+	}
+	if empty.Peer.XrayProfileID != "" || !configstore.IsPeerCredentialQuarantined(empty.Peer) {
+		t.Fatalf("empty profile destroyed quarantine evidence: %+v", empty.Peer)
+	}
+	rotated, err := UpdatePeerProfile(empty.Config, "A", "peer-c")
+	if err != nil {
+		t.Fatalf("UpdatePeerProfile(distinct): %v", err)
+	}
+	if rotated.Peer.Enabled || rotated.Peer.XrayProfileID != "peer-c" || rotated.Peer.DisabledCause != configstore.PeerCredentialRotatedDisabled {
+		t.Fatalf("rotated peer = %+v", rotated.Peer)
+	}
+	assertConfigEqual(t, source, wantSource)
+
+	enabled, err := SetPeerEnabled(rotated.Config, "node-a", true, "")
+	if err != nil {
+		t.Fatalf("SetPeerEnabled(after rotation): %v", err)
+	}
+	if !enabled.Peer.Enabled || enabled.Peer.DisabledCause != "" || enabled.Peer.XrayProfileID != "peer-c" {
+		t.Fatalf("enabled rotated peer = %+v", enabled.Peer)
+	}
+	if len(enabled.Config.PeerCredentialQuarantines) != 1 || enabled.Config.PeerCredentialQuarantines[0].CredentialFingerprint != fingerprint {
+		t.Fatalf("rotation removed durable quarantine: %+v", enabled.Config.PeerCredentialQuarantines)
+	}
+	reused, err := AddPeer(enabled.Config, configstore.PeerConfig{
+		Name: "D", NodeID: "node-d", Direction: route.DirectionInbound,
+		XrayProfileID: "peer-a-alias", Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("AddPeer(disabled old credential): %v", err)
+	}
+	if _, err := SetPeerEnabled(reused.Config, "D", true, ""); publicerr.Code(err, "operation.failed") != CodePeerCredentialQuarantined {
+		t.Fatalf("retired credential became reusable after full rotation: %v", err)
+	}
+	assertConfigEqual(t, source, wantSource)
+}
+
 func TestPeerMutationsReturnStableValidationCodes(t *testing.T) {
 	source := lifecycleConfig()
 	tests := []struct {
@@ -157,6 +341,16 @@ func TestPeerMutationsReturnStableValidationCodes(t *testing.T) {
 		run  func() error
 		code string
 	}{
+		{
+			name: "add without profile",
+			run: func() error {
+				_, err := AddPeer(source, configstore.PeerConfig{
+					Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, Enabled: true,
+				})
+				return err
+			},
+			code: CodePeerProfileRequired,
+		},
 		{
 			name: "remove unknown",
 			run: func() error {
@@ -205,18 +399,24 @@ func lifecycleConfig() configstore.Config {
 		Revision:      41,
 		Peers: []configstore.PeerConfig{
 			{
-				Name: "A", NodeID: "node-a", Direction: route.DirectionInbound, Enabled: true,
-				Children: []configstore.PeerConfig{{Name: "nested-a", NodeID: "nested-a"}},
+				Name: "A", NodeID: "node-a", Direction: route.DirectionInbound, XrayProfileID: "peer-a", Enabled: true,
+				Children: []configstore.PeerConfig{{Name: "nested-a", NodeID: "nested-a-id", Direction: route.DirectionInbound}},
 			},
 			{
-				Name: "B", NodeID: "node-b", Direction: route.DirectionInbound, Enabled: true,
-				Children: []configstore.PeerConfig{{Name: "nested-b", NodeID: "nested-b"}},
+				Name: "B", NodeID: "node-b", Direction: route.DirectionInbound, XrayProfileID: "peer-b", Enabled: true,
+				Children: []configstore.PeerConfig{{Name: "nested-b", NodeID: "nested-b-id", Direction: route.DirectionInbound}},
 			},
 		},
 		XrayProfiles: map[string]configstore.XrayProfile{
-			"peer": {
-				ID: "peer", Kind: "vless", VLESS: &configstore.VLESSProfile{UUID: "credential"},
-				Options: map[string]string{"marker": "original"},
+			"peer-a": {
+				ID: "peer-a", Kind: "vless", VLESS: &configstore.VLESSProfile{
+					UUID: "66ad4540-b58c-4ad2-9926-ea63445a9b57", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+				},
+			},
+			"peer-b": {
+				ID: "peer-b", Kind: "vless", VLESS: &configstore.VLESSProfile{
+					UUID: "f3c9805c-12ea-48f0-b762-5739f2365620", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+				},
 			},
 		},
 		PeerTrust: map[string]configstore.PeerTrustGrant{

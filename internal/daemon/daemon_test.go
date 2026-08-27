@@ -28,6 +28,7 @@ import (
 	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/webbridge"
 	"github.com/FrankoonG/x-tier/internal/xrayconfig"
+	"github.com/FrankoonG/x-tier/internal/xraycredential"
 	"github.com/FrankoonG/x-tier/internal/xrayrt"
 )
 
@@ -1757,7 +1758,8 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	}
 	httpStatus, err := daemonStatus(recovered)
 	if err != nil {
-		t.Fatalf("authenticated status rejected content-invalid LKG state: %v", err)
+		rawStatus, rawErr := recovered.Status(context.Background())
+		t.Fatalf("authenticated status rejected content-invalid LKG state: %v raw=%+v raw_err=%v", err, rawStatus, rawErr)
 	}
 	if httpStatus.Revision != checkpoint.Revision || httpStatus.Configuration.StartupRollback == nil ||
 		httpStatus.Configuration.StartupRollback.ConfiguredRevision != -1 {
@@ -1782,7 +1784,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	}
 	domainBody, err := json.Marshal(controlapi.ConfigRestoreRequest{DomainMutationRequest: controlapi.DomainMutationRequest{
 		APIVersion: controlapi.DomainAPIVersion,
-		Revision:   checkpoint.Revision,
+		Revision:   invalid.Revision,
 		DryRun:     true,
 		RequestID:  domainRequestID,
 	}})
@@ -1832,7 +1834,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	response, err := daemonExecute(recovered, controlapi.Request{
 		Args:      []string{"local", "config", "restore-last-good"},
 		JSON:      true,
-		Revision:  checkpoint.Revision,
+		Revision:  invalid.Revision,
 		RequestID: requestID,
 	})
 	if err != nil {
@@ -1845,7 +1847,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authenticated status failed between restore and reconcile: %v", err)
 	}
-	if postRestoreStatus.Revision != checkpoint.Revision+1 || postRestoreStatus.Reconcile.AppliedRevision != checkpoint.Revision ||
+	if postRestoreStatus.Revision != invalid.Revision+1 || postRestoreStatus.Reconcile.AppliedRevision != checkpoint.Revision ||
 		postRestoreStatus.Configuration.StartupRollback == nil {
 		t.Fatalf("post-restore pre-reconcile status=%+v", postRestoreStatus)
 	}
@@ -1857,13 +1859,13 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if status.State == controlapi.DaemonStateRunning && status.Revision == checkpoint.Revision+1 &&
+		if status.State == controlapi.DaemonStateRunning && status.Revision == invalid.Revision+1 &&
 			status.Reconcile.State == controlapi.ReconcileStateApplied && status.Configuration.StartupRollback == nil {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if status.State != controlapi.DaemonStateRunning || status.Revision != checkpoint.Revision+1 ||
+	if status.State != controlapi.DaemonStateRunning || status.Revision != invalid.Revision+1 ||
 		status.Reconcile.State != controlapi.ReconcileStateApplied || status.Configuration.StartupRollback != nil ||
 		status.Xray.FailStopped {
 		t.Fatalf("restored daemon did not reconcile: %+v", status)
@@ -1872,7 +1874,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repaired.Revision != checkpoint.Revision+1 {
+	if repaired.Revision != invalid.Revision+1 {
 		t.Fatalf("repaired active config = %+v", repaired)
 	}
 }
@@ -2281,6 +2283,235 @@ func TestDaemonMigratesKnownUnversionedConfigBeforeStarting(t *testing.T) {
 	}
 	if _, err := os.Stat(legacySeedPath); err != nil {
 		t.Fatalf("legacy seed source was removed: %v", err)
+	}
+}
+
+func TestDaemonCompletesPartialCredentialQuarantineBeforeStartingPlane(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	cfg := configstore.DefaultConfig()
+	cfg.Revision = 7
+	cfg.XrayProfiles["shared"] = configstore.XrayProfile{
+		ID: "shared", Kind: "vless", VLESS: &configstore.VLESSProfile{
+			UUID: "e2f7cbec-a847-44ed-b3df-ceae1f9aa252", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
+		},
+	}
+	cfg.XrayProfiles["terminal"] = configstore.XrayProfile{
+		ID: "terminal", Kind: "socks", SOCKS: &configstore.SOCKSProfile{
+			Username: "terminal", Password: "terminal-password",
+		},
+	}
+	cfg.Peers = []configstore.PeerConfig{
+		{
+			Name: "zeta", NodeID: "node-zeta", Addr: "10.20.0.2:2443", GatewayAddr: "10.20.0.2:2443",
+			Direction: route.DirectionOutbound, XrayProfileID: "shared", Enabled: true,
+		},
+		{
+			Name: "alpha", NodeID: "node-alpha", Direction: route.DirectionInbound,
+			XrayProfileID: "shared", Enabled: false,
+		},
+	}
+	cfg.NodeInbound = []configstore.InboundConfig{{
+		Kind: "socks", Purpose: "user", Listen: "127.0.0.1:1080", Enabled: true,
+		XrayProfileID: "terminal", ExitPeer: "zeta",
+	}}
+	cfg.PeerTrust = map[string]configstore.PeerTrustGrant{
+		"node-zeta":  {PeerNodeID: "node-zeta", Allow: []string{"node.read"}, Audit: true},
+		"node-alpha": {PeerNodeID: "node-alpha", Allow: []string{"node.read"}, Audit: true},
+	}
+	cfg.NodeEgressGrants["node-alpha"] = configstore.NodeEgressGrant{
+		SourceNodeID: "node-alpha", Network: "tcp", AllowCIDRs: []string{"8.0.0.0/8"},
+		AllowPorts: []configstore.EgressPortRange{{From: 443, To: 443}},
+	}
+	if err := configstore.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate an interrupted quarantine from a previous binary: one peer has
+	// been marked, but its colliding outbound and durable record were not yet
+	// contained and published.
+	_, alphaIndex, found := configstore.FindPeer(cfg.Peers, "alpha")
+	if !found {
+		t.Fatalf("test fixture lost alpha peer after canonical save: %+v", cfg.Peers)
+	}
+	cfg.Peers[alphaIndex].DisabledCause = configstore.PeerCredentialQuarantineCause
+	if err := configstore.Validate(cfg); err == nil || !strings.Contains(err.Error(), "config.peer_credential_quarantine_record_missing") {
+		t.Fatalf("test fixture is not a strict-invalid partial quarantine: %v", err)
+	}
+	payload, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var planeConfig configstore.Config
+	d, err := start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"}, func(
+		_ context.Context, _ string, _ *statestore.Store, configured configstore.Config,
+	) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error) {
+		planeConfig = configured
+		digest, digestErr := configstore.ContentDigest(configured)
+		if digestErr != nil {
+			return nil, -1, nil, digestErr
+		}
+		return &statusCountingPlane{status: dataplane.Status{
+			State: "running", AppliedRevision: configured.Revision, AttemptedRevision: configured.Revision,
+			AppliedDigest: digest, AttemptedDigest: digest, ObservedAt: time.Now().UTC(), ObservationFresh: true,
+			Rendr: healthyRendrStatusForDaemonTest(),
+		}}, configured.Revision, nil, nil
+	})
+	if err != nil {
+		t.Fatalf("daemon startup rejected repairable current config: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	if planeConfig.Revision != 8 {
+		t.Fatalf("plane received revision %d, want quarantined revision 8", planeConfig.Revision)
+	}
+	if err := configstore.Validate(planeConfig); err != nil {
+		t.Fatalf("plane received invalid config: %v", err)
+	}
+	for _, name := range []string{"alpha", "zeta"} {
+		peer, _, found := configstore.FindPeer(planeConfig.Peers, name)
+		if !found || peer.Enabled || peer.XrayProfileID != "shared" || !configstore.IsPeerCredentialQuarantined(peer) {
+			t.Fatalf("plane received unquarantined peer %q: %+v", name, planeConfig.Peers)
+		}
+	}
+	if len(planeConfig.NodeInbound) != 1 || planeConfig.NodeInbound[0].Enabled || planeConfig.NodeInbound[0].ExitPeer != "zeta" ||
+		!strings.Contains(planeConfig.NodeInbound[0].DisabledCause, "exit peer credential was quarantined") {
+		t.Fatalf("plane received unsafe inbound dependency: %+v", planeConfig.NodeInbound)
+	}
+	if len(planeConfig.NodeEgressGrants) != 1 || len(planeConfig.PeerTrust) != 2 {
+		t.Fatalf("quarantine destroyed repair evidence: grants=%+v trust=%+v", planeConfig.NodeEgressGrants, planeConfig.PeerTrust)
+	}
+	if len(planeConfig.PeerCredentialQuarantines) != 1 ||
+		len(planeConfig.PeerCredentialQuarantines[0].PeerNodeIDs) != 2 ||
+		planeConfig.PeerCredentialQuarantines[0].PeerNodeIDs[0] != "node-alpha" ||
+		planeConfig.PeerCredentialQuarantines[0].PeerNodeIDs[1] != "node-zeta" {
+		t.Fatalf("plane lost durable quarantine evidence: %+v", planeConfig.PeerCredentialQuarantines)
+	}
+
+	status, err := d.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Configuration.MigratedAtStartup || status.Revision != 8 {
+		t.Fatalf("quarantine was not reported as startup migration: %+v", status.Configuration)
+	}
+	persisted, err := configstore.LoadStoreExisting(d.stateStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configstore.Validate(persisted); err != nil || persisted.Revision != 8 {
+		t.Fatalf("persisted quarantine = %+v error=%v", persisted, err)
+	}
+}
+
+func TestDaemonStartupRollbackMergesDurableCredentialLedgerBeforeStartingPlane(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	checkpoint := configstore.DefaultConfig()
+	checkpoint.Revision = 7
+	checkpoint.XrayProfiles["shared"] = configstore.XrayProfile{
+		ID: "shared", Kind: "vless", VLESS: &configstore.VLESSProfile{
+			UUID: "e2f7cbec-a847-44ed-b3df-ceae1f9aa252", Transport: "tcp",
+			Security: "none", AllowInsecurePlaintext: true,
+		},
+	}
+	checkpoint.Peers = []configstore.PeerConfig{{
+		Name: "B", NodeID: "node-b", Addr: "10.20.0.2:2443", GatewayAddr: "10.20.0.2:2443",
+		Direction: route.DirectionOutbound, XrayProfileID: "shared", Enabled: true,
+	}}
+	if err := configstore.Save(configPath, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configstore.SaveStore(store, checkpoint); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := configstore.SaveStoreLastKnownGood(store, checkpoint); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+
+	fingerprint, err := xraycredential.VLESSFingerprint(checkpoint.XrayProfiles["shared"].VLESS.UUID)
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	active := checkpoint
+	active.Revision = 8
+	active.Peers = []configstore.PeerConfig{
+		checkpoint.Peers[0],
+		{Name: "C", NodeID: "node-c", Direction: route.DirectionInbound, XrayProfileID: "shared"},
+	}
+	for index := range active.Peers {
+		active.Peers[index].Enabled = false
+		active.Peers[index].DisabledCause = configstore.PeerCredentialQuarantineCause
+	}
+	active.PeerCredentialQuarantines = []configstore.PeerCredentialQuarantine{{
+		CredentialFingerprint: fingerprint,
+		PeerNodeIDs:           []string{"node-b", "node-c"},
+		Reason:                configstore.PeerCredentialCollisionReason,
+	}}
+	if err := configstore.SaveStore(store, active); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	invalid := active
+	invalid.NodeInbound = []configstore.InboundConfig{
+		{Kind: "socks", Listen: "127.0.0.1:1080"},
+		{Kind: "socks", Listen: "127.0.0.1:2080"},
+	}
+	payload, err := json.MarshalIndent(invalid, "", "  ")
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.ReplaceConfig(append(payload, '\n')); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var planeConfig configstore.Config
+	d, err := start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"}, func(
+		_ context.Context, _ string, _ *statestore.Store, configured configstore.Config,
+	) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error) {
+		planeConfig = configured
+		digest, digestErr := configstore.ContentDigest(configured)
+		if digestErr != nil {
+			return nil, -1, nil, digestErr
+		}
+		return &statusCountingPlane{status: dataplane.Status{
+			State: "running", AppliedRevision: configured.Revision, AttemptedRevision: configured.Revision,
+			AppliedDigest: digest, AttemptedDigest: digest, ObservedAt: time.Now().UTC(), ObservationFresh: true,
+			Rendr: healthyRendrStatusForDaemonTest(),
+		}}, configured.Revision, nil, nil
+	})
+	if err != nil {
+		t.Fatalf("startup rollback rejected durable credential ledger: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	peer, _, found := configstore.FindPeer(planeConfig.Peers, "B")
+	if !found || peer.Enabled || !configstore.IsPeerCredentialQuarantined(peer) {
+		t.Fatalf("startup rollback re-enabled retired credential: peer=%+v config=%+v", peer, planeConfig)
+	}
+	if planeConfig.Revision != checkpoint.Revision || len(planeConfig.PeerCredentialQuarantines) != 1 {
+		t.Fatalf("startup rollback lost durable evidence: %+v", planeConfig)
+	}
+	if err := configstore.Validate(planeConfig); err != nil {
+		t.Fatalf("startup rollback passed invalid config to plane: %v", err)
 	}
 }
 

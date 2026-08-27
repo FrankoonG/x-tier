@@ -77,6 +77,7 @@ import type {
 import { getNodeEgressGrants, getPeers, getXrayProfiles, mutations } from '../api/control';
 import { useDomainRead } from '../state/useDomainRead';
 import { useControl } from '../state/store';
+import { isVersionedReadCurrent } from '../state/versionedRead';
 import { FailureNotice } from '../components/FailureNotice';
 import { MutationDialog, useMutationDialog } from '../components/MutationDialog';
 import { Absent } from '../components/Absent';
@@ -279,10 +280,12 @@ export function Peers() {
    */
   const known = read.data ? (read.data.peers ?? []) : null;
   const peers = known ?? [];
-  const grantsCurrent = revisionRead
-    && grantsRead.failure === null
-    && read.data?.revision === revision
-    && grantsRead.data?.revision === revision;
+  const peersCurrent = isVersionedReadCurrent(revisionRead, revision, read);
+  const profilesCurrent = isVersionedReadCurrent(revisionRead, revision, profilesRead);
+  const grantsCurrent = peersCurrent
+    && isVersionedReadCurrent(revisionRead, revision, grantsRead);
+  const peerRevision = peersCurrent ? read.data.revision : null;
+  const peerFormCurrent = peerRevision !== null && profilesCurrent;
   const grantFrom = (snapshot: NodeEgressGrantsResponse, peer: PeerConfig) => {
     const grants = snapshot.node_egress_grants;
     return Object.hasOwn(grants, peer.node_id) ? grants[peer.node_id] ?? null : null;
@@ -291,7 +294,7 @@ export function Peers() {
     grantsCurrent ? grantFrom(grantsRead.data!, peer) : null
   );
   const currentEditingPeer = editing !== null && editing !== 'new'
-    ? peers.find((peer) => peer.name === editing.name) ?? editing
+    ? peers.find((peer) => peer.name === editing.name) ?? null
     : null;
 
   const visible = useMemo(() => {
@@ -439,13 +442,16 @@ export function Peers() {
           <Switch
             size="sm"
             checked={p.enabled}
-            onCheckedChange={(next) =>
+            disabled={peerRevision === null}
+            onCheckedChange={(next) => {
+              if (peerRevision === null) return;
               mutation.open({
                 operation: mutations.peerState(
                   p.name,
                   next,
                   next ? '' : 'disabled from the panel',
                 ),
+                expectedRevision: peerRevision,
                 title: next ? `Enable ${p.name}` : `Disable ${p.name}`,
                 description: next
                   ? 'Marks the peer usable. Nothing is dialled.'
@@ -474,8 +480,8 @@ export function Peers() {
                     />
                   );
                 },
-              })
-            }
+              });
+            }}
             aria-label={`${p.enabled ? 'Disable' : 'Enable'} ${p.name}`}
           />
           {!p.enabled && p.disabled_cause ? (
@@ -507,7 +513,11 @@ export function Peers() {
           }
         >
           <MenuItem onSelect={() => setDetail(p)}>Inspect</MenuItem>
-          <MenuItem closeOnSelect={false} onSelect={() => setEditing(p)}>
+          <MenuItem
+            closeOnSelect={false}
+            disabled={!peerFormCurrent}
+            onSelect={() => setEditing(p)}
+          >
             Edit…
           </MenuItem>
           <MenuSeparator />
@@ -515,9 +525,12 @@ export function Peers() {
             danger
             icon={<IconTrash />}
             closeOnSelect={false}
-            onSelect={() =>
+            disabled={peerRevision === null}
+            onSelect={() => {
+              if (peerRevision === null) return;
               mutation.open({
                 operation: mutations.peerRemove(p.name),
+                expectedRevision: peerRevision,
                 title: `Remove ${p.name}`,
                 description: 'Deletes the entry from the address book.',
                 confirmLabel: 'Remove',
@@ -537,8 +550,8 @@ export function Peers() {
                     }
                   />
                 ),
-              })
-            }
+              });
+            }}
           >
             Remove…
           </MenuItem>
@@ -566,7 +579,14 @@ export function Peers() {
             )
           }
           actions={
-            <Button variant="primary" icon={<IconPlus />} onClick={() => setEditing('new')}>
+            <Button
+              variant="primary"
+              icon={<IconPlus />}
+              disabled={!peerFormCurrent}
+              onClick={() => {
+                if (peerFormCurrent) setEditing('new');
+              }}
+            >
               Add peer
             </Button>
           }
@@ -608,6 +628,19 @@ export function Peers() {
             !grantsRead.failure.blocked ? (
               <Button size="sm" variant="default" onClick={() => void grantsRead.reload()}>
                 Try again
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
+      {profilesRead.failure && (
+        <FailureNotice
+          failure={profilesRead.failure}
+          actions={
+            !profilesRead.failure.blocked ? (
+              <Button size="sm" variant="default" onClick={() => void profilesRead.reload()}>
+                Try profiles again
               </Button>
             ) : undefined
           }
@@ -730,7 +763,14 @@ export function Peers() {
                   headingLevel={3}
                   description="Nothing to route through yet. Add a peer to give paths something to resolve."
                   actions={
-                    <Button variant="primary" icon={<IconPlus />} onClick={() => setEditing('new')}>
+                    <Button
+                      variant="primary"
+                      icon={<IconPlus />}
+                      disabled={!peerFormCurrent}
+                      onClick={() => {
+                        if (peerFormCurrent) setEditing('new');
+                      }}
+                    >
                       Add peer
                     </Button>
                   }
@@ -788,15 +828,23 @@ export function Peers() {
             : 'Changes the written record. Nothing is dialled.'
         }
       >
-        {editing && (
+        {editing && !peerFormCurrent ? (
+          <InlineMessage variant="warning">
+            Peer editing is paused until the peer and transport-profile snapshots both match
+            revision {revision}.
+          </InlineMessage>
+        ) : editing !== null && editing !== 'new' && currentEditingPeer === null ? (
+          <InlineMessage variant="warning">
+            This peer is no longer present at revision {revision}. Close this drawer and select a
+            current entry.
+          </InlineMessage>
+        ) : editing && (
           <div style={{ display: 'grid', gap: 'var(--stratum-space-8)' }}>
             <PeerForm
               key={editing === 'new' ? 'new' : `${editing.name}:${read.data?.revision ?? 'unread'}`}
               peer={editing === 'new' ? null : currentEditingPeer}
               existing={peers}
-              profiles={
-                profilesRead.data ? Object.values(profilesRead.data.xray_profiles ?? {}) : null
-              }
+              profiles={Object.values(profilesRead.data!.xray_profiles ?? {})}
               hasNodeEgressGrant={
                 editing === 'new'
                   ? false
@@ -805,9 +853,11 @@ export function Peers() {
                     : grantFor(currentEditingPeer!) !== null
               }
               onSubmit={(operation, title, revokesNodeEgressGrant) => {
+                if (peerRevision === null || !profilesCurrent) return;
                 setEditing(null);
                 mutation.open({
                   operation,
+                  expectedRevision: peerRevision,
                   title,
                   description: revokesNodeEgressGrant
                     ? 'The direction change and grant revocation are one atomic configuration mutation.'

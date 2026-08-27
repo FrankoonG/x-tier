@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/FrankoonG/x-tier/internal/configops"
@@ -23,6 +24,7 @@ import (
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/statestore"
 	"github.com/FrankoonG/x-tier/internal/xrayconfig"
+	"github.com/FrankoonG/x-tier/internal/xraycredential"
 )
 
 type cachedDomainResponse struct {
@@ -67,8 +69,9 @@ func (e domainFailure) Unwrap() error           { return e.err }
 func (e domainFailure) PublicErrorCode() string { return e.code }
 
 type publicXrayProfile struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID                string `json:"id"`
+	Kind              string `json:"kind"`
+	CredentialGroupID string `json:"credential_group_id,omitempty"`
 }
 
 const (
@@ -200,10 +203,7 @@ func (s *Server) handleDomainRead(w http.ResponseWriter, r *http.Request) {
 	case controlapi.DomainInboundsPath:
 		payload = map[string]any{"ok": true, "revision": cfg.Revision, "target_local_node_id": cfg.Node.NodeID, "inbounds": cfg.NodeInbound}
 	case controlapi.DomainXrayProfilesPath:
-		profiles := make(map[string]publicXrayProfile, len(cfg.XrayProfiles))
-		for id, profile := range cfg.XrayProfiles {
-			profiles[id] = domainProfileView(profile)
-		}
+		profiles := domainProfileViews(cfg.XrayProfiles)
 		payload = map[string]any{"ok": true, "revision": cfg.Revision, "xray_profiles": profiles}
 	default:
 		writeDomainResult(w, domainErrorResult(domainFailure{code: "domain.not_found", err: fmt.Errorf("resource is not available")}, http.StatusNotFound))
@@ -839,12 +839,6 @@ func inboundStateMutation(request controlapi.InboundStateRequest) domainMutation
 
 func peerCreateMutation(request controlapi.PeerCreateRequest) domainMutation {
 	return func(cfg *configstore.Config, _ bool, _ *domainMutationEffects) (any, error) {
-		if request.Name == "" || request.NodeID == "" {
-			return nil, domainFailure{code: "config.peer_identity_required", err: fmt.Errorf("peer name and node_id are required")}
-		}
-		if _, _, ok := configstore.FindPeer(cfg.Peers, request.Name); ok {
-			return nil, domainFailure{code: "config.peer_exists", err: fmt.Errorf("%s", request.Name)}
-		}
 		peer := configstore.PeerConfig{
 			Name:          request.Name,
 			NodeID:        request.NodeID,
@@ -857,8 +851,12 @@ func peerCreateMutation(request controlapi.PeerCreateRequest) domainMutation {
 			Enabled:       true,
 			RendrCapable:  true,
 		}
-		cfg.Peers = append(cfg.Peers, peer)
-		return map[string]any{"peer": peer}, nil
+		result, err := configops.AddPeer(*cfg, peer)
+		if err != nil {
+			return nil, err
+		}
+		*cfg = result.Config
+		return map[string]any{"peer": result.Peer}, nil
 	}
 }
 
@@ -898,12 +896,18 @@ func peerUpdateMutation(request controlapi.PeerUpdateRequest) domainMutation {
 		if !ok {
 			return nil, domainFailure{code: "config.peer_unknown", err: fmt.Errorf("%s", request.Name)}
 		}
+		if request.Patch.XrayProfileID != nil {
+			result, err := configops.UpdatePeerProfile(*cfg, peer.NodeID, *request.Patch.XrayProfileID)
+			if err != nil {
+				return nil, err
+			}
+			*cfg = result.Config
+			peer = result.Peer
+			_, index, _ = configstore.FindPeer(cfg.Peers, peer.NodeID)
+		}
 		if request.Patch.Addr != nil {
 			peer.Addr = *request.Patch.Addr
 			peer.GatewayAddr = *request.Patch.Addr
-		}
-		if request.Patch.XrayProfileID != nil {
-			peer.XrayProfileID = *request.Patch.XrayProfileID
 		}
 		if request.Patch.NestedEnabled != nil {
 			peer.NestedEnabled = *request.Patch.NestedEnabled
@@ -1067,7 +1071,7 @@ func profilePutMutation(request controlapi.XrayProfilePutRequest) domainMutation
 			return nil, domainFailure{code: "config.profile_invalid", err: err}
 		}
 		cfg.XrayProfiles[request.ID] = profile
-		return map[string]any{"xray_profile": domainProfileView(profile)}, nil
+		return map[string]any{"xray_profile": domainProfileViews(cfg.XrayProfiles)[request.ID]}, nil
 	}
 }
 
@@ -1465,8 +1469,41 @@ func domainNodeView(node configstore.NodeConfig) configstore.NodeConfig {
 	return node
 }
 
-func domainProfileView(profile configstore.XrayProfile) publicXrayProfile {
-	return publicXrayProfile{ID: profile.ID, Kind: profile.Kind}
+func domainProfileViews(profiles map[string]configstore.XrayProfile) map[string]publicXrayProfile {
+	credentialGroups := make(map[string][]string)
+	for id, profile := range profiles {
+		if profile.Kind != "vless" || profile.VLESS == nil {
+			continue
+		}
+		credentialKey, err := xraycredential.VLESSKey(profile.VLESS.UUID)
+		if err != nil {
+			continue
+		}
+		credentialGroups[credentialKey] = append(credentialGroups[credentialKey], id)
+	}
+
+	groupIDs := make(map[string]string, len(profiles))
+	for _, profileIDs := range credentialGroups {
+		sort.Strings(profileIDs)
+		// The label hashes public profile IDs, not UUID bytes. It exposes only
+		// equality within this configuration and cannot be used to recover a
+		// credential redacted by the domain API.
+		digest := sha256.Sum256([]byte("xtier:vless-profile-group:v1\x00" + strings.Join(profileIDs, "\x00")))
+		groupID := fmt.Sprintf("vless-%x", digest[:16])
+		for _, profileID := range profileIDs {
+			groupIDs[profileID] = groupID
+		}
+	}
+
+	views := make(map[string]publicXrayProfile, len(profiles))
+	for id, profile := range profiles {
+		views[id] = publicXrayProfile{
+			ID:                profile.ID,
+			Kind:              profile.Kind,
+			CredentialGroupID: groupIDs[id],
+		}
+	}
+	return views
 }
 
 func domainInboundIndex(inbounds []configstore.InboundConfig, kind string) int {
