@@ -1,7 +1,9 @@
 import {
   forwardRef,
   useCallback,
+  useEffect,
   useRef,
+  useState,
   type InputHTMLAttributes,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -9,8 +11,8 @@ import {
   type RefCallback,
 } from 'react';
 import clsx from 'clsx';
-import { useControllableState } from '../../hooks/useControllableState';
 import { useFieldControl } from '../Field/Field';
+import { observeFormReset } from './inputResetState';
 import './Input.css';
 
 export type InputSize = 'sm' | 'md' | 'lg';
@@ -157,9 +159,20 @@ const IconClear = () => (
  * and non-interactive adornments to the input, and deliberately leaves clicks
  * on the input alone so text selection by dragging still works.
  *
- * The state is always React-controlled internally (via `useControllableState`)
- * so `clearable` can know whether there is a value in both controlled and
- * uncontrolled usage, and so `onValueChange` fires identically in both.
+ * CONTROLLED AND UNCONTROLLED
+ * ---------------------------
+ * Pass `value` and this is a controlled React input. Pass neither `value` nor
+ * anything else and the DOM node owns its text, exactly as a bare `<input>`
+ * does — React is told `defaultValue` at most, and never mirrors what is typed
+ * back into state or onto the `value` attribute.
+ *
+ * That distinction matters for secrets. A password field whose text React holds
+ * appears in the component tree, in anything that serializes props past an
+ * error boundary, and — because React keeps the attribute in step with the
+ * property — in `outerHTML`, which a browser would never do on its own for
+ * `type="password"`. So the uncontrolled path keeps only a boolean: whether
+ * there is any text, which is all `clearable` needs to decide whether to offer
+ * the button. `onValueChange` fires from the change event in both modes.
  */
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   {
@@ -202,11 +215,35 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   const innerRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useMergedRefs<HTMLInputElement>(innerRef, ref);
 
-  const [value, setValue] = useControllableState<string>({
-    value: valueProp === undefined ? undefined : String(valueProp),
-    defaultValue: defaultValue === undefined ? '' : String(defaultValue),
-    onChange: onValueChange,
-  });
+  const isControlled = valueProp !== undefined;
+
+  // Uncontrolled only: whether the field has any text. Not what the text is —
+  // see the note above. Seeded from `defaultValue` so a field that starts with
+  // a value starts with its clear button too.
+  const [filled, setFilled] = useState(() => String(defaultValue ?? '').length > 0);
+  const hasValue = isControlled ? String(valueProp).length > 0 : filled;
+
+  useEffect(() => {
+    if (!clearable || isControlled || !innerRef.current) return undefined;
+    return observeFormReset(innerRef.current, setFilled);
+  }, [clearable, isControlled]);
+
+  /**
+   * Records a value the field has just taken. The flag is ours to keep only
+   * when we own the state; the callback fires either way, so `onValueChange`
+   * reads the same from both modes.
+   *
+   * Tracked only when `clearable` asked for it. Nothing else reads the flag, and
+   * a field nobody offers to clear should not be re-rendering to remember that
+   * it is non-empty — least of all a password field, where the fact is about a
+   * secret. The one cost: flipping `clearable` on after text is already present
+   * shows the button from the next keystroke rather than immediately. Every
+   * consumer passes it as a constant.
+   */
+  const noteValue = (next: string) => {
+    if (clearable && !isControlled) setFilled(next.length > 0);
+    onValueChange?.(next);
+  };
 
   // An explicit `aria-invalid` wins over the `invalid` prop in BOTH channels.
   // Deriving `data-invalid` with an OR would let a wrapper that emits
@@ -214,15 +251,18 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   // assistive tech the field is valid — meaning carried by colour alone for
   // one of the two audiences.
   const isInvalid = ariaInvalidProp !== undefined ? isAriaInvalid(ariaInvalidProp) : invalid;
-  const showClear = clearable && !disabled && !readOnly && value.length > 0;
+  const showClear = clearable && !disabled && !readOnly && hasValue;
 
   const handleClear = () => {
     const element = innerRef.current;
     // Focus first: the clear button unmounts the moment the value empties, and
     // a keyboard user whose focus lands on <body> has lost their place.
     element?.focus();
+    // The native setter dispatches a real `input` event, so the change handler
+    // below does the recording. `noteValue` here is for the case where there is
+    // no element to write to and no event will arrive.
     if (!element || !setNativeInputValue(element, '')) {
-      setValue('');
+      noteValue('');
     }
     onClear?.();
   };
@@ -268,7 +308,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
         id={id}
         type={type}
         className={clsx('stratum-input__control', inputClassName)}
-        value={value}
+        // One or the other, never both: React treats an input carrying both as
+        // a mistake, and an uncontrolled field must not be handed a `value` it
+        // would then have to keep in step.
+        {...(isControlled ? { value: String(valueProp) } : { defaultValue })}
         disabled={disabled}
         readOnly={readOnly}
         required={requiredProp}
@@ -276,7 +319,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
         aria-required={ariaRequired}
         aria-describedby={describedBy}
         onChange={(event) => {
-          setValue(event.target.value);
+          noteValue(event.target.value);
           onChange?.(event);
         }}
       />

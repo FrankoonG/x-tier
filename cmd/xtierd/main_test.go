@@ -75,3 +75,14 @@ func TestRunRequiresConfigPath(t *testing.T) {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
 }
+
+func TestRunRequiresWebAddressForPrivateHTTPOptIn(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{
+		"--config", filepath.Join(t.TempDir(), "xtier.json"),
+		"--web-insecure-private-network",
+	}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "--web-insecure-private-network requires --web") {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+}

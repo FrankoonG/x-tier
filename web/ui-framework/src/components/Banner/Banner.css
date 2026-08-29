@@ -7,11 +7,21 @@
     --_icon: var(--stratum-info-fg);
 
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    /* icon | body | action, with the dismiss placed on an implicit fourth
+     * track. Three explicit tracks rather than four so that the common shapes —
+     * an action without a dismiss, a bare message — do not carry an empty
+     * trailing track, whose gap is dead space at the end of every row. */
+    grid-template-columns: var(--_grid-columns);
     align-items: start;
     gap: var(--_gap-y) var(--_gap-x);
     width: 100%;
     padding: var(--_py) var(--_px);
+
+    /* Queried below, so the action can wrap when the BANNER is narrow rather
+     * than only when the window is. A banner in a login card or a sidebar is
+     * narrow on the widest monitor there is. */
+    container-type: inline-size;
+    container-name: stratum-banner;
 
     color: var(--_fg);
     background: var(--_bg);
@@ -191,6 +201,15 @@
   }
 
   .stratum-banner__dismiss {
+    /* Row 1, past the end of the explicit grid: the track is created only for
+     * banners that actually offer a dismiss, and the close button keeps the
+     * top-right corner whether or not there is an action, and whichever row the
+     * action ends up on.
+     *
+     * Both coordinates are given. With only the column, auto-placement would
+     * carry the dismiss along behind an action that had wrapped to the second
+     * row, and park the close button beside it. */
+    grid-area: 1 / -1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -220,16 +239,23 @@
     outline-offset: -1px;
   }
 
-  /* Narrow viewports: the action row drops under the text rather than
-   * squeezing the message to two words per line. A media query rather than a
-   * container query, because a container query cannot match the element that
-   * declares the container and this component ships without a wrapper. */
-  @media (max-width: 560px) {
-    .stratum-banner {
-      grid-template-columns: auto minmax(0, 1fr) auto;
-    }
+  /* Narrow banner: the action drops under the text rather than squeezing the
+   * message to two words per line.
+   *
+   * Keyed to the banner's own width, not the window's. The action holds a grid
+   * column for the full height of the block, so in a login card or a sidebar it
+   * takes a third of the width from the message — on a wide screen, where a
+   * media query never fires. `overflow-wrap: anywhere` then breaks an error
+   * code mid-token to fit what is left.
+   *
+   * The rule reaches only the action, because an element cannot match a
+   * container query it declares itself. That is why the template above is
+   * fixed: nothing here needs to restyle the container. */
+  @container stratum-banner (max-width: 30rem) {
     .stratum-banner__action {
-      grid-column: 2 / -1;
+      /* To the end of the EXPLICIT grid — column 3 — so the action stays clear
+       * of the dismiss column and under the body it belongs to. */
+      grid-column: var(--_action-column);
       margin-block-start: var(--stratum-space-2);
     }
   }

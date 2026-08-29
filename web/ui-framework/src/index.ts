@@ -35,7 +35,7 @@ export { useScrollLock } from './hooks/useScrollLock';
 /* Icons */
 /* ------------------------------------------------------------------------ */
 
-export { ICON_ATTRS, IconAlert, IconArrowBoth, IconArrowLeft, IconArrowRight, IconBook, IconCheck, IconChevronDown, IconChevronLeft, IconChevronRight, IconChevronUp, IconClock, IconClose, IconCopy, IconDaemon, IconDiagnostics, IconEdit, IconExternal, IconEye, IconFilter, IconGlobe, IconIdentity, IconInbound, IconInfo, IconLink, IconLock, IconMenu, IconMinus, IconMoon, IconMore, IconOverview, IconPath, IconPeers, IconPlay, IconPlug, IconPlus, IconRefresh, IconRelay, IconSearch, IconSettings, IconShield, IconSun, IconSystem, IconTerminal, IconTopology, IconTrash, IconUnlock } from './icons/Icon';
+export { ICON_ATTRS, IconAlert, IconArrowBoth, IconArrowLeft, IconArrowRight, IconBook, IconCheck, IconChevronDown, IconChevronLeft, IconChevronRight, IconChevronUp, IconClock, IconClose, IconCopy, IconDaemon, IconDiagnostics, IconEdit, IconExternal, IconEye, IconFilter, IconGlobe, IconIdentity, IconInbound, IconInfo, IconLink, IconLock, IconMenu, IconMinus, IconMoon, IconMore, IconOverview, IconPath, IconPeers, IconPlay, IconPlug, IconPlus, IconRefresh, IconRelay, IconSearch, IconSettings, IconShield, IconSignOut, IconSun, IconSystem, IconTerminal, IconTopology, IconTrash, IconUnlock } from './icons/Icon';
 export type { IconProps } from './icons/Icon';
 
 /* ------------------------------------------------------------------------ */
@@ -65,6 +65,7 @@ export { Button } from './components/Button/Button';
 export type { ButtonProps, ButtonSize, ButtonVariant } from './components/Button/Button';
 export { Card, CardBody, CardFooter, CardHeader } from './components/Card/Card';
 export type { CardBodyProps, CardFooterProps, CardHeaderProps, CardHeadingLevel, CardPadding, CardProps, CardVariant } from './components/Card/Card';
+export { cardRoleAllowsAutomaticLabel } from './components/Card/cardA11y';
 export { Checkbox } from './components/Checkbox/Checkbox';
 export type { CheckboxProps, CheckboxSize } from './components/Checkbox/Checkbox';
 export { Code } from './components/Code/Code';
@@ -132,6 +133,8 @@ export { Radio, RadioGroup } from './components/Radio/Radio';
 export type { RadioGroupOrientation, RadioGroupProps, RadioProps, RadioSize } from './components/Radio/Radio';
 export { ScrollArea } from './components/ScrollArea/ScrollArea';
 export type { ScrollAreaOrientation, ScrollAreaProps } from './components/ScrollArea/ScrollArea';
+export { NO_SCROLL_AREA_OVERFLOW, measureScrollArea } from './components/ScrollArea/scrollAreaState';
+export type { ScrollAreaEdgeState, ScrollAreaMetrics } from './components/ScrollArea/scrollAreaState';
 export { SearchInput } from './components/SearchInput/SearchInput';
 export type { SearchInputProps } from './components/SearchInput/SearchInput';
 export { Hint, SectionLabel } from './components/SectionLabel/SectionLabel';

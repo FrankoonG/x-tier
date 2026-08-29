@@ -47,13 +47,9 @@ func TestStoreBackedBridgeAuthenticatesAndProxiesWithoutLegacyPaths(t *testing.T
 	}
 	t.Cleanup(func() { _ = server.Close() })
 
-	request, err := http.NewRequest(http.MethodGet, "http://"+server.Addr()+controlapi.StatusPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Host = server.Addr()
-	request.Header.Set("Origin", "http://"+server.Addr())
-	request.SetBasicAuth(BasicUsername, upstream.webToken)
+	session, _ := bootstrapSession(t, server)
+	request := newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil)
+	authenticateBrowserRequest(request, session)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -281,11 +277,6 @@ func newBridgeRequest(t *testing.T, server *Server, method, path string, body []
 	}
 	request.Host = server.Addr()
 	request.Header.Set("Origin", "http://"+server.Addr())
-	credential, err := controlapi.ReadToken(server.credentialPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.SetBasicAuth(BasicUsername, credential)
 	return request
 }
 
@@ -320,19 +311,51 @@ type browserSession struct {
 }
 
 func bootstrapSession(t *testing.T, server *Server) (browserSession, bridgeResult) {
+	return bootstrapSessionWithClient(t, http.DefaultClient, server)
+}
+
+func bootstrapSessionWithClient(t *testing.T, client *http.Client, server *Server) (browserSession, bridgeResult) {
 	t.Helper()
-	result := doBridgeRequest(t, newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil))
+	credential, err := server.readCredential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{"credential": credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := newBridgeRequest(t, server, http.MethodPost, SessionPath, body)
+	request.Header.Set("Content-Type", "application/json")
+	result := doBridgeRequestWithClient(t, client, request)
 	if result.status != http.StatusOK {
 		t.Fatalf("bootstrap status=%d body=%s", result.status, result.body)
-	}
-	if len(result.cookies) != 1 {
-		t.Fatalf("bootstrap cookies=%d", len(result.cookies))
 	}
 	csrf := result.header.Get(CSRFHeader)
 	if csrf == "" {
 		t.Fatal("bootstrap response did not provide CSRF token")
 	}
-	return browserSession{cookie: result.cookies[0], csrf: csrf}, result
+	return browserSession{cookie: recoveredSessionCookie(t, result), csrf: csrf}, result
+}
+
+func assertNoBrowserAuthority(t *testing.T, result bridgeResult) {
+	t.Helper()
+	if result.header.Get(CSRFHeader) != "" {
+		t.Fatalf("rejected request received a CSRF token: headers=%v", result.header)
+	}
+	for _, cookie := range result.cookies {
+		if cookie.Name == SessionCookieName && cookie.Value != "" {
+			t.Fatalf("rejected request received a live session: headers=%v", result.header)
+		}
+	}
+}
+
+func assertNoSessionCookieChanges(t *testing.T, result bridgeResult) {
+	t.Helper()
+	for _, cookie := range result.cookies {
+		if cookie.Name == SessionCookieName {
+			t.Fatalf("stale response changed the browser session cookie: headers=%v", result.header)
+		}
+	}
 }
 
 func recoveredSessionCookie(t *testing.T, result bridgeResult) *http.Cookie {
@@ -368,7 +391,7 @@ func recoveredSessionCookie(t *testing.T, result bridgeResult) *http.Cookie {
 	return fresh
 }
 
-func TestBridgeRequiresIndependentBasicCredential(t *testing.T) {
+func TestBridgeRequiresPanelLoginAndRejectsBasicAuthentication(t *testing.T) {
 	upstream := newTestUpstream(t)
 	server := startTestBridge(t, upstream)
 
@@ -382,8 +405,8 @@ func TestBridgeRequiresIndependentBasicCredential(t *testing.T) {
 	if unauthenticated.status != http.StatusUnauthorized || len(unauthenticated.cookies) != 0 || unauthenticated.header.Get(CSRFHeader) != "" {
 		t.Fatalf("anonymous bootstrap=%d headers=%v", unauthenticated.status, unauthenticated.header)
 	}
-	if unauthenticated.header.Get("WWW-Authenticate") == "" {
-		t.Fatal("anonymous response omitted Basic challenge")
+	if unauthenticated.header.Get("WWW-Authenticate") != "" {
+		t.Fatal("anonymous response retained a Basic challenge")
 	}
 
 	request, err = http.NewRequest(http.MethodGet, "http://"+server.Addr()+controlapi.HealthPath, nil)
@@ -392,9 +415,14 @@ func TestBridgeRequiresIndependentBasicCredential(t *testing.T) {
 	}
 	request.Host = server.Addr()
 	request.Header.Set("Origin", "http://"+server.Addr())
-	request.SetBasicAuth(BasicUsername, upstream.token)
+	request.SetBasicAuth("xtier", upstream.token)
 	if result := doBridgeRequest(t, request); result.status != http.StatusUnauthorized {
 		t.Fatalf("control token authenticated to Web bridge: %d", result.status)
+	}
+	request = newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil)
+	request.SetBasicAuth("xtier", upstream.webToken)
+	if result := doBridgeRequest(t, request); result.status != http.StatusUnauthorized {
+		t.Fatalf("legacy Web Basic authentication status=%d", result.status)
 	}
 
 	if _, result := bootstrapSession(t, server); result.status != http.StatusOK {
@@ -417,24 +445,26 @@ func TestBridgeCredentialRotationRevokesOldValueWithoutRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldRequest, err := http.NewRequest(http.MethodGet, "http://"+server.Addr()+controlapi.HealthPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldRequest.Host = server.Addr()
-	oldRequest.Header.Set("Origin", "http://"+server.Addr())
-	oldRequest.SetBasicAuth(BasicUsername, oldCredential)
+	oldBody, _ := json.Marshal(map[string]string{"credential": oldCredential})
+	oldRequest := newBridgeRequest(t, server, http.MethodPost, SessionPath, oldBody)
+	oldRequest.Header.Set("Content-Type", "application/json")
 	if result := doBridgeRequest(t, oldRequest); result.status != http.StatusUnauthorized {
 		t.Fatalf("old credential status=%d", result.status)
 	}
-	if result := doBridgeRequest(t, newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil)); result.status != http.StatusOK {
+	newBody, _ := json.Marshal(map[string]string{"credential": newCredential})
+	newRequest := newBridgeRequest(t, server, http.MethodPost, SessionPath, newBody)
+	newRequest.Header.Set("Content-Type", "application/json")
+	if result := doBridgeRequest(t, newRequest); result.status != http.StatusOK {
 		t.Fatalf("rotated credential status=%d body=%s", result.status, result.body)
 	}
 
 	if err := os.WriteFile(server.credentialPath, []byte(upstream.token+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if result := doBridgeRequest(t, newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil)); result.status != http.StatusUnauthorized {
+	reusedBody, _ := json.Marshal(map[string]string{"credential": upstream.token})
+	reusedRequest := newBridgeRequest(t, server, http.MethodPost, SessionPath, reusedBody)
+	reusedRequest.Header.Set("Content-Type", "application/json")
+	if result := doBridgeRequest(t, reusedRequest); result.status != http.StatusServiceUnavailable {
 		t.Fatalf("control-token reuse status=%d", result.status)
 	}
 }
@@ -464,7 +494,15 @@ func TestBridgeProxiesAuthenticatedAPIWithoutDisclosingToken(t *testing.T) {
 	upstream := newTestUpstream(t)
 	server := startTestBridge(t, upstream)
 
-	session, health := bootstrapSession(t, server)
+	session, login := bootstrapSession(t, server)
+	if string(login.body) != "{\"api_version\":1,\"authenticated\":true}\n" {
+		t.Fatalf("login body changed: %q", login.body)
+	}
+	assertTokenAbsent(t, upstream.token, login)
+
+	healthRequest := newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil)
+	authenticateBrowserRequest(healthRequest, session)
+	health := doBridgeRequest(t, healthRequest)
 	if string(health.body) != "{\"ok\":true}\n" {
 		t.Fatalf("health body changed: %q", health.body)
 	}
@@ -474,7 +512,7 @@ func TestBridgeProxiesAuthenticatedAPIWithoutDisclosingToken(t *testing.T) {
 	assertTokenAbsent(t, upstream.token, health)
 
 	statusRequest := newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil)
-	statusRequest.AddCookie(session.cookie)
+	authenticateBrowserRequest(statusRequest, session)
 	status := doBridgeRequest(t, statusRequest)
 	_, wantStatusBody := upstreamResponse(controlapi.StatusPath)
 	if status.status != http.StatusOK || !bytes.Equal(status.body, wantStatusBody) {
@@ -513,7 +551,7 @@ func TestBridgeProxiesAuthenticatedAPIWithoutDisclosingToken(t *testing.T) {
 	upstream.assertNoErrors(t)
 }
 
-func TestBridgeReplacesInvalidReadSessions(t *testing.T) {
+func TestBridgeRejectsInvalidReadSessionsWithoutImplicitRecovery(t *testing.T) {
 	upstream := newTestUpstream(t)
 	oldServer := startTestBridge(t, upstream)
 	oldSession, _ := bootstrapSession(t, oldServer)
@@ -528,7 +566,9 @@ func TestBridgeReplacesInvalidReadSessions(t *testing.T) {
 	}
 	parts[1] = "1"
 	payload := strings.Join(parts[:3], ".")
-	parts[3] = base64.RawURLEncoding.EncodeToString(server.sessionMAC(sessionDomain, payload))
+	server.authMu.Lock()
+	parts[3] = base64.RawURLEncoding.EncodeToString(server.sessionMACLocked(sessionDomain, payload))
+	server.authMu.Unlock()
 	expired.Value = strings.Join(parts, ".")
 
 	forged := *currentSession.cookie
@@ -547,31 +587,92 @@ func TestBridgeReplacesInvalidReadSessions(t *testing.T) {
 			request := newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil)
 			request.AddCookie(test.cookie)
 			result := doBridgeRequest(t, request)
-			_, wantBody := upstreamResponse(controlapi.StatusPath)
-			if result.status != http.StatusOK || !bytes.Equal(result.body, wantBody) {
+			if result.status != http.StatusUnauthorized || !bytes.Contains(result.body, []byte(`"error_code":"webbridge.session_invalid"`)) {
 				t.Fatalf("status=%d body=%s", result.status, result.body)
 			}
-			fresh := recoveredSessionCookie(t, result)
-			if result.header.Get(CSRFHeader) == "" || fresh.Value == test.cookie.Value {
-				t.Fatalf("invalid read session was not replaced: headers=%v", result.header)
-			}
+			assertNoBrowserAuthority(t, result)
+			assertNoSessionCookieChanges(t, result)
 		})
 	}
-	if got, want := upstream.requests.Load(), baseline+int64(len(tests)); got != want {
-		t.Fatalf("recovered read sessions did not reach upstream: got=%d want=%d", got, want)
+	if got := upstream.requests.Load(); got != baseline {
+		t.Fatalf("invalid read sessions reached upstream: baseline=%d got=%d", baseline, got)
 	}
 	upstream.assertNoErrors(t)
 }
 
-func TestConcurrentRestartRecoveryCannotDesynchronizeCookieAndCSRF(t *testing.T) {
+func TestStaleSessionResponsesCannotDeleteAConcurrentLogin(t *testing.T) {
+	upstream := newTestUpstream(t)
+	server := startTestBridge(t, upstream)
+	oldSession, _ := bootstrapSession(t, server)
+	credential, err := server.readCredential()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	login := sessionRequest(t, server, http.MethodPost, credentialBody(t, credential))
+	login.AddCookie(oldSession.cookie)
+	loginResult := doBridgeRequest(t, login)
+	if loginResult.status != http.StatusOK {
+		t.Fatalf("replacement login status=%d body=%s", loginResult.status, loginResult.body)
+	}
+	current := browserSession{
+		cookie: recoveredSessionCookie(t, loginResult),
+		csrf:   loginResult.header.Get(CSRFHeader),
+	}
+
+	staleProbe := sessionRequest(t, server, http.MethodGet, nil)
+	authenticateBrowserRequest(staleProbe, oldSession)
+	probeResult := doBridgeRequest(t, staleProbe)
+	assertSessionError(t, probeResult, http.StatusUnauthorized, "webbridge.session_invalid")
+	assertNoSessionCookieChanges(t, probeResult)
+
+	staleRead := newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil)
+	authenticateBrowserRequest(staleRead, oldSession)
+	readResult := doBridgeRequest(t, staleRead)
+	if readResult.status != http.StatusUnauthorized {
+		t.Fatalf("stale read status=%d body=%s", readResult.status, readResult.body)
+	}
+	assertNoSessionCookieChanges(t, readResult)
+
+	staleLogout := sessionRequest(t, server, http.MethodDelete, nil)
+	authenticateBrowserRequest(staleLogout, oldSession)
+	logoutResult := doBridgeRequest(t, staleLogout)
+	assertSessionError(t, logoutResult, http.StatusUnauthorized, "webbridge.session_invalid")
+	assertNoSessionCookieChanges(t, logoutResult)
+
+	currentProbe := sessionRequest(t, server, http.MethodGet, nil)
+	authenticateBrowserRequest(currentProbe, current)
+	if result := doBridgeRequest(t, currentProbe); result.status != http.StatusOK {
+		t.Fatalf("stale responses invalidated the replacement login: status=%d body=%s", result.status, result.body)
+	}
+}
+
+func TestConcurrentLoginAfterRestartCannotDesynchronizeCookieAndCSRF(t *testing.T) {
 	upstream := newTestUpstream(t)
 	oldServer := startTestBridge(t, upstream)
 	oldSession, _ := bootstrapSession(t, oldServer)
 	server := startTestBridge(t, upstream)
 
+	stale := newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil)
+	stale.AddCookie(oldSession.cookie)
+	staleResult := doBridgeRequest(t, stale)
+	if staleResult.status != http.StatusUnauthorized {
+		t.Fatalf("pre-restart session remained valid: status=%d body=%s", staleResult.status, staleResult.body)
+	}
+	assertNoBrowserAuthority(t, staleResult)
+
+	credential, err := server.readCredential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginBody, err := json.Marshal(map[string]string{"credential": credential})
+	if err != nil {
+		t.Fatal(err)
+	}
 	requests := make([]*http.Request, 2)
 	for i := range requests {
-		requests[i] = newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil)
+		requests[i] = newBridgeRequest(t, server, http.MethodPost, SessionPath, loginBody)
+		requests[i].Header.Set("Content-Type", "application/json")
 		requests[i].AddCookie(oldSession.cookie)
 	}
 	type outcome struct {
@@ -604,18 +705,18 @@ func TestConcurrentRestartRecoveryCannotDesynchronizeCookieAndCSRF(t *testing.T)
 			t.Fatal(outcome.err)
 		}
 		if outcome.result.status != http.StatusOK {
-			t.Fatalf("concurrent recovery result=%+v", outcome.result)
+			t.Fatalf("concurrent login result=%+v", outcome.result)
 		}
 		sessions = append(sessions, browserSession{
 			cookie: recoveredSessionCookie(t, outcome.result), csrf: outcome.result.header.Get(CSRFHeader),
 		})
 	}
 	if sessions[0].cookie.Value == sessions[1].cookie.Value {
-		t.Fatal("concurrent restart recovery reused a random session cookie")
+		t.Fatal("concurrent login reused a random session cookie")
 	}
 	if sessions[0].csrf == "" || sessions[1].csrf == "" || sessions[0].csrf == sessions[1].csrf ||
 		sessions[0].csrf == oldSession.csrf || sessions[1].csrf == oldSession.csrf {
-		t.Fatal("restart recovery did not bind a fresh CSRF token to each session")
+		t.Fatal("concurrent login did not bind a fresh CSRF token to each session")
 	}
 
 	body := []byte(`{"api_version":1,"revision":0,"dry_run":true,"request_id":"0123456789abcdef0123456789abcdef","name":"node-a"}`)
@@ -704,7 +805,7 @@ func TestBridgeRejectsHostOriginSessionAndCSRFAttacks(t *testing.T) {
 				r.Header.Set(CSRFHeader, session.csrf)
 				return r
 			},
-			status: http.StatusForbidden,
+			status: http.StatusUnauthorized,
 		},
 		{
 			name: "missing csrf",
@@ -750,7 +851,7 @@ func TestBridgeRejectsHostOriginSessionAndCSRFAttacks(t *testing.T) {
 				r.Header.Set(CSRFHeader, session.csrf)
 				return r
 			},
-			status: http.StatusForbidden,
+			status: http.StatusUnauthorized,
 		},
 	}
 
@@ -760,9 +861,7 @@ func TestBridgeRejectsHostOriginSessionAndCSRFAttacks(t *testing.T) {
 			if result.status != test.status {
 				t.Fatalf("status=%d body=%s", result.status, result.body)
 			}
-			if len(result.cookies) != 0 || result.header.Get(CSRFHeader) != "" {
-				t.Fatalf("rejected request received a browser session: headers=%v", result.header)
-			}
+			assertNoBrowserAuthority(t, result)
 			assertTokenAbsent(t, upstream.token, result)
 		})
 	}
@@ -776,12 +875,10 @@ func TestBridgeRejectsHostOriginSessionAndCSRFAttacks(t *testing.T) {
 	request.AddCookie(secondSession.cookie)
 	request.Header.Set(CSRFHeader, session.csrf)
 	result := doBridgeRequest(t, request)
-	if result.status != http.StatusForbidden {
+	if result.status != http.StatusUnauthorized {
 		t.Fatalf("request with distinct valid sessions status=%d body=%s", result.status, result.body)
 	}
-	if len(result.cookies) != 0 || result.header.Get(CSRFHeader) != "" {
-		t.Fatalf("rejected ambiguous session received browser authority: headers=%v", result.header)
-	}
+	assertNoBrowserAuthority(t, result)
 	if got := upstream.requests.Load(); got != baseline {
 		t.Fatalf("ambiguous-session domain request reached upstream: baseline=%d got=%d", baseline, got)
 	}
@@ -819,6 +916,7 @@ func TestReadAcceptsDuplicateCopiesOfOneValidSession(t *testing.T) {
 	read := newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil)
 	read.AddCookie(oldSession.cookie)
 	read.AddCookie(oldSession.cookie)
+	read.Header.Set(CSRFHeader, oldSession.csrf)
 	accepted := doBridgeRequest(t, read)
 	if accepted.status != http.StatusOK {
 		t.Fatalf("duplicate-copy read status=%d body=%s", accepted.status, accepted.body)
@@ -853,17 +951,16 @@ func TestPathScopedInvalidCookieCannotLockBrowserMutations(t *testing.T) {
 	}
 	client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
 
-	bootstrap := doBridgeRequestWithClient(t, client, newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil))
-	if bootstrap.status != http.StatusOK || bootstrap.header.Get(CSRFHeader) == "" {
-		t.Fatalf("bootstrap status=%d headers=%v body=%s", bootstrap.status, bootstrap.header, bootstrap.body)
-	}
-	csrf := bootstrap.header.Get(CSRFHeader)
+	session, _ := bootstrapSessionWithClient(t, client, server)
+	csrf := session.csrf
 	mutationURL := newBridgeRequest(t, server, http.MethodPost, controlapi.DomainIdentityInitPath, nil).URL
 	jar.SetCookies(mutationURL, []*http.Cookie{{
 		Name: SessionCookieName, Value: "v1.0.invalid.invalid", Path: "/v1/domain",
 	}})
 
-	read := doBridgeRequestWithClient(t, client, newBridgeRequest(t, server, http.MethodGet, controlapi.DomainLocalPath, nil))
+	readRequest := newBridgeRequest(t, server, http.MethodGet, controlapi.DomainLocalPath, nil)
+	readRequest.Header.Set(CSRFHeader, csrf)
+	read := doBridgeRequestWithClient(t, client, readRequest)
 	wantReadStatus, wantReadBody := upstreamResponse(controlapi.DomainLocalPath)
 	if read.status != wantReadStatus || !bytes.Equal(read.body, wantReadBody) || read.header.Get(CSRFHeader) != csrf || len(read.cookies) != 0 {
 		t.Fatalf("poisoned read status=%d csrf=%q cookies=%v body=%s", read.status, read.header.Get(CSRFHeader), read.cookies, read.body)
@@ -911,7 +1008,9 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 		{
 			name: "health post",
 			build: func() *http.Request {
-				return newBridgeRequest(t, server, http.MethodPost, controlapi.HealthPath, nil)
+				r := newBridgeRequest(t, server, http.MethodPost, controlapi.HealthPath, nil)
+				authenticateBrowserRequest(r, session)
+				return r
 			},
 			status: http.StatusMethodNotAllowed,
 		},
@@ -961,7 +1060,9 @@ func TestBridgeValidatesMethodContentTypeAndBodyBounds(t *testing.T) {
 		{
 			name: "health body",
 			build: func() *http.Request {
-				return newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, []byte("{}"))
+				r := newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, []byte("{}"))
+				authenticateBrowserRequest(r, session)
+				return r
 			},
 			status: http.StatusBadRequest,
 		},
@@ -1045,13 +1146,14 @@ func TestBridgeServesStaticAppWithoutMintingAuthorityForUnsignaledGET(t *testing
 	}
 	t.Cleanup(func() { _ = server.Close() })
 
-	requestWith := func(method, path string, authenticate bool, headers map[string]string) bridgeResult {
+	session, _ := bootstrapSession(t, server)
+	requestWith := func(method, path string, withSession bool, headers map[string]string) bridgeResult {
 		r, err := http.NewRequest(method, "http://"+server.Addr()+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if authenticate {
-			r.SetBasicAuth(BasicUsername, upstream.webToken)
+		if withSession {
+			authenticateBrowserRequest(r, session)
 		}
 		for name, value := range headers {
 			r.Header.Set(name, value)
@@ -1063,7 +1165,14 @@ func TestBridgeServesStaticAppWithoutMintingAuthorityForUnsignaledGET(t *testing
 	}
 	if result := request(http.MethodGet, "/"); result.status != http.StatusOK || !bytes.Contains(result.body, []byte("X-Tier")) {
 		t.Fatalf("index response=%d %q", result.status, result.body)
+	} else if result.header.Get("Cross-Origin-Opener-Policy") != "same-origin" {
+		t.Fatalf("loopback index omitted COOP: headers=%v", result.header)
 	}
+	server.trustedWebOrigin = false
+	if result := request(http.MethodGet, "/"); result.header.Get("Cross-Origin-Opener-Policy") != "" {
+		t.Fatalf("plain LAN index sent unusable COOP: headers=%v", result.header)
+	}
+	server.trustedWebOrigin = true
 	if result := request(http.MethodGet, "/index.html"); result.status != http.StatusOK ||
 		!bytes.Equal(result.body, []byte("<!doctype html><title>X-Tier</title>")) ||
 		result.header.Get("Location") != "" || result.header.Get("Content-Type") != "text/html; charset=utf-8" ||
@@ -1100,8 +1209,8 @@ func TestBridgeServesStaticAppWithoutMintingAuthorityForUnsignaledGET(t *testing
 	if result := request(http.MethodPost, "/app.js"); result.status != http.StatusMethodNotAllowed || result.header.Get("Allow") != "GET, HEAD" {
 		t.Fatalf("static POST response=%d allow=%q body=%q", result.status, result.header.Get("Allow"), result.body)
 	}
-	if result := requestWith(http.MethodGet, "/app.js", false, nil); result.status != http.StatusUnauthorized ||
-		result.header.Get("WWW-Authenticate") != `Basic realm="X-Tier", charset="UTF-8"` {
+	if result := requestWith(http.MethodGet, "/app.js", false, nil); result.status != http.StatusOK ||
+		result.header.Get("WWW-Authenticate") != "" {
 		t.Fatalf("anonymous asset response=%d headers=%v body=%q", result.status, result.header, result.body)
 	}
 	if result := request(http.MethodGet, "/missing.js"); result.status != http.StatusNotFound {
@@ -1121,19 +1230,26 @@ func TestBridgeServesStaticAppWithoutMintingAuthorityForUnsignaledGET(t *testing
 	if result := request(http.MethodGet, "/v1/__scenario"); result.status != http.StatusNotFound {
 		t.Fatalf("scenario status=%d", result.status)
 	}
-	health := request(http.MethodGet, controlapi.HealthPath)
-	if health.status != http.StatusOK || health.header.Get(CSRFHeader) != "" || len(health.cookies) != 0 {
-		t.Fatalf("originless health response=%d headers=%v cookies=%v", health.status, health.header, health.cookies)
+	if result := request(http.MethodGet, "/v1"); result.status != http.StatusNotFound || bytes.Contains(result.body, []byte("X-Tier")) {
+		t.Fatalf("exact API namespace response=%d body=%q", result.status, result.body)
+	}
+	if result := request(http.MethodGet, "/v1?scenario=1"); result.status != http.StatusBadRequest || bytes.Contains(result.body, []byte("X-Tier")) {
+		t.Fatalf("queried API namespace response=%d body=%q", result.status, result.body)
+	}
+	health := requestWith(http.MethodGet, controlapi.HealthPath, true, map[string]string{"Sec-Fetch-Site": "same-origin"})
+	if health.status != http.StatusOK || health.header.Get(CSRFHeader) != session.csrf || len(health.cookies) != 0 {
+		t.Fatalf("same-origin health response=%d headers=%v cookies=%v", health.status, health.header, health.cookies)
 	}
 
 	sameOriginFetch, err := http.NewRequest(http.MethodGet, "http://"+server.Addr()+controlapi.HealthPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sameOriginFetch.SetBasicAuth(BasicUsername, upstream.webToken)
+	sameOriginFetch.AddCookie(session.cookie)
 	sameOriginFetch.Header.Set("Sec-Fetch-Site", "same-origin")
+	sameOriginFetch.Header.Set(CSRFHeader, session.csrf)
 	trusted := doBridgeRequest(t, sameOriginFetch)
-	if trusted.status != http.StatusOK || trusted.header.Get(CSRFHeader) == "" || len(trusted.cookies) != 1 {
+	if trusted.status != http.StatusOK || trusted.header.Get(CSRFHeader) != session.csrf || len(trusted.cookies) != 0 {
 		t.Fatalf("same-origin fetch response=%d headers=%v cookies=%v", trusted.status, trusted.header, trusted.cookies)
 	}
 	if got := upstream.requests.Load(); got != 2 {
@@ -1141,12 +1257,12 @@ func TestBridgeServesStaticAppWithoutMintingAuthorityForUnsignaledGET(t *testing
 	}
 }
 
-func TestStartRequiresLiteralLoopbackEndpoints(t *testing.T) {
+func TestStartRequiresExplicitWebAndLoopbackControlEndpoints(t *testing.T) {
+	upstream := newTestUpstream(t)
 	for _, addr := range []string{
 		"localhost:0",
 		"0.0.0.0:0",
 		"[::]:0",
-		"192.0.2.1:0",
 		"http://127.0.0.1:0",
 		"127.0.0.1",
 		":0",
@@ -1156,14 +1272,40 @@ func TestStartRequiresLiteralLoopbackEndpoints(t *testing.T) {
 			server, err := Start(context.Background(), Config{
 				Addr:           addr,
 				ControlAddr:    "127.0.0.1:1",
-				TokenPath:      filepath.Join(t.TempDir(), "token"),
+				TokenPath:      upstream.tokenPath,
 				CredentialPath: credentialPath,
 			})
 			if err == nil {
 				_ = server.Close()
-				t.Fatalf("Start accepted non-literal-loopback bind %q", addr)
+				t.Fatalf("Start accepted invalid explicit web bind %q", addr)
 			}
 		})
+	}
+
+	if _, err := literalWebAddr("10.130.40.32:39082", false); err == nil {
+		t.Fatal("literalWebAddr accepted private HTTP without explicit opt-in")
+	}
+	webAddr, err := literalWebAddr("10.130.40.32:39082", true)
+	if err != nil {
+		t.Fatalf("literalWebAddr rejected explicit private address: %v", err)
+	}
+	if got := webAddr.String(); got != "10.130.40.32:39082" {
+		t.Fatalf("literalWebAddr=%q", got)
+	}
+	if _, err := literalWebAddr("192.0.2.1:39082", true); err == nil {
+		t.Fatal("literalWebAddr accepted non-private address with insecure opt-in")
+	}
+	for _, test := range []struct {
+		addr *net.TCPAddr
+		want string
+	}{
+		{addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 80}, want: "127.0.0.1"},
+		{addr: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 80}, want: "[::1]"},
+		{addr: &net.TCPAddr{IP: net.ParseIP("10.130.40.32"), Port: 39082}, want: "10.130.40.32:39082"},
+	} {
+		if got := httpAuthority(test.addr); got != test.want {
+			t.Fatalf("httpAuthority(%s)=%q want=%q", test.addr, got, test.want)
+		}
 	}
 
 	for _, controlAddr := range []string{"localhost:19090", "0.0.0.0:19090", "https://127.0.0.1:19090"} {
@@ -1172,7 +1314,7 @@ func TestStartRequiresLiteralLoopbackEndpoints(t *testing.T) {
 			server, err := Start(context.Background(), Config{
 				Addr:           "127.0.0.1:0",
 				ControlAddr:    controlAddr,
-				TokenPath:      filepath.Join(t.TempDir(), "token"),
+				TokenPath:      upstream.tokenPath,
 				CredentialPath: credentialPath,
 			})
 			if err == nil {
@@ -1195,7 +1337,7 @@ func TestBridgeLocalMutationRejectionUsesDomainOutcomeContract(t *testing.T) {
 		wantOutcome controlapi.MutationOutcome
 	}{
 		{name: "write", wantOutcome: controlapi.MutationOutcomeNotApplied},
-		{name: "dry run", dryRun: true},
+		{name: "dry run", dryRun: true, wantOutcome: controlapi.MutationOutcomeNotApplied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload := []byte(fmt.Sprintf(
@@ -1217,16 +1359,266 @@ func TestBridgeLocalMutationRejectionUsesDomainOutcomeContract(t *testing.T) {
 			if failure.ErrorCode != "webbridge.csrf_invalid" || failure.Outcome != test.wantOutcome {
 				t.Fatalf("failure=%+v", failure)
 			}
-			if test.dryRun && failure.Applied != nil {
-				t.Fatalf("dry-run rejection carried mutation facts: %+v", failure)
-			}
-			if !test.dryRun && (failure.Applied == nil || *failure.Applied) {
-				t.Fatalf("write rejection did not report applied=false: %+v", failure)
+			if failure.Applied == nil || *failure.Applied {
+				t.Fatalf("pre-auth rejection did not report applied=false: %+v", failure)
 			}
 		})
 	}
 	if got := upstream.requests.Load(); got != baseline {
 		t.Fatalf("local rejections reached upstream: baseline=%d got=%d", baseline, got)
+	}
+}
+
+func TestPreRouteMutationRejectionsUseNotAppliedContract(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*Server, *http.Request)
+		status    int
+		code      string
+	}{
+		{
+			name: "host",
+			configure: func(_ *Server, request *http.Request) {
+				request.Host = "127.0.0.2:1"
+			},
+			status: http.StatusForbidden,
+			code:   "webbridge.host_forbidden",
+		},
+		{
+			name: "closing",
+			configure: func(server *Server, _ *http.Request) {
+				server.requestsMu.Lock()
+				server.closing = true
+				server.requestsMu.Unlock()
+			},
+			status: http.StatusServiceUnavailable,
+			code:   "webbridge.closing",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := newTestUpstream(t)
+			server := startTestBridge(t, upstream)
+			payload := []byte(`{"api_version":1,"revision":0,"dry_run":false,"request_id":"b0000000000000000000000000000003"}`)
+			request := newBridgeRequest(t, server, http.MethodPost, controlapi.DomainIdentityInitPath, payload)
+			request.Header.Set("Content-Type", "application/json")
+			test.configure(server, request)
+
+			result := doBridgeRequest(t, request)
+			if result.status != test.status {
+				t.Fatalf("status=%d body=%s", result.status, result.body)
+			}
+			var failure controlapi.DomainError
+			if err := json.Unmarshal(result.body, &failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.ErrorCode != test.code || failure.Applied == nil || *failure.Applied ||
+				failure.Outcome != controlapi.MutationOutcomeNotApplied {
+				t.Fatalf("failure=%+v", failure)
+			}
+			if got := upstream.requests.Load(); got != 0 {
+				t.Fatalf("pre-route rejection reached upstream: %d", got)
+			}
+		})
+	}
+}
+
+func TestUnknownMutationRequestsUseNotAppliedContract(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+		status int
+		code   string
+	}{
+		{
+			name:   "known path wrong mutation method",
+			method: http.MethodPut,
+			path:   controlapi.DomainIdentityInitPath,
+			status: http.StatusMethodNotAllowed,
+			code:   "webbridge.method_not_allowed",
+		},
+		{
+			name:   "future domain mutation",
+			method: http.MethodPost,
+			path:   "/v1/domain/future-mutation",
+			status: http.StatusNotFound,
+			code:   "webbridge.not_found",
+		},
+		{
+			name:   "retired command mutation",
+			method: http.MethodPost,
+			path:   controlapi.CommandPath,
+			status: http.StatusNotFound,
+			code:   "webbridge.not_found",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := newTestUpstream(t)
+			server := startTestBridge(t, upstream)
+			payload := []byte(`{"api_version":1,"revision":0,"dry_run":false,"request_id":"b0000000000000000000000000000004"}`)
+			request := newBridgeRequest(t, server, test.method, test.path, payload)
+			request.Header.Set("Content-Type", "application/json")
+
+			result := doBridgeRequest(t, request)
+			if result.status != test.status {
+				t.Fatalf("status=%d body=%s", result.status, result.body)
+			}
+			var failure controlapi.DomainError
+			if err := json.Unmarshal(result.body, &failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.ErrorCode != test.code || failure.Applied == nil || *failure.Applied ||
+				failure.Outcome != controlapi.MutationOutcomeNotApplied {
+				t.Fatalf("failure=%+v", failure)
+			}
+			if got := upstream.requests.Load(); got != 0 {
+				t.Fatalf("unknown mutation reached upstream: %d", got)
+			}
+		})
+	}
+}
+
+type unreadMutationBody struct {
+	read bool
+}
+
+func (b *unreadMutationBody) Read([]byte) (int, error) {
+	b.read = true
+	return 0, errors.New("body must not be read before authentication")
+}
+
+func (b *unreadMutationBody) Close() error { return nil }
+
+type gatedMutationBody struct {
+	payload []byte
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *gatedMutationBody) Read(dst []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	if len(b.payload) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(dst, b.payload)
+	b.payload = b.payload[n:]
+	return n, nil
+}
+
+func (b *gatedMutationBody) Close() error { return nil }
+
+func TestPreAuthenticationMutationRejectionDoesNotReadBody(t *testing.T) {
+	upstream := newTestUpstream(t)
+	server := startTestBridge(t, upstream)
+	body := &unreadMutationBody{}
+	request := httptest.NewRequest(http.MethodPost, controlapi.DomainIdentityInitPath, body)
+	request.Host = server.Addr()
+	request.Header.Set("Origin", "http://127.0.0.2:1")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, request)
+	if body.read {
+		t.Fatal("pre-authentication rejection read the mutation body")
+	}
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var failure controlapi.DomainError
+	if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Applied == nil || *failure.Applied || failure.Outcome != controlapi.MutationOutcomeNotApplied {
+		t.Fatalf("failure=%+v", failure)
+	}
+	if got := upstream.requests.Load(); got != 0 {
+		t.Fatalf("pre-authentication rejection reached upstream: %d", got)
+	}
+}
+
+func TestMutationRevalidatesSessionAfterReadingBody(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		revoke func(*testing.T, *Server, browserSession)
+	}{
+		{
+			name: "logout",
+			revoke: func(t *testing.T, server *Server, session browserSession) {
+				t.Helper()
+				request := sessionRequest(t, server, http.MethodDelete, nil)
+				authenticateBrowserRequest(request, session)
+				if result := doBridgeRequest(t, request); result.status != http.StatusOK {
+					t.Fatalf("logout status=%d body=%s", result.status, result.body)
+				}
+			},
+		},
+		{
+			name: "credential rotation",
+			revoke: func(t *testing.T, server *Server, _ browserSession) {
+				t.Helper()
+				if err := os.WriteFile(server.credentialPath, []byte(strings.Repeat("d", 64)+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := newTestUpstream(t)
+			server := startTestBridge(t, upstream)
+			session, _ := bootstrapSession(t, server)
+			payload := []byte(`{"api_version":1,"revision":0,"dry_run":false,"request_id":"b0000000000000000000000000000002"}`)
+			body := &gatedMutationBody{
+				payload: payload,
+				started: make(chan struct{}),
+				release: make(chan struct{}),
+			}
+			var releaseBody sync.Once
+			t.Cleanup(func() { releaseBody.Do(func() { close(body.release) }) })
+			request := httptest.NewRequest(http.MethodPost, controlapi.DomainIdentityInitPath, body)
+			request.Host = server.Addr()
+			request.Header.Set("Origin", "http://"+server.Addr())
+			request.Header.Set("Content-Type", "application/json")
+			authenticateBrowserRequest(request, session)
+			recorder := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				server.ServeHTTP(recorder, request)
+				close(done)
+			}()
+
+			select {
+			case <-body.started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("mutation did not begin reading its body")
+			}
+			test.revoke(t, server, session)
+			releaseBody.Do(func() { close(body.release) })
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("mutation did not finish after body release")
+			}
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var failure controlapi.DomainError
+			if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.ErrorCode != "webbridge.session_invalid" || failure.Applied == nil || *failure.Applied ||
+				failure.Outcome != controlapi.MutationOutcomeNotApplied {
+				t.Fatalf("failure=%+v", failure)
+			}
+			if recorder.Header().Get("Set-Cookie") != "" {
+				t.Fatalf("stale mutation response cleared a newer cookie: headers=%v", recorder.Header())
+			}
+			if got := upstream.requests.Load(); got != 0 {
+				t.Fatalf("revoked mutation reached upstream: %d", got)
+			}
+		})
 	}
 }
 
@@ -1252,8 +1644,11 @@ func TestBridgeRejectsUnauthenticatedUpstreamResponse(t *testing.T) {
 			upstream := newTestUpstream(t)
 			test.configure(upstream)
 			server := startTestBridge(t, upstream)
+			session, _ := bootstrapSession(t, server)
 
-			result := doBridgeRequest(t, newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil))
+			request := newBridgeRequest(t, server, http.MethodGet, controlapi.HealthPath, nil)
+			authenticateBrowserRequest(request, session)
+			result := doBridgeRequest(t, request)
 			if result.status != http.StatusBadGateway || !bytes.Contains(result.body, []byte("webbridge.upstream_unavailable")) {
 				t.Fatalf("status=%d body=%s", result.status, result.body)
 			}
@@ -1290,7 +1685,10 @@ func TestBridgeReportsUnavailableUpstreamWithoutLeakingToken(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Close() })
 
-	result := doBridgeRequest(t, newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil))
+	session, _ := bootstrapSession(t, server)
+	request := newBridgeRequest(t, server, http.MethodGet, controlapi.StatusPath, nil)
+	authenticateBrowserRequest(request, session)
+	result := doBridgeRequest(t, request)
 	if result.status != http.StatusBadGateway {
 		t.Fatalf("status=%d body=%s", result.status, result.body)
 	}
@@ -1643,8 +2041,7 @@ func TestConcurrentSessionValidation(t *testing.T) {
 			}
 			request.Host = server.Addr()
 			request.Header.Set("Origin", "http://"+server.Addr())
-			request.SetBasicAuth(BasicUsername, upstream.webToken)
-			request.AddCookie(session.cookie)
+			authenticateBrowserRequest(request, session)
 			response, err := client.Do(request)
 			if err != nil {
 				errorsFound <- err

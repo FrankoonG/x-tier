@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +25,11 @@ import (
 )
 
 const (
-	DefaultAddr   = "127.0.0.1:19091"
-	BasicUsername = "xtier"
+	DefaultAddr = "127.0.0.1:19091"
 
 	CSRFHeader          = "X-XTier-CSRF-Token"
 	SessionCookieName   = "xtier_web_session"
+	SessionPath         = "/v1/web/session"
 	MaxDomainBodyBytes  = 1 << 20
 	defaultSessionTTL   = 8 * time.Hour
 	shutdownTimeout     = 5 * time.Second
@@ -47,28 +46,29 @@ const (
 )
 
 // Config describes a browser-facing bridge to an authenticated local control
-// server. Addr and ControlAddr must resolve to literal loopback endpoints;
-// hostnames and wildcard addresses are deliberately unsupported.
+// server. Addr must be a literal loopback endpoint unless the caller explicitly
+// opts into insecure HTTP on a private network. ControlAddr remains loopback.
 type Config struct {
-	Addr            string
-	ControlAddr     string
-	TokenPath       string
-	CredentialPath  string
-	StateStore      *statestore.Store
-	StaticDir       string
-	UpstreamTimeout time.Duration
+	Addr                        string
+	ControlAddr                 string
+	TokenPath                   string
+	CredentialPath              string
+	StateStore                  *statestore.Store
+	StaticDir                   string
+	UpstreamTimeout             time.Duration
+	AllowInsecurePrivateNetwork bool
 }
 
 // Server proxies the typed browser domain API without exposing the daemon
 // control token. The CLI-only command endpoint is deliberately not routed.
-// A successful read with a positive same-origin browser signal establishes the
-// HttpOnly session and returns its browser-readable CSRF token in CSRFHeader.
+// Browser authority is established only by an explicit login at SessionPath.
 type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
 
 	host                   string
 	origin                 string
+	trustedWebOrigin       bool
 	staticRoot             *os.Root
 	controlAddr            string
 	tokenPath              string
@@ -77,7 +77,12 @@ type Server struct {
 	readUpstreamBudget     time.Duration
 	mutationUpstreamBudget time.Duration
 	sessionKey             [sha256.Size]byte
+	credentialFingerprint  [sha256.Size]byte
 	now                    func() time.Time
+	authMu                 sync.Mutex
+	sessions               map[[sha256.Size]byte]webSessionRecord
+	nextSessionSequence    uint64
+	loginAttempts          map[string]loginAttemptState
 
 	requestsMu sync.Mutex
 	closing    bool
@@ -93,7 +98,7 @@ type Server struct {
 	shutdownWait time.Duration
 }
 
-// Start binds a loopback-only HTTP bridge and begins serving immediately.
+// Start binds the configured HTTP bridge and begins serving immediately.
 func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("webbridge.context_nil")
@@ -107,9 +112,15 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.ControlAddr == "" {
 		cfg.ControlAddr = controlapi.DefaultAddr
 	}
+	listenAddr, err := literalWebAddr(cfg.Addr, cfg.AllowInsecurePrivateNetwork)
+	if err != nil {
+		return nil, fmt.Errorf("webbridge.addr_invalid: %w", err)
+	}
+	if _, err := literalControlAddr(cfg.ControlAddr); err != nil {
+		return nil, fmt.Errorf("webbridge.control_addr_invalid: %w", err)
+	}
 	var controlTokenPath, credentialPath string
 	var credential, controlToken string
-	var err error
 	if cfg.StateStore != nil {
 		if cfg.TokenPath != "" || cfg.CredentialPath != "" {
 			return nil, fmt.Errorf("webbridge.state_source_mixed")
@@ -177,22 +188,16 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 		}
 	}()
 
-	listenAddr, err := literalLoopbackAddr(cfg.Addr)
-	if err != nil {
-		return nil, fmt.Errorf("webbridge.addr_invalid: %w", err)
-	}
-	if _, err := literalControlAddr(cfg.ControlAddr); err != nil {
-		return nil, fmt.Errorf("webbridge.control_addr_invalid: %w", err)
-	}
-
 	listener, err := net.ListenTCP("tcp", listenAddr)
 	if err != nil {
 		return nil, err
 	}
 
+	webAddr := listener.Addr().(*net.TCPAddr)
 	s := &Server{
 		listener:               listener,
-		host:                   listener.Addr().String(),
+		host:                   httpAuthority(webAddr),
+		trustedWebOrigin:       webAddr.IP.IsLoopback(),
 		controlAddr:            cfg.ControlAddr,
 		tokenPath:              controlTokenPath,
 		credentialPath:         credentialPath,
@@ -201,6 +206,9 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 		mutationUpstreamBudget: mutationUpstreamBudget,
 		staticRoot:             staticRoot,
 		now:                    time.Now,
+		credentialFingerprint:  sha256.Sum256([]byte(credential)),
+		sessions:               make(map[[sha256.Size]byte]webSessionRecord),
+		loginAttempts:          make(map[string]loginAttemptState),
 		shutdownWait:           shutdownTimeout,
 		serveDone:              make(chan struct{}),
 		closedDone:             make(chan struct{}),
@@ -245,12 +253,12 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Addr returns the concrete loopback listener address.
+// Addr returns the concrete browser authority used for Host and Origin checks.
 func (s *Server) Addr() string {
 	if s == nil || s.listener == nil {
 		return ""
 	}
-	return s.listener.Addr().String()
+	return s.host
 }
 
 // Close gracefully stops the bridge. It is safe to call concurrently.
@@ -317,9 +325,15 @@ func (s *Server) shutdown() {
 		}
 		s.staticRoot = nil
 	}
+	s.authMu.Lock()
 	for i := range s.sessionKey {
 		s.sessionKey[i] = 0
 	}
+	for key := range s.sessions {
+		delete(s.sessions, key)
+	}
+	clear(s.loginAttempts)
+	s.authMu.Unlock()
 	close(s.closedDone)
 }
 
@@ -346,61 +360,80 @@ func (s *Server) Wait() error {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	domainRoute, domainRouteOK := controlapi.LookupDomainRoute(path, r.Method)
+	mutationRequest := domainRouteOK && domainRoute.Mutating
+	if !domainRouteOK && path != SessionPath && isAPINamespace(path) && mutationMethod(r.Method) {
+		mutationRequest = true
+	}
 	if !s.beginRequest() {
-		writeError(w, http.StatusServiceUnavailable, "webbridge.closing")
+		writeRouteSessionError(w, http.StatusServiceUnavailable, "webbridge.closing", "The web bridge is shutting down.", mutationRequest)
 		return
 	}
 	defer s.requests.Done()
 
 	setResponseSecurityHeaders(w.Header())
-	if !s.authenticate(r) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="X-Tier", charset="UTF-8"`)
-		writeError(w, http.StatusUnauthorized, "webbridge.authentication_required")
-		return
-	}
 	if r.URL.IsAbs() || r.URL.RawPath != "" || r.URL.Fragment != "" {
-		writeError(w, http.StatusBadRequest, "webbridge.request_target_invalid")
+		writeRouteSessionError(w, http.StatusBadRequest, "webbridge.request_target_invalid", "The request target is invalid.", mutationRequest)
 		return
 	}
 	if r.Host != s.host {
-		writeError(w, http.StatusForbidden, "webbridge.host_forbidden")
+		writeRouteSessionError(w, http.StatusForbidden, "webbridge.host_forbidden", "The request host is not allowed.", mutationRequest)
 		return
 	}
-	domainRoute, domainRouteOK := controlapi.LookupDomainRoute(path, r.Method)
-	if r.URL.RawQuery != "" && strings.HasPrefix(path, "/v1/") {
-		writeError(w, http.StatusBadRequest, "webbridge.request_target_invalid")
+	if path == SessionPath {
+		s.handleWebSession(w, r)
+		return
+	}
+	if r.URL.RawQuery != "" && isAPINamespace(path) {
+		writeRouteSessionError(w, http.StatusBadRequest, "webbridge.request_target_invalid", "The request target is invalid.", mutationRequest)
 		return
 	}
 	if controlapi.IsDomainPath(path) && !domainRouteOK {
 		w.Header().Set("Allow", domainAllowedMethods(path))
-		writeError(w, http.StatusMethodNotAllowed, "webbridge.method_not_allowed")
+		writeRouteSessionError(w, http.StatusMethodNotAllowed, "webbridge.method_not_allowed", "The method is not allowed.", mutationRequest)
 		return
 	}
 	if !domainRouteOK && path != controlapi.StatusPath && path != controlapi.HealthPath {
-		if strings.HasPrefix(path, "/v1/") || s.staticRoot == nil {
-			writeError(w, http.StatusNotFound, "webbridge.not_found")
+		if isAPINamespace(path) || s.staticRoot == nil {
+			writeRouteSessionError(w, http.StatusNotFound, "webbridge.not_found", "The route was not found.", mutationRequest)
 			return
 		}
 		s.serveStatic(w, r)
 		return
 	}
-	if origin, ok := optionalExactHeader(r.Header, "Origin"); !ok ||
-		(origin != "" && origin != s.origin) || (domainRouteOK && domainRoute.Method != http.MethodGet && origin == "") {
-		writeError(w, http.StatusForbidden, "webbridge.origin_forbidden")
+	validOrigin := s.validReadOrigin(r)
+	if domainRouteOK && domainRoute.Method != http.MethodGet {
+		validOrigin = s.validMutationOrigin(r)
+	}
+	if !validOrigin {
+		writeRouteSessionError(w, http.StatusForbidden, "webbridge.origin_forbidden", "The request origin is not allowed.", mutationRequest)
+		return
+	}
+	session, csrf, ok, err := s.uniqueValidSession(r)
+	if err != nil {
+		writeRouteSessionError(w, http.StatusServiceUnavailable, "webbridge.credential_unavailable", "The panel credential is unavailable.", mutationRequest)
+		return
+	}
+	if !ok {
+		writeRouteSessionError(w, http.StatusUnauthorized, "webbridge.session_invalid", "Sign in to continue.", mutationRequest)
+		return
+	}
+	if !requestProofValid(r, csrf) {
+		writeRouteSessionError(w, http.StatusForbidden, "webbridge.csrf_invalid", "The session check failed.", mutationRequest)
 		return
 	}
 
 	if domainRouteOK {
 		if domainRoute.Method == http.MethodGet {
-			s.handleRead(w, r, path)
+			s.handleRead(w, r, path, csrf)
 		} else {
-			s.handleDomainAction(w, r, domainRoute)
+			s.handleDomainAction(w, r, domainRoute, session, csrf)
 		}
 		return
 	}
 	switch path {
 	case controlapi.StatusPath, controlapi.HealthPath:
-		s.handleRead(w, r, path)
+		s.handleRead(w, r, path, csrf)
 	}
 }
 
@@ -414,22 +447,21 @@ func domainAllowedMethods(path string) string {
 	return strings.Join(methods, ", ")
 }
 
-func (s *Server) authenticate(r *http.Request) bool {
-	username, password, ok := r.BasicAuth()
-	if !ok {
+func writeRouteSessionError(w http.ResponseWriter, status int, code, message string, mutating bool) {
+	if mutating {
+		writeDomainBridgeError(w, status, code, nil, true)
+		return
+	}
+	writeSessionError(w, status, code, message)
+}
+
+func mutationMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
 		return false
 	}
-	credential, err := s.readCredential()
-	if err != nil {
-		return false
-	}
-	controlToken, err := s.readControlToken()
-	if err != nil || subtle.ConstantTimeCompare([]byte(credential), []byte(controlToken)) == 1 {
-		return false
-	}
-	usernameOK := subtle.ConstantTimeCompare([]byte(username), []byte(BasicUsername))
-	passwordOK := subtle.ConstantTimeCompare([]byte(password), []byte(credential))
-	return usernameOK&passwordOK == 1
 }
 
 func CredentialPath(configPath string) string {
@@ -481,7 +513,9 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self'; img-src 'self' data:; font-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
-	w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+	if s.trustedWebOrigin {
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+	}
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Type", staticContentType(name))
 	http.ServeContent(w, r, filepath.Base(name), info.ModTime(), file)
@@ -598,7 +632,7 @@ func (s *Server) beginRequest() bool {
 	return true
 }
 
-func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, path string) {
+func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, path, csrf string) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, http.StatusMethodNotAllowed, "webbridge.method_not_allowed")
@@ -609,41 +643,16 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, path string)
 		return
 	}
 
-	session, csrf, expires, err := s.safeSession(r)
-	if err != nil {
-		writeError(w, http.StatusForbidden, "webbridge.session_invalid")
-		return
-	}
 	status, body, err := s.upstream(r.Context(), s.readUpstreamBudget, http.MethodGet, path, nil)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "webbridge.upstream_unavailable")
 		return
 	}
-	if session != "" {
-		if len(namedCookies(r, SessionCookieName)) != 0 {
-			clearSessionCookies(w)
-		}
-		maxAge := int(expires.Sub(s.now().UTC()).Seconds())
-		if maxAge < 1 {
-			maxAge = 1
-		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     SessionCookieName,
-			Value:    session,
-			Path:     "/v1/",
-			Expires:  expires,
-			MaxAge:   maxAge,
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-		})
-	}
-	if csrf != "" {
-		w.Header().Set(CSRFHeader, csrf)
-	}
+	w.Header().Set(CSRFHeader, csrf)
 	writeUpstreamResponse(w, status, body)
 }
 
-func (s *Server) handleDomainAction(w http.ResponseWriter, r *http.Request, route controlapi.DomainRoute) {
+func (s *Server) handleDomainAction(w http.ResponseWriter, r *http.Request, route controlapi.DomainRoute, session, csrf string) {
 	if !validJSONContentType(r.Header) {
 		writeDomainBridgeError(w, http.StatusUnsupportedMediaType, "webbridge.content_type_invalid", nil, route.Mutating)
 		return
@@ -661,13 +670,16 @@ func (s *Server) handleDomainAction(w http.ResponseWriter, r *http.Request, rout
 		}
 		return
 	}
-	csrf, ok := s.authenticatedSession(r)
-	if !ok {
-		writeDomainBridgeError(w, http.StatusForbidden, "webbridge.session_invalid", body, route.Mutating)
+	currentSession, currentCSRF, ok, err := s.uniqueValidSession(r)
+	if err != nil {
+		writeDomainBridgeError(w, http.StatusServiceUnavailable, "webbridge.credential_unavailable", body, route.Mutating)
 		return
 	}
-	provided, ok := exactHeader(r.Header, CSRFHeader)
-	if !ok || !constantTimeStringEqual(provided, csrf) {
+	if !ok || !constantTimeStringEqual(currentSession, session) || !constantTimeStringEqual(currentCSRF, csrf) {
+		writeDomainBridgeError(w, http.StatusUnauthorized, "webbridge.session_invalid", body, route.Mutating)
+		return
+	}
+	if !requestProofValid(r, currentCSRF) {
 		writeDomainBridgeError(w, http.StatusForbidden, "webbridge.csrf_invalid", body, route.Mutating)
 		return
 	}
@@ -684,7 +696,7 @@ func (s *Server) handleDomainAction(w http.ResponseWriter, r *http.Request, rout
 		writeError(w, http.StatusBadGateway, "webbridge.upstream_unavailable")
 		return
 	}
-	w.Header().Set(CSRFHeader, csrf)
+	w.Header().Set(CSRFHeader, currentCSRF)
 	writeUpstreamResponse(w, status, response)
 }
 
@@ -696,31 +708,6 @@ func (s *Server) upstream(parent context.Context, budget time.Duration, method, 
 		return 0, nil, fmt.Errorf("webbridge.control_token_unavailable: %w", err)
 	}
 	return controlapi.AuthenticatedRequestTokenContext(ctx, s.controlAddr, token, method, path, body)
-}
-
-func (s *Server) safeSession(r *http.Request) (string, string, time.Time, error) {
-	csrf, expires, ok := s.uniqueValidSession(r)
-	if ok {
-		return "", csrf, expires, nil
-	}
-	if !s.mayIssueReadSession(r) {
-		return "", "", time.Time{}, nil
-	}
-	// Read requests recover stale or ambiguous HttpOnly sessions. handleRead
-	// clears historical cookie paths before installing this replacement.
-	return s.newSession()
-}
-
-func (s *Server) mayIssueReadSession(r *http.Request) bool {
-	origin, ok := optionalExactHeader(r.Header, "Origin")
-	if !ok {
-		return false
-	}
-	if origin != "" {
-		return origin == s.origin
-	}
-	fetchSite, ok := optionalExactHeader(r.Header, "Sec-Fetch-Site")
-	return ok && fetchSite == "same-origin"
 }
 
 func clearSessionCookies(w http.ResponseWriter) {
@@ -736,90 +723,7 @@ func clearSessionCookies(w http.ResponseWriter) {
 	}
 }
 
-func (s *Server) authenticatedSession(r *http.Request) (string, bool) {
-	csrf, _, ok := s.uniqueValidSession(r)
-	return csrf, ok
-}
-
-func (s *Server) uniqueValidSession(r *http.Request) (string, time.Time, bool) {
-	cookies := namedCookies(r, SessionCookieName)
-	seenValues := make(map[string]struct{}, len(cookies))
-	var selectedCSRF string
-	var selectedExpiry time.Time
-	found := false
-	for _, cookie := range cookies {
-		if _, duplicate := seenValues[cookie.Value]; duplicate {
-			continue
-		}
-		seenValues[cookie.Value] = struct{}{}
-		csrf, expires, ok := s.verifySession(cookie.Value)
-		if !ok {
-			continue
-		}
-		if found {
-			return "", time.Time{}, false
-		}
-		selectedCSRF = csrf
-		selectedExpiry = expires
-		found = true
-	}
-	return selectedCSRF, selectedExpiry, found
-}
-
-func (s *Server) newSession() (string, string, time.Time, error) {
-	var nonce [32]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return "", "", time.Time{}, err
-	}
-	expires := s.now().UTC().Add(defaultSessionTTL).Truncate(time.Second)
-	payload := sessionVersion + "." + strconv.FormatInt(expires.Unix(), 10) + "." + base64.RawURLEncoding.EncodeToString(nonce[:])
-	signature := s.sessionMAC(sessionDomain, payload)
-	value := payload + "." + base64.RawURLEncoding.EncodeToString(signature)
-	return value, s.csrfToken(payload), expires, nil
-}
-
-func (s *Server) verifySession(value string) (string, time.Time, bool) {
-	parts := strings.Split(value, ".")
-	if len(parts) != 4 || parts[0] != sessionVersion || value != strings.TrimSpace(value) {
-		return "", time.Time{}, false
-	}
-	expiresUnix, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || strconv.FormatInt(expiresUnix, 10) != parts[1] {
-		return "", time.Time{}, false
-	}
-	nonce, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || len(nonce) != 32 || base64.RawURLEncoding.EncodeToString(nonce) != parts[2] {
-		return "", time.Time{}, false
-	}
-	provided, err := base64.RawURLEncoding.DecodeString(parts[3])
-	if err != nil || len(provided) != sha256.Size || base64.RawURLEncoding.EncodeToString(provided) != parts[3] {
-		return "", time.Time{}, false
-	}
-	expires := time.Unix(expiresUnix, 0).UTC()
-	now := s.now().UTC()
-	if !expires.After(now) || expires.After(now.Add(defaultSessionTTL+time.Minute)) {
-		return "", time.Time{}, false
-	}
-	payload := strings.Join(parts[:3], ".")
-	if !hmac.Equal(provided, s.sessionMAC(sessionDomain, payload)) {
-		return "", time.Time{}, false
-	}
-	return s.csrfToken(payload), expires, true
-}
-
-func (s *Server) csrfToken(sessionPayload string) string {
-	return base64.RawURLEncoding.EncodeToString(s.sessionMAC(csrfDomain, sessionPayload))
-}
-
-func (s *Server) sessionMAC(domain, value string) []byte {
-	mac := hmac.New(sha256.New, s.sessionKey[:])
-	_, _ = io.WriteString(mac, domain)
-	_, _ = mac.Write([]byte{0})
-	_, _ = io.WriteString(mac, value)
-	return mac.Sum(nil)
-}
-
-func literalLoopbackAddr(addr string) (*net.TCPAddr, error) {
+func literalIPAddr(addr string) (*net.TCPAddr, error) {
 	if strings.Contains(addr, "://") {
 		return nil, fmt.Errorf("scheme forbidden")
 	}
@@ -828,14 +732,57 @@ func literalLoopbackAddr(addr string) (*net.TCPAddr, error) {
 		return nil, err
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return nil, fmt.Errorf("literal loopback required")
+	if ip == nil {
+		return nil, fmt.Errorf("literal IP required")
 	}
 	port, err := strconv.ParseUint(portText, 10, 16)
 	if err != nil {
 		return nil, fmt.Errorf("invalid port")
 	}
 	return &net.TCPAddr{IP: ip, Port: int(port)}, nil
+}
+
+func literalWebAddr(addr string, allowInsecurePrivateNetwork bool) (*net.TCPAddr, error) {
+	parsed, err := literalIPAddr(addr)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.IP.IsLoopback() {
+		return parsed, nil
+	}
+	if !parsed.IP.IsPrivate() {
+		return nil, fmt.Errorf("literal loopback or private IP required")
+	}
+	if !allowInsecurePrivateNetwork {
+		return nil, fmt.Errorf("private-network HTTP requires explicit insecure opt-in")
+	}
+	return parsed, nil
+}
+
+func httpAuthority(addr *net.TCPAddr) string {
+	host := addr.IP.String()
+	if addr.Port != 80 {
+		return net.JoinHostPort(host, strconv.Itoa(addr.Port))
+	}
+	if addr.IP.To4() == nil {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func isAPINamespace(path string) bool {
+	return path == "/v1" || strings.HasPrefix(path, "/v1/")
+}
+
+func literalLoopbackAddr(addr string) (*net.TCPAddr, error) {
+	parsed, err := literalIPAddr(addr)
+	if err != nil {
+		return nil, err
+	}
+	if !parsed.IP.IsLoopback() {
+		return nil, fmt.Errorf("literal loopback required")
+	}
+	return parsed, nil
 }
 
 func literalControlAddr(addr string) (*net.TCPAddr, error) {
@@ -926,7 +873,12 @@ func writeError(w http.ResponseWriter, status int, code string) {
 	setResponseSecurityHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, "{\"error\":%q}\n", code)
+	_ = json.NewEncoder(w).Encode(controlapi.DomainError{
+		APIVersion: controlapi.DomainAPIVersion,
+		OK:         false,
+		ErrorCode:  code,
+		Message:    "the local web bridge rejected the request",
+	})
 }
 
 func writeDomainBridgeError(w http.ResponseWriter, status int, code string, body []byte, mutating bool) {

@@ -25,8 +25,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", os.Getenv("XTIER_CONFIG"), "config path")
 	controlAddr := fs.String("control", controlapi.DefaultAddr, "loopback control listen address")
-	webAddr := fs.String("web", os.Getenv("XTIER_WEB_ADDR"), "optional loopback web listen address")
+	webAddr := fs.String("web", os.Getenv("XTIER_WEB_ADDR"), "optional literal web listen address")
 	webRoot := fs.String("web-root", os.Getenv("XTIER_WEB_ROOT"), "built frontend directory served by --web")
+	webInsecurePrivateNetwork := fs.Bool("web-insecure-private-network", false, "allow plaintext HTTP on an explicitly configured private IP")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -42,11 +43,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "--web-root requires --web")
 		return 2
 	}
+	if *webInsecurePrivateNetwork && *webAddr == "" {
+		fmt.Fprintln(stderr, "--web-insecure-private-network requires --web")
+		return 2
+	}
+	if *webInsecurePrivateNetwork {
+		fmt.Fprintln(stderr, "WARNING: private-network Web HTTP exposes panel credentials and sessions to the network path; use only in an isolated test environment")
+	}
 	d, err := daemon.Start(ctx, daemon.Options{
-		ConfigPath:  *configPath,
-		ControlAddr: *controlAddr,
-		WebAddr:     *webAddr,
-		WebRoot:     *webRoot,
+		ConfigPath:                *configPath,
+		ControlAddr:               *controlAddr,
+		WebAddr:                   *webAddr,
+		WebRoot:                   *webRoot,
+		WebInsecurePrivateNetwork: *webInsecurePrivateNetwork,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)

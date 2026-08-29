@@ -196,6 +196,15 @@ export const IconExternal = icon('IconExternal', () => (
   </>
 ));
 export const IconPlay = icon('IconPlay', () => p('M4.5 2.8 12.5 8l-8 5.2z'));
+/* Leaving, not closing: the arrow points OUT of an enclosure that stays open
+ * behind it. `IconClose` is the wrong glyph for signing out — it says the thing
+ * in front of you is being dismissed, when what is ending is your session. */
+export const IconSignOut = icon('IconSignOut', () => (
+  <>
+    <path d="M6.2 13.5H4.2A1.7 1.7 0 0 1 2.5 11.8V4.2A1.7 1.7 0 0 1 4.2 2.5h2" />
+    <path d="M10.2 5 13.5 8l-3.3 3M13.5 8H6.2" />
+  </>
+));
 
 /* -- Direction and disclosure --------------------------------------------- */
 

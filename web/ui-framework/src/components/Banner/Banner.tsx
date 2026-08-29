@@ -4,6 +4,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type HTMLAttributes,
   type ReactNode,
 } from 'react';
@@ -12,6 +13,7 @@ import { usePresence } from '../../hooks/usePresence';
 import { useControllableState } from '../../hooks/useControllableState';
 import { useEventCallback } from '../../hooks/useEventCallback';
 import { statusGlyph, type StatusTone } from '../_shared/statusIcons';
+import { bannerGridColumns, bannerNarrowActionColumn } from './bannerLayout';
 import './Banner.css';
 
 export type BannerVariant = 'info' | 'success' | 'warning' | 'danger' | 'neutral' | 'accent';
@@ -129,6 +131,7 @@ export const Banner = forwardRef<HTMLDivElement, BannerProps>(function Banner(
     role,
     fullBleed = false,
     className,
+    style,
     ...rest
   },
   ref,
@@ -197,6 +200,12 @@ export const Banner = forwardRef<HTMLDivElement, BannerProps>(function Banner(
     role ?? (variant === 'danger' ? 'alert' : variant === 'warning' ? 'status' : undefined);
 
   const glyph = icon === null ? null : (icon ?? statusGlyph(TONE_BY_VARIANT[variant]));
+  const hasIcon = glyph != null;
+  const layoutStyle = {
+    ...style,
+    '--_grid-columns': bannerGridColumns(hasIcon),
+    '--_action-column': bannerNarrowActionColumn(hasIcon),
+  } as CSSProperties;
 
   const setRefs = (node: HTMLDivElement | null) => {
     presenceRef(node);
@@ -216,6 +225,7 @@ export const Banner = forwardRef<HTMLDivElement, BannerProps>(function Banner(
       data-state={state}
       data-full-bleed={fullBleed || undefined}
       className={clsx('stratum-banner', className)}
+      style={layoutStyle}
     >
       {glyph != null && (
         <span className="stratum-banner__icon" aria-hidden="true">

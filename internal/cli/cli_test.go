@@ -23,7 +23,6 @@ import (
 	"github.com/FrankoonG/x-tier/internal/identity"
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/statestore"
-	"github.com/FrankoonG/x-tier/internal/webbridge"
 	"github.com/FrankoonG/x-tier/internal/xraycredential"
 )
 
@@ -1479,8 +1478,11 @@ func TestWebCredentialShowIsLocalOnlyAndExplicit(t *testing.T) {
 		t.Fatalf("show exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	response := decodeJSON(t, stdout.String())
-	if response["credential"] != credential || response["username"] != webbridge.BasicUsername {
+	if response["credential"] != credential {
 		t.Fatalf("unexpected credential response: %#v", response)
+	}
+	if _, exists := response["username"]; exists {
+		t.Fatalf("credential response retained obsolete Basic username: %#v", response)
 	}
 
 	stdout.Reset()

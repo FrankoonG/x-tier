@@ -14,6 +14,14 @@ import type {
   SystemSettings,
   XrayProfilesResponse,
 } from './types';
+import {
+  adoptSessionProof,
+  clearSessionAuthority,
+  currentSessionAuthority,
+  currentSessionGeneration,
+  sessionGenerationMatches,
+  type SessionAuthority,
+} from './sessionProof.ts';
 
 export function newRequestId(): string {
   const bytes = new Uint8Array(16);
@@ -78,15 +86,10 @@ export class TransportFailure extends Error {
   }
 }
 
-const API_VERSION = 1;
-const CSRF_HEADER = 'X-XTier-CSRF-Token';
-const RETRYABLE_SESSION_ERRORS = new Set([
-  'webbridge.session_invalid',
-  'webbridge.csrf_invalid',
-]);
+export const API_VERSION = 1;
+export const CSRF_HEADER = 'X-XTier-CSRF-Token';
 
 const ROUTES = {
-  health: '/v1/health',
   status: '/v1/status',
   local: '/v1/domain/local',
   identity: '/v1/domain/identity',
@@ -104,54 +107,120 @@ const ROUTES = {
   configRestoreLastGood: '/v1/domain/config/restore-last-good',
 } as const;
 
-let csrfToken: string | null = null;
-let sessionRead: Promise<string> | null = null;
-
-function captureOptionalCSRF(response: Response) {
+function captureOptionalCSRF(response: Response, generation: number) {
+  if (!sessionGenerationMatches(generation)) return;
   const token = response.headers.get(CSRF_HEADER)?.trim();
-  if (token) csrfToken = token;
+  if (token) adoptSessionProof(token, generation);
 }
 
-export function resetControlSession() {
-  csrfToken = null;
-  sessionRead = null;
+/** Adopts authority from a validated session response and fences old requests. */
+export function activateControlSession(
+  response: Response,
+  expectedGeneration = currentSessionGeneration(),
+  advanceGeneration = false,
+): boolean {
+  const token = response.headers.get(CSRF_HEADER)?.trim();
+  if (!token) return false;
+  if (!adoptSessionProof(token, expectedGeneration, advanceGeneration)) return false;
+  return true;
 }
 
-async function establishSession(force = false): Promise<string> {
-  if (!force && csrfToken) return csrfToken;
-  if (sessionRead) return sessionRead;
-  if (force) csrfToken = null;
+/** The origin-scoped proof held for the active browser session, if any. */
+export function currentCSRFToken(): string | null {
+  return currentSessionAuthority()?.proof ?? null;
+}
 
-  const read = (async () => {
-    let response: Response;
-    try {
-      response = await fetch(ROUTES.health, { credentials: 'same-origin' });
-    } catch (error) {
-      throw new TransportFailure(error instanceof Error ? error.message : String(error));
-    }
-    const token = response.headers.get(CSRF_HEADER)?.trim();
-    if (token) {
-      csrfToken = token;
-      return token;
-    }
-    const body = await response.text().catch(() => '');
-    const detail = `${response.status} ${body.trim()}`.trim();
-    throw new TransportFailure(`control.http_status: ${detail}`);
-  })();
+export function currentControlSession(): SessionAuthority | null {
+  return currentSessionAuthority();
+}
 
-  sessionRead = read;
-  try {
-    return await read;
-  } finally {
-    if (sessionRead === read) sessionRead = null;
+export function controlSessionGeneration(): number {
+  return currentSessionGeneration();
+}
+
+export function controlSessionGenerationMatches(expected: number): boolean {
+  return sessionGenerationMatches(expected);
+}
+
+export function resetControlSession(expectedGeneration?: number): boolean {
+  return clearSessionAuthority(expectedGeneration);
+}
+
+/* ---------------------------------------------------------------------------
+ * SESSION LOSS
+ *
+ * A typed 401 or CSRF 403 is neither a domain failure nor a transport failure.
+ * The bridge answered, and it answered clearly: this tab's cookie/proof pair
+ * is no longer one authority. It may have expired, been revoked, or been
+ * replaced by another tab or daemon generation.
+ *
+ * Left alone it arrives as `control.response_invalid: HTTP failure lacks typed
+ * error`, which tells the operator the panel is broken when in fact it is only
+ * no longer trusted. So the transport announces it once, out of band, and
+ * whoever owns authentication decides what to do about it. Nothing in this
+ * module knows there IS an authentication gate, and nothing here should.
+ * ------------------------------------------------------------------------ */
+
+export type SessionLostListener = () => void;
+
+const sessionLostListeners = new Set<SessionLostListener>();
+
+/** Subscribes to "the bridge stopped accepting our session". Returns cleanup. */
+export function onControlSessionLost(listener: SessionLostListener): () => void {
+  sessionLostListeners.add(listener);
+  return () => {
+    sessionLostListeners.delete(listener);
+  };
+}
+
+/**
+ * Reports a lost session. The cached CSRF token is dropped first: it was minted
+ * against the dead session and every mutation carrying it would fail the same
+ * way. Listeners are copied before iteration so unsubscribing inside one does
+ * not perturb the walk.
+ */
+export function notifyControlSessionLost(generation = currentSessionGeneration()) {
+  if (!resetControlSession(generation)) return;
+  for (const listener of [...sessionLostListeners]) listener();
+}
+
+function noteSessionStatus(response: Response, body: string, generation: number) {
+  const failure = typedBridgeError(body);
+  const sessionInvalid = response.status === 401
+    && failure?.error_code === 'webbridge.session_invalid';
+  const proofInvalid = response.status === 403
+    && failure?.error_code === 'webbridge.csrf_invalid';
+  if (sessionInvalid || proofInvalid) {
+    notifyControlSessionLost(generation);
   }
 }
 
-function bridgeErrorCode(body: string): string | null {
+function establishSession(): string {
+  const authority = currentSessionAuthority();
+  if (!authority) {
+    notifyControlSessionLost(currentSessionGeneration());
+    throw new TransportFailure('control.session_proof_missing');
+  }
+  return authority.proof;
+}
+
+interface TypedBridgeError {
+  api_version: number;
+  ok: false;
+  error_code: string;
+  message: string;
+  applied?: unknown;
+  outcome?: unknown;
+}
+
+function typedBridgeError(body: string): TypedBridgeError | null {
   try {
-    const parsed = JSON.parse(body) as { error?: unknown; error_code?: unknown };
-    if (typeof parsed.error_code === 'string') return parsed.error_code;
-    return typeof parsed.error === 'string' ? parsed.error : null;
+    const parsed = JSON.parse(body) as Partial<TypedBridgeError> | null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+      || parsed.api_version !== API_VERSION || parsed.ok !== false
+      || typeof parsed.error_code !== 'string' || parsed.error_code.length === 0
+      || typeof parsed.message !== 'string' || parsed.message.length === 0) return null;
+    return parsed as TypedBridgeError;
   } catch {
     return null;
   }
@@ -658,12 +727,14 @@ function mutationFacts(
   const hasApplied = hasOwn(value, 'applied');
   const hasOutcome = hasOwn(value, 'outcome');
   const hasPreparations = hasOwn(value, 'preparations');
+  const failedMutatingDryRun = call.mutating && call.dryRun && !success;
   const expectsFacts = call.mutating && !call.dryRun;
+  if (failedMutatingDryRun && !hasApplied && !hasOutcome && !hasPreparations) return {};
   if (!expectsFacts) {
-    if (hasApplied || hasOutcome || hasPreparations) {
+    if (!failedMutatingDryRun && (hasApplied || hasOutcome || hasPreparations)) {
       throw new Error('non-mutating response contains mutation outcome');
     }
-    return {};
+    if (!failedMutatingDryRun) return {};
   }
   if (!hasApplied || !hasOutcome || typeof value.applied !== 'boolean') {
     throw new Error('mutation response is missing applied/outcome');
@@ -674,6 +745,10 @@ function mutationFacts(
   }
   if ((outcome === 'applied') !== value.applied) {
     throw new Error('mutation applied/outcome tuple is inconsistent');
+  }
+  if (failedMutatingDryRun
+    && (value.applied !== false || outcome !== 'not_applied' || hasPreparations)) {
+    throw new Error('failed dry-run requires an unprepared not_applied outcome');
   }
   if (success && outcome !== 'applied') {
     throw new Error('successful mutation was not confirmed applied');
@@ -998,45 +1073,42 @@ function typedDomainError(value: Record<string, unknown>, call: DomainCall): Dom
 async function fetchJSON<T>(call: DomainCall, expectDomainOK: boolean): Promise<T> {
   const serialized = call.body === undefined ? undefined : JSON.stringify(call.body);
   let response: Response;
-  let responseText: string | null = null;
+  let responseGeneration = currentSessionGeneration();
   let requestMayHaveRun = false;
 
   try {
+    const token = establishSession();
+    responseGeneration = currentSessionGeneration();
     if (call.method === 'GET') {
-      response = await fetch(call.path, { credentials: 'same-origin' });
+      response = await fetch(call.path, {
+        credentials: 'same-origin',
+        headers: { accept: 'application/json', [CSRF_HEADER]: token },
+      });
     } else {
-      let token = await establishSession();
       requestMayHaveRun = true;
       response = await fetch(call.path, {
         method: call.method,
         credentials: 'same-origin',
-        headers: { 'content-type': 'application/json', [CSRF_HEADER]: token },
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          [CSRF_HEADER]: token,
+        },
         body: serialized,
       });
-      if (response.status === 403) {
-        requestMayHaveRun = false;
-        responseText = await response.text().catch(() => '');
-        const code = bridgeErrorCode(responseText);
-        if (code && RETRYABLE_SESSION_ERRORS.has(code)) {
-          token = await establishSession(true);
-          requestMayHaveRun = true;
-          responseText = null;
-          response = await fetch(call.path, {
-            method: call.method,
-            credentials: 'same-origin',
-            headers: { 'content-type': 'application/json', [CSRF_HEADER]: token },
-            body: serialized,
-          });
-        }
-      }
     }
   } catch (error) {
     const unknown = requestMayHaveRun && call.mutating && !call.dryRun;
     throw new TransportFailure(error instanceof Error ? error.message : String(error), unknown);
   }
 
-  captureOptionalCSRF(response);
-  const text = responseText ?? await response.text().catch(() => '');
+  const text = await response.text().catch(() => '');
+  if (!sessionGenerationMatches(responseGeneration)) {
+    const unknown = requestMayHaveRun && call.mutating && !call.dryRun;
+    throw new TransportFailure('control.session_changed', unknown);
+  }
+  if (response.ok) captureOptionalCSRF(response, responseGeneration);
+  noteSessionStatus(response, text, responseGeneration);
   let parsed: Record<string, unknown> | null = null;
   if (text) {
     try {

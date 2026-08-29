@@ -27,6 +27,7 @@ type Options struct {
 	ControlAddr                string
 	WebAddr                    string
 	WebRoot                    string
+	WebInsecurePrivateNetwork  bool
 	ConfigReadFailureTolerance time.Duration
 }
 
@@ -254,10 +255,11 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 			)
 		}
 		web, err := webbridge.Start(daemonCtx, webbridge.Config{
-			Addr:        opts.WebAddr,
-			ControlAddr: server.Addr(),
-			StateStore:  stateStore,
-			StaticDir:   opts.WebRoot,
+			Addr:                        opts.WebAddr,
+			ControlAddr:                 server.Addr(),
+			StateStore:                  stateStore,
+			StaticDir:                   opts.WebRoot,
+			AllowInsecurePrivateNetwork: opts.WebInsecurePrivateNetwork,
 		})
 		if err != nil {
 			controlErr := closeAndWaitControlServer(server)

@@ -30,7 +30,7 @@
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build",
-    "test:unit": "node --experimental-strip-types --test src/components/Card/cardA11y.test.mjs src/components/ScrollArea/scrollAreaState.test.mjs",
+    "test:unit": "node --experimental-strip-types --test src/components/Banner/bannerLayout.test.mjs src/components/Card/cardA11y.test.mjs src/components/Input/inputResetState.test.mjs src/components/ScrollArea/scrollAreaState.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {

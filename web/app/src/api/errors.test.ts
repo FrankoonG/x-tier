@@ -139,3 +139,16 @@ test('error guidance never overrides the daemon mutation outcome', () => {
   ));
   assert.equal(landed.applied, true);
 });
+
+test('web session outcomes all have operator guidance', () => {
+  for (const code of [
+    'webbridge.credential_invalid',
+    'webbridge.rate_limited',
+    'webbridge.session_invalid',
+    'webbridge.session_changed',
+    'webbridge.credential_unavailable',
+    'webbridge.session_unavailable',
+  ]) {
+    assert.notEqual(adviseCode(code).title, 'The command failed', code);
+  }
+});

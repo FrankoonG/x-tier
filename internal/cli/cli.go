@@ -20,7 +20,6 @@ import (
 	"github.com/FrankoonG/x-tier/internal/route"
 	"github.com/FrankoonG/x-tier/internal/settings"
 	"github.com/FrankoonG/x-tier/internal/statestore"
-	"github.com/FrankoonG/x-tier/internal/webbridge"
 	"github.com/FrankoonG/x-tier/internal/xrayconfig"
 )
 
@@ -242,11 +241,11 @@ func runWebCredentialShow(g globals, stdout, stderr io.Writer) int {
 	}
 	if g.json {
 		err = json.NewEncoder(stdout).Encode(map[string]any{
-			"ok": true, "username": webbridge.BasicUsername,
+			"ok":         true,
 			"credential": credential, "credential_source": "private_state",
 		})
 	} else {
-		_, err = fmt.Fprintf(stdout, "username=%s\ncredential=%s\n", webbridge.BasicUsername, credential)
+		_, err = fmt.Fprintf(stdout, "credential=%s\n", credential)
 	}
 	if err != nil {
 		return writeCommandError(g, stdout, stderr, err)

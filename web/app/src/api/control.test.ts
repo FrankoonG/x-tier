@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  CSRF_HEADER,
   CommandFailure,
   TransportFailure,
+  activateControlSession,
   clearJournal,
   compilePath,
+  currentCSRFToken,
   executeMutation,
   formatCommand,
   getDaemonStatus,
@@ -16,8 +19,9 @@ import {
   getSettings,
   getXrayProfiles,
   mutations,
+  onControlSessionLost,
   redactSecretArguments,
-  resetControlSession,
+  resetControlSession as clearControlSession,
   validateXrayProfile,
   type DomainMutation,
 } from './control.ts';
@@ -28,6 +32,29 @@ const target = {
   controlAddr: '127.0.0.1:19090',
 };
 const renameArgv = ['local', 'identity', 'rename', `a'b\n$(should-not-run)`];
+
+class MemoryStorage implements Storage {
+  readonly #values = new Map<string, string>();
+
+  get length() { return this.#values.size; }
+  clear() { this.#values.clear(); }
+  getItem(key: string) { return this.#values.get(key) ?? null; }
+  key(index: number) { return [...this.#values.keys()][index] ?? null; }
+  removeItem(key: string) { this.#values.delete(key); }
+  setItem(key: string, value: string) { this.#values.set(key, String(value)); }
+}
+
+Object.defineProperty(globalThis, 'sessionStorage', {
+  configurable: true,
+  value: new MemoryStorage(),
+});
+
+function resetControlSession(token = 'csrf-token') {
+  clearControlSession();
+  assert.equal(activateControlSession(new Response(null, {
+    headers: { [CSRF_HEADER]: token },
+  })), true);
+}
 
 function validDaemonStatus(): Record<string, unknown> {
   return {
@@ -92,12 +119,7 @@ test('secret values are redacted from CLI equivalents, thrown errors, and journa
   const originalFetch = globalThis.fetch;
   resetControlSession();
   clearJournal();
-  let calls = 0;
   globalThis.fetch = async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-    }
     return Response.json({
       api_version: 1,
       ok: false,
@@ -133,16 +155,15 @@ test('a typed mutation sends no CLI envelope and returns the domain object direc
   resetControlSession();
   const requestId = '0123456789abcdef0123456789abcdef';
   const originalFetch = globalThis.fetch;
-  const requests: Array<{ url: string; method: string; body: string }> = [];
+  const requests: Array<{ url: string; method: string; body: string; headers: Headers }> = [];
   globalThis.fetch = async (input, init) => {
     const url = String(input);
-    requests.push({ url, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
-    if (url === '/v1/health') {
-      return new Response('{"ok":true}', {
-        status: 200,
-        headers: { 'X-XTier-CSRF-Token': 'csrf-token' },
-      });
-    }
+    requests.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: String(init?.body ?? ''),
+      headers: new Headers(init?.headers ?? {}),
+    });
     return Response.json({
       api_version: 1, ok: true, changed: true, dry_run: false,
       applied: true, outcome: 'applied',
@@ -158,10 +179,10 @@ test('a typed mutation sends no CLI envelope and returns the domain object direc
     );
     assert.equal(response.after_revision, 8);
     assert.deepEqual(requests.map(({ url, method }) => ({ url, method })), [
-      { url: '/v1/health', method: 'GET' },
       { url: '/v1/domain/identity', method: 'PATCH' },
     ]);
-    const body = JSON.parse(requests[1]!.body) as Record<string, unknown>;
+    const body = JSON.parse(requests[0]!.body) as Record<string, unknown>;
+    assert.equal(requests[0]!.headers.get(CSRF_HEADER), 'csrf-token');
     assert.deepEqual(body, {
       api_version: 1, revision: 7, dry_run: false, request_id: requestId,
       name: renameArgv[3],
@@ -179,12 +200,7 @@ test('a truncated typed mutation response is unknown and retains its request id'
   resetControlSession();
   const requestId = '1123456789abcdef0123456789abcdef';
   const originalFetch = globalThis.fetch;
-  let calls = 0;
   globalThis.fetch = async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-    }
     return new Response('{"api_version":1,"ok":true', {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -210,12 +226,7 @@ test('an indeterminate typed domain result is treated as an unknown transport ou
   resetControlSession();
   const requestId = '1923456789abcdef0123456789abcdef';
   const originalFetch = globalThis.fetch;
-  let calls = 0;
   globalThis.fetch = async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-    }
     return Response.json({
       api_version: 1,
       ok: false,
@@ -244,12 +255,7 @@ test('a typed 5xx mutation failure without outcome is never reported as not appl
   resetControlSession();
   const requestId = '2023456789abcdef0123456789abcdef';
   const originalFetch = globalThis.fetch;
-  let calls = 0;
   globalThis.fetch = async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-    }
     return Response.json({
       api_version: 1,
       ok: false,
@@ -275,12 +281,7 @@ test('typed error_code is consumed directly and stdout is never parsed', async (
   clearJournal();
   resetControlSession();
   const originalFetch = globalThis.fetch;
-  let calls = 0;
   globalThis.fetch = async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-    }
     return Response.json({
       api_version: 1,
       ok: false,
@@ -312,12 +313,7 @@ test('an applied error is journaled as applied_with_error from the outcome tuple
   clearJournal();
   resetControlSession();
   const originalFetch = globalThis.fetch;
-  let calls = 0;
   globalThis.fetch = async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-    }
     return Response.json({
       api_version: 1,
       ok: false,
@@ -366,12 +362,7 @@ test('response facts are rejected before an untrusted error code is consumed', a
     clearJournal();
     resetControlSession();
     const originalFetch = globalThis.fetch;
-    let calls = 0;
     globalThis.fetch = async () => {
-      calls += 1;
-      if (calls === 1) {
-        return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-      }
       return Response.json(envelope, { status: 409 });
     };
     try {
@@ -413,12 +404,7 @@ test('dry-run success requires matching revision evidence before Apply can be en
     clearJournal();
     resetControlSession();
     const originalFetch = globalThis.fetch;
-    let calls = 0;
     globalThis.fetch = async () => {
-      calls += 1;
-      if (calls === 1) {
-        return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-      }
       return Response.json(envelope);
     };
     try {
@@ -439,6 +425,84 @@ test('dry-run success requires matching revision evidence before Apply can be en
   }
 });
 
+test('a failed mutating dry-run accepts only the strict not_applied tuple', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    clearJournal();
+    resetControlSession();
+    globalThis.fetch = async () => Response.json({
+      api_version: 1,
+      ok: false,
+      error_code: 'config.revision_conflict',
+      message: 'have 8 want 7',
+      applied: false,
+      outcome: 'not_applied',
+    }, { status: 409 });
+    await assert.rejects(
+      executeMutation(mutations.identityRename('A'), {
+        revision: 7,
+        dryRun: true,
+        requestId: '2923456789abcdef0123456789abcdef',
+      }),
+      (error: unknown) => error instanceof CommandFailure
+        && error.outcome === 'not_applied'
+        && error.applied === false,
+    );
+
+    clearJournal();
+    resetControlSession();
+    globalThis.fetch = async () => Response.json({
+      api_version: 1,
+      ok: false,
+      error_code: 'config.revision_conflict',
+      message: 'legacy dry-run refusal without facts',
+    }, { status: 409 });
+    await assert.rejects(
+      executeMutation(mutations.identityRename('A'), {
+        revision: 7,
+        dryRun: true,
+        requestId: '2923456789abcdef0123456789abcdeb',
+      }),
+      (error: unknown) => error instanceof CommandFailure
+        && error.outcome === undefined
+        && error.applied === false,
+    );
+
+    for (const envelope of [
+      {
+        api_version: 1, ok: false, error_code: 'webbridge.csrf_invalid', message: 'uncertain',
+        applied: false, outcome: 'indeterminate',
+      },
+      {
+        api_version: 1, ok: false, error_code: 'config.revision_conflict', message: 'prepared',
+        applied: false, outcome: 'not_applied', preparations: [],
+      },
+      {
+        api_version: 1, ok: true, changed: true, dry_run: true,
+        before_revision: 7, after_revision: 8, applied: false, outcome: 'not_applied',
+      },
+    ]) {
+      clearJournal();
+      resetControlSession();
+      globalThis.fetch = async () => Response.json(envelope, {
+        status: envelope.ok ? 200 : 409,
+      });
+      await assert.rejects(
+        executeMutation(mutations.identityRename('A'), {
+          revision: 7,
+          dryRun: true,
+          requestId: '2923456789abcdef0123456789abcdea',
+        }),
+        (error: unknown) => error instanceof TransportFailure
+          && !error.outcomeUnknown
+          && error.message.startsWith('control.response_invalid'),
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('config and reload dry runs accept only their own revision transition', async () => {
   for (const [operation, afterRevision] of [
     [mutations.identityRename('A'), 8],
@@ -447,12 +511,7 @@ test('config and reload dry runs accept only their own revision transition', asy
     clearJournal();
     resetControlSession();
     const originalFetch = globalThis.fetch;
-    let calls = 0;
     globalThis.fetch = async () => {
-      calls += 1;
-      if (calls === 1) {
-        return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-      }
       return Response.json({
         api_version: 1, ok: true, changed: true, dry_run: true,
         before_revision: 7, after_revision: afterRevision,
@@ -467,6 +526,93 @@ test('config and reload dry runs accept only their own revision transition', asy
     } finally {
       globalThis.fetch = originalFetch;
     }
+  }
+});
+
+test('a typed CSRF refusal clears authority and never replays a mutation', async () => {
+  clearJournal();
+  resetControlSession('old-proof');
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; body: string; proof: string | null }> = [];
+  let sessionLosses = 0;
+  const unsubscribe = onControlSessionLost(() => { sessionLosses += 1; });
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({
+      url,
+      body: String(init?.body ?? ''),
+      proof: new Headers(init?.headers ?? {}).get(CSRF_HEADER),
+    });
+    return Response.json({
+      api_version: 1,
+      ok: false,
+      error_code: 'webbridge.csrf_invalid',
+      message: 'Sign in again.',
+      applied: false,
+      outcome: 'not_applied',
+    }, { status: 403 });
+  };
+
+  try {
+    await assert.rejects(executeMutation(mutations.identityRename('A'), {
+      revision: 7,
+      requestId: '3023456789abcdef0123456789abcdef',
+    }), (error: unknown) => error instanceof CommandFailure
+      && !error.applied && error.outcome === 'not_applied');
+    assert.deepEqual(requests.map(({ url, proof }) => ({ url, proof })), [
+      { url: '/v1/domain/identity', proof: 'old-proof' },
+    ]);
+    assert.equal(sessionLosses, 1);
+    assert.equal(currentCSRFToken(), null);
+  } finally {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('malformed or uncertain CSRF refusals are never retried', async () => {
+  const refusals: Record<string, unknown>[] = [
+    { error_code: 'webbridge.csrf_invalid' },
+    {
+      api_version: 2, ok: false, error_code: 'webbridge.csrf_invalid', message: 'wrong version',
+      applied: false, outcome: 'not_applied',
+    },
+    {
+      api_version: 1, ok: false, error_code: 'webbridge.csrf_invalid',
+      applied: false, outcome: 'not_applied',
+    },
+    {
+      api_version: 1, ok: false, error_code: 'webbridge.csrf_invalid', message: 'missing outcome',
+      applied: false,
+    },
+    {
+      api_version: 1, ok: false, error_code: 'webbridge.csrf_invalid', message: 'may have run',
+      applied: false, outcome: 'indeterminate',
+    },
+    {
+      api_version: 1, ok: false, error_code: 'webbridge.csrf_invalid', message: 'claims applied',
+      applied: true, outcome: 'applied',
+    },
+  ];
+
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [index, refusal] of refusals.entries()) {
+      clearJournal();
+      resetControlSession();
+      let calls = 0;
+      globalThis.fetch = async () => {
+        calls += 1;
+        return Response.json(refusal, { status: 403 });
+      };
+      await assert.rejects(executeMutation(mutations.identityRename('A'), {
+        revision: 7,
+        requestId: `${index + 31}`.padStart(32, '0'),
+      }));
+      assert.equal(calls, 1, JSON.stringify(refusal));
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 
@@ -658,12 +804,7 @@ test('not_applied identity preparations remain structured on CommandFailure', as
   clearJournal();
   resetControlSession();
   const originalFetch = globalThis.fetch;
-  let calls = 0;
   globalThis.fetch = async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-    }
     return Response.json({
       api_version: 1,
       ok: false,
@@ -752,13 +893,15 @@ test('all screen operations call versioned domain routes without a CLI transport
       await test(mapping.name, async () => {
         clearJournal();
         resetControlSession();
-        const requests: Array<{ url: string; method: string; body: string }> = [];
+        const requests: Array<{ url: string; method: string; body: string; headers: Headers }> = [];
         globalThis.fetch = async (input, init) => {
           const url = String(input);
-          requests.push({ url, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
-          if (url === '/v1/health') {
-            return new Response('', { headers: { 'X-XTier-CSRF-Token': 'csrf-token' } });
-          }
+          requests.push({
+            url,
+            method: init?.method ?? 'GET',
+            body: String(init?.body ?? ''),
+            headers: new Headers(init?.headers ?? {}),
+          });
           if (mapping.name === 'daemon status') {
             return Response.json(validDaemonStatus());
           }
@@ -796,6 +939,7 @@ test('all screen operations call versioned domain routes without a CLI transport
         const request = requests.at(-1)!;
         assert.equal(request.url, mapping.path);
         assert.equal(request.method, mapping.method);
+        assert.equal(request.headers.get(CSRF_HEADER), 'csrf-token');
         if (mapping.method === 'GET') {
           assert.equal(request.body, '');
           return;

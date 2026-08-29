@@ -35,6 +35,7 @@ import {
   IconRefresh,
   IconSettings,
   IconShield,
+  IconSignOut,
   IconSun,
   IconSystem,
   Mark,
@@ -60,7 +61,7 @@ import { Settings } from './screens/Settings';
 import { Profiles } from './screens/Profiles';
 import { Diagnostics } from './screens/Diagnostics';
 import { PathEditor } from './screens/PathEditor';
-import { ScenarioBar } from './dev/ScenarioBar';
+import { AuthGate } from './auth/AuthGate.tsx';
 
 const SCREENS = {
   overview: { title: 'Overview', icon: <IconOverview />, render: () => <Overview /> },
@@ -255,7 +256,26 @@ function ControlIndicator({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function Chrome() {
+function SignOutControl({ onSignOut }: { onSignOut: () => void }) {
+  return (
+    <Tooltip
+      trigger={
+        <Button
+          variant="ghost"
+          size="sm"
+          iconOnly
+          icon={<IconSignOut />}
+          aria-label="Sign out"
+          onClick={onSignOut}
+        />
+      }
+    >
+      Sign out
+    </Tooltip>
+  );
+}
+
+function Chrome({ onSignOut }: { onSignOut: () => void }) {
   const [route, navigate] = useHashRoute();
   const { screen, sub } = route;
   const { refresh, local, daemon, daemonError } = useControl();
@@ -451,6 +471,7 @@ function Chrome() {
               <ControlIndicator compact={isNarrow} />
               <Separator orientation="vertical" decorative style={{ blockSize: 'var(--stratum-space-8)' }} />
               <ThemeControl />
+              <SignOutControl onSignOut={onSignOut} />
             </Row>
           }
         />
@@ -465,15 +486,28 @@ function Chrome() {
       >
         {(sub && SUB_RENDER[`${screen}/${sub}`]?.(route, navigate)) ?? SCREENS[screen].render()}
       </div>
-      {import.meta.env.DEV && <ScenarioBar />}
     </AppShell>
   );
 }
 
+/*
+ * The gate is the outermost thing, and ControlProvider is inside it.
+ *
+ * That order is load-bearing in both directions. Downwards: the provider begins
+ * polling session-protected routes the instant it mounts, so mounting it before
+ * the session is known would produce a burst of 401s and put the shell on
+ * screen behind them. Upwards: signing out unmounts the provider, and with it
+ * every poll, timer and cached read — the next operator gets an empty panel
+ * rather than the last one's node.
+ */
 export function App() {
   return (
-    <ControlProvider>
-      <Chrome />
-    </ControlProvider>
+    <AuthGate>
+      {(signOut) => (
+        <ControlProvider>
+          <Chrome onSignOut={signOut} />
+        </ControlProvider>
+      )}
+    </AuthGate>
   );
 }

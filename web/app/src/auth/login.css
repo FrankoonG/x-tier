@@ -1,0 +1,135 @@
+/* The login screen.
+ *
+ * Everything here is layout. Colour, type scale, spacing and radius all come
+ * from the same semantic tokens the application shell uses, so the screen
+ * follows the theme — including the system preference — without knowing what
+ * the theme is.
+ *
+ * Placed in the application's own layer rather than `stratum.components`: this
+ * is product surface, not a framework primitive, and it should lose to nothing
+ * and win against nothing. */
+
+.xtier-login {
+  display: grid;
+  /* Safe to centre despite the min-height: the box is `min-block-size`, not
+   * `block-size`, so content taller than the viewport grows the container and
+   * scrolls normally instead of overflowing past the top edge where no scroll
+   * can reach it.
+   *
+   * A banner appearing inside the card does settle the card upward by half its
+   * height. That is accepted: the field itself only moves for failures of the
+   * REQUEST, and those are the ones that do not put the cursor back in it. A
+   * rejected credential reports below the input, which moves nothing. */
+  /* `align-content`, never the `place-content` shorthand: that would also set
+   * `justify-content: center`, which shrink-wraps the column track to its
+   * content and takes the max-width off the card. */
+  align-content: center;
+  justify-items: center;
+  min-block-size: 100dvh;
+  padding-block: var(--stratum-space-16);
+  padding-inline: var(--stratum-space-6);
+  background: var(--stratum-bg);
+  color: var(--stratum-text);
+}
+
+.xtier-login__column {
+  inline-size: 100%;
+  max-inline-size: 23.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--stratum-space-8);
+}
+
+.xtier-login__card {
+  inline-size: 100%;
+}
+
+.xtier-login__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stratum-space-8);
+}
+
+/* -- Identity ------------------------------------------------------------ */
+
+.xtier-login__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--stratum-space-6);
+  /* Aligned to the card's content, not its edge, so the mark sits on the same
+   * vertical as the field label below it. */
+  padding-inline-start: var(--stratum-space-2);
+}
+
+.xtier-login__wordmark {
+  font-weight: var(--stratum-weight-semibold);
+  font-size: var(--stratum-text-lg);
+  /* Matches the topbar wordmark so the two read as the same product. */
+  letter-spacing: 0;
+}
+
+.xtier-login__title {
+  margin: 0;
+  font-size: var(--stratum-text-lg);
+  font-weight: var(--stratum-weight-semibold);
+  line-height: var(--stratum-leading-tight);
+  letter-spacing: 0;
+}
+
+/* -- Form ---------------------------------------------------------------- */
+
+.xtier-login__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stratum-space-8);
+}
+
+/* -- Checking -------------------------------------------------------------
+ * The session probe's own screen. It carries the mark and nothing else: no
+ * text to read and discard, no skeleton pretending to be an application that
+ * may never load. */
+
+.xtier-login__checking {
+  display: grid;
+  place-content: center;
+  min-block-size: 100dvh;
+  background: var(--stratum-bg);
+  /* The mark fades in rather than appearing, so a probe that resolves just
+   * after the delay threshold does not register as a flash. */
+  animation: xtier-login-appear 220ms ease-out both;
+}
+
+@keyframes xtier-login-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xtier-login__checking {
+    animation: none;
+  }
+}
+
+/* -- Narrow ---------------------------------------------------------------
+ * The column gives up its maximum and takes the width it is given: at this
+ * size a bounded card with air either side wastes the only dimension there
+ * is. The card keeps its surface — it is what tells the form apart from the
+ * page — but loses the outer margin that was framing it. */
+
+@media (max-width: 27rem) {
+  .xtier-login {
+    /* `start` here, because on a phone the on-screen keyboard takes most of
+     * the viewport and a centred card would be pushed off the top of it. */
+    align-content: start;
+    padding-block: var(--stratum-space-12);
+    padding-inline: var(--stratum-space-6);
+  }
+
+  .xtier-login__column {
+    max-inline-size: none;
+  }
+}

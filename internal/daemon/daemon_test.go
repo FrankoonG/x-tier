@@ -725,7 +725,7 @@ func TestDaemonServesBuiltWebAppThroughAuthenticatedBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("anonymous web app response=%d", response.StatusCode)
 	}
 	webCredential, err := controlapi.ReadStoreToken(d.stateStore, statestore.WebToken)
@@ -739,11 +739,16 @@ func TestDaemonServesBuiltWebAppThroughAuthenticatedBridge(t *testing.T) {
 	if webCredential == controlToken {
 		t.Fatal("Web credential reused the control token")
 	}
-	request, err := http.NewRequest(http.MethodGet, "http://"+d.WebAddr()+"/", nil)
+	loginBody, err := json.Marshal(map[string]string{"credential": webCredential})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.SetBasicAuth(webbridge.BasicUsername, webCredential)
+	request, err := http.NewRequest(http.MethodPost, "http://"+d.WebAddr()+webbridge.SessionPath, bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", "http://"+d.WebAddr())
+	request.Header.Set("Content-Type", "application/json")
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -753,15 +758,29 @@ func TestDaemonServesBuiltWebAppThroughAuthenticatedBridge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("X-Tier real")) {
-		t.Fatalf("web app response=%d %q", response.StatusCode, body)
+	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"authenticated":true`)) {
+		t.Fatalf("web login response=%d %q", response.StatusCode, body)
+	}
+	csrf := response.Header.Get(webbridge.CSRFHeader)
+	if csrf == "" {
+		t.Fatal("web login did not issue a session proof")
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == webbridge.SessionCookieName && cookie.Value != "" && cookie.MaxAge > 0 {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("web login did not issue a live session cookie")
 	}
 	request, err = http.NewRequest(http.MethodGet, "http://"+d.WebAddr()+controlapi.StatusPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.SetBasicAuth(webbridge.BasicUsername, webCredential)
+	request.AddCookie(sessionCookie)
 	request.Header.Set("Origin", "http://"+d.WebAddr())
+	request.Header.Set(webbridge.CSRFHeader, csrf)
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)

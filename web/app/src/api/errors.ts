@@ -1067,6 +1067,119 @@ const CATALOGUE: Record<string, ErrorAdvice> = {
     severity: 'danger',
     blocked: false,
   },
+  'control.session_changed': {
+    title: 'The browser session changed',
+    guidance:
+      'A response from an older session arrived after browser authority changed. '
+      + 'The response was discarded; retry from the current session state.',
+    severity: 'warning',
+    blocked: false,
+  },
+  'control.session_proof_missing': {
+    title: 'This browser has no session proof',
+    guidance:
+      'The session cookie is not sufficient on its own. Sign in from this origin '
+      + 'to establish browser authority again.',
+    severity: 'warning',
+    blocked: false,
+  },
+
+  /* -- web bridge, from internal/webbridge -----------------------------------
+   * These are the bridge's own refusals: they happen in front of the command
+   * layer, so none of them says anything about the state of the node. */
+  'webbridge.credential_invalid': {
+    title: 'That credential was not accepted',
+    guidance:
+      'The panel credential did not match. It is set on the daemon, not in the '
+      + 'browser, so a password manager holding an old value will keep failing '
+      + 'until it is updated.',
+    severity: 'warning',
+    blocked: false,
+  },
+  'webbridge.rate_limited': {
+    title: 'Too many attempts',
+    guidance:
+      'The bridge is refusing further sign-in attempts for a short period. '
+      + 'Waiting is the only thing that clears it; retrying sooner will still be refused.',
+    severity: 'warning',
+    blocked: false,
+  },
+  'webbridge.session_invalid': {
+    title: 'The session is no longer valid',
+    guidance:
+      'The session expired or was revoked. The panel credential itself is '
+      + 'unchanged — signing in again restores access.',
+    severity: 'warning',
+    blocked: false,
+  },
+  'webbridge.session_changed': {
+    title: 'Sign-in raced with another session change',
+    guidance:
+      'The submitted credential was not applied to the browser session. Enter it '
+      + 'again so sign-in starts from the current session state.',
+    severity: 'warning',
+    blocked: false,
+  },
+  'webbridge.credential_unavailable': {
+    title: 'The panel credential is unavailable',
+    guidance:
+      'The bridge cannot read its private credential state. Repair the daemon state '
+      + 'ownership or storage, then try again.',
+    severity: 'danger',
+    blocked: false,
+  },
+  'webbridge.session_unavailable': {
+    title: 'The bridge could not create a session',
+    guidance:
+      'The credential was accepted, but the bridge could not create browser authority. '
+      + 'Check the daemon log before retrying.',
+    severity: 'danger',
+    blocked: false,
+  },
+  'webbridge.csrf_invalid': {
+    title: 'The request carried a stale security token',
+    guidance:
+      'This tab no longer holds the proof paired with the browser session. The '
+      + 'panel clears its local authority and does not replay the request. Sign '
+      + 'in again, review current state, and explicitly submit the action again.',
+    severity: 'warning',
+    blocked: false,
+  },
+  'webbridge.origin_forbidden': {
+    title: 'The request came from an origin the bridge does not trust',
+    guidance:
+      'The bridge only accepts requests from the address it serves the panel '
+      + 'on. Reaching it through a different hostname, a port-forward, or a '
+      + 'reverse proxy that rewrites Origin will fail here.',
+    severity: 'danger',
+    blocked: false,
+  },
+  'webbridge.host_forbidden': {
+    title: 'The request named a host the bridge does not serve',
+    guidance:
+      'The Host header did not match what the bridge is bound to. As with '
+      + 'origin, this is about how the panel was reached rather than what it '
+      + 'was asked to do.',
+    severity: 'danger',
+    blocked: false,
+  },
+  'webbridge.upstream_unavailable': {
+    title: 'The bridge could not reach the daemon',
+    guidance:
+      'The web bridge answered, so the panel is being served — but the control '
+      + 'plane behind it did not respond. The daemon is the thing to check.',
+    severity: 'danger',
+    blocked: false,
+  },
+  'webbridge.upstream_timeout': {
+    title: 'The daemon did not answer in time',
+    guidance:
+      'The control plane accepted the request and then took too long. For a '
+      + 'mutation this is genuinely indeterminate: re-read before assuming '
+      + 'nothing was applied.',
+    severity: 'danger',
+    blocked: false,
+  },
 };
 
 /**
