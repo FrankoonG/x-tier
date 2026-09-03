@@ -283,8 +283,9 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		return nil, err
 	}
 	r.listener = listener
-	r.wg.Add(1)
+	r.wg.Add(2)
 	go r.acceptLoop()
+	go r.rejectUnsupportedPacketLoop()
 	return r, nil
 }
 
@@ -875,13 +876,29 @@ func (r *Runtime) forceUnblock() {
 
 func classifyRendrDialError(err error) runtimeErrorCategory {
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return runtimeErrorCanceled
 	case errors.Is(err, rendr.ErrPeerProtoVersion), errors.Is(err, rendr.ErrPeerProtocol):
 		return runtimeErrorProtocol
+	case isRendrLocalBoundaryError(err):
+		return runtimeErrorInternal
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return runtimeErrorCanceled
 	default:
 		return runtimeErrorCarrier
 	}
+}
+
+func isRendrLocalBoundaryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var factoryErr *rendr.FactoryError
+	var listenerErr *rendr.ListenerCallbackError
+	return errors.As(err, &factoryErr) ||
+		errors.As(err, &listenerErr) ||
+		errors.Is(err, rendr.ErrDialCleanupCapacity) ||
+		errors.Is(err, rendr.ErrMigrationObserverLagged) ||
+		errors.Is(err, rendr.ErrMigrationObserverCallbackFailed) ||
+		errors.Is(err, rendr.ErrMigrationObserverLimit)
 }
 
 // actionableCloseError removes only benign leaves from a possibly joined or
@@ -929,7 +946,11 @@ func (r *Runtime) acceptLoop() {
 		if err != nil {
 			<-r.acceptedSlots
 			if r.ctx.Err() == nil {
-				r.recordError(runtimeErrorCarrier)
+				category := runtimeErrorCarrier
+				if isRendrLocalBoundaryError(err) {
+					category = runtimeErrorInternal
+				}
+				r.recordError(category)
 				r.acceptFailed.Store(true)
 			}
 			return
@@ -961,6 +982,29 @@ func (r *Runtime) acceptLoop() {
 				r.recordError(categoryOf(err))
 			}
 		}()
+	}
+}
+
+func (r *Runtime) rejectUnsupportedPacketLoop() {
+	defer r.wg.Done()
+	for {
+		conn, err := r.listener.AcceptPacket(r.ctx)
+		if err != nil {
+			if r.ctx.Err() == nil {
+				category := runtimeErrorCarrier
+				if isRendrLocalBoundaryError(err) {
+					category = runtimeErrorInternal
+				}
+				r.recordError(category)
+				r.acceptFailed.Store(true)
+			}
+			return
+		}
+		// rendr v1 stream sources can negotiate either session kind, while
+		// x-tier currently exposes only streams. Synchronous rejection keeps
+		// the packet queue and close work bounded under hostile input.
+		r.recordError(runtimeErrorProtocol)
+		_ = conn.Close()
 	}
 }
 

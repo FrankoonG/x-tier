@@ -904,6 +904,12 @@ func TestRendrDialErrorClassification(t *testing.T) {
 		{name: "carrier", err: errors.New("dial failed"), want: runtimeErrorCarrier},
 		{name: "protocol version", err: fmt.Errorf("peer rejected: %w", rendr.ErrPeerProtoVersion), want: runtimeErrorProtocol},
 		{name: "peer protocol", err: rendr.ErrPeerProtocol, want: runtimeErrorProtocol},
+		{name: "dial cleanup capacity", err: rendr.ErrDialCleanupCapacity, want: runtimeErrorInternal},
+		{name: "factory capacity", err: &rendr.FactoryError{FactoryID: "xray-stream", Kind: rendr.FactoryKindStream, Reason: rendr.FactoryReasonCapacity}, want: runtimeErrorInternal},
+		{name: "listener callback", err: &rendr.ListenerCallbackError{Source: "xray-stream", Operation: rendr.ListenerCallbackAccept, Reason: rendr.ListenerCallbackResourceLimited}, want: runtimeErrorInternal},
+		{name: "migration observer limit", err: rendr.ErrMigrationObserverLimit, want: runtimeErrorInternal},
+		{name: "canceled cleanup capacity", err: errors.Join(context.Canceled, rendr.ErrDialCleanupCapacity), want: runtimeErrorInternal},
+		{name: "deadline factory capacity", err: errors.Join(context.DeadlineExceeded, &rendr.FactoryError{FactoryID: "xray-stream", Kind: rendr.FactoryKindStream, Reason: rendr.FactoryReasonCapacity}), want: runtimeErrorInternal},
 		{name: "canceled", err: context.Canceled, want: runtimeErrorCanceled},
 		{name: "deadline", err: context.DeadlineExceeded, want: runtimeErrorCanceled},
 	}
@@ -913,6 +919,37 @@ func TestRendrDialErrorClassification(t *testing.T) {
 				t.Fatalf("category = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUnsupportedPacketSessionsAreDrained(t *testing.T) {
+	server := newTestRuntime(t)
+	client := newTestRuntime(t)
+	wireRuntimes(t, client, server, func(context.Context, EgressRequest) (net.Conn, error) {
+		return nil, errors.New("packet rejection must not reach x-tier egress")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	packet, dialErr := client.runtime.DialPacket(ctx, rendr.SessionConfig{Root: rendr.Path(
+		"packet-rejected",
+		rendr.PathSpec{
+			Transport: xrayStreamFactory,
+			Address:   "packet-rejected",
+			Opts:      map[string]string{"name": "packet-rejected"},
+		},
+	)})
+	if packet != nil {
+		defer packet.Close()
+	}
+	if dialErr != nil && !errors.Is(dialErr, net.ErrClosed) && !errors.Is(dialErr, context.Canceled) {
+		t.Fatalf("DialPacket rejection = %v", dialErr)
+	}
+	status := waitRuntimeStatus(t, server, func(status RuntimeStatus) bool {
+		return status.LastError == RuntimeStatusErrorProtocol && status.AcceptedFlowIDs == 0
+	})
+	if status.ActiveAccepted != 0 || status.TotalAccepted != 0 || status.PacketSupported {
+		t.Fatalf("unsupported packet session reached x-tier acceptance: %+v", status)
 	}
 }
 

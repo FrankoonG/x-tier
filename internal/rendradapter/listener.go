@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-var errCarrierListenerClosed = errors.New("rendradapter: carrier listener closed")
+var errCarrierListenerClosed = net.ErrClosed
 
 type carrierListener struct {
 	queue  chan net.Conn

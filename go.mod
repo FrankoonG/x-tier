@@ -3,7 +3,7 @@ module github.com/FrankoonG/x-tier
 go 1.26.7
 
 require (
-	github.com/FrankoonG/rendr v0.0.0-20260821041829-5426c235c520
+	github.com/FrankoonG/rendr v0.0.0-20260827055616-85034f14c5e1
 	github.com/xtls/xray-core v0.0.0-20260509173629-1bdb488c9ec0
 	golang.org/x/mod v0.34.0
 	golang.org/x/net v0.53.0
