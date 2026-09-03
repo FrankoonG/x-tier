@@ -78,9 +78,7 @@ func TestDryRunDoesNotWrite(t *testing.T) {
 func TestDaemonCommandsFailClosedWhenLiveConfigIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
-		t.Fatal(err)
-	}
+	saveCLIConfig(t, path, configstore.DefaultConfig())
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -690,9 +688,7 @@ func TestIdentityShowAndStatusCoverBackingStates(t *testing.T) {
 			} else if tc.configure != nil {
 				tc.configure(t, &cfg, backing)
 			}
-			if err := configstore.Save(path, cfg); err != nil {
-				t.Fatal(err)
-			}
+			saveCLIConfig(t, path, cfg)
 
 			for _, command := range [][]string{{"local", "identity", "show"}, {"local", "status"}} {
 				code, out := runCLI(t, append([]string{"--offline", "--config", path, "--json"}, command...)...)
@@ -758,9 +754,7 @@ func TestSameDirectoryConfigsUseIndependentIdentityBackings(t *testing.T) {
 		filepath.Join(dir, "a.last-good"),
 	}
 	for _, path := range paths {
-		if err := configstore.Save(path, configstore.DefaultConfig()); err != nil {
-			t.Fatal(err)
-		}
+		saveCLIConfig(t, path, configstore.DefaultConfig())
 	}
 
 	stores := []*statestore.Store{openCLIStore(t, paths[0]), openCLIStore(t, paths[1])}
@@ -807,9 +801,7 @@ func TestOwnedCLIUsesCanonicalParentForPrivateState(t *testing.T) {
 	}
 	realPath := filepath.Join(realDir, "config.json")
 	aliasPath := filepath.Join(aliasDir, "config.json")
-	if err := configstore.Save(realPath, configstore.DefaultConfig()); err != nil {
-		t.Fatal(err)
-	}
+	saveCLIConfig(t, realPath, configstore.DefaultConfig())
 
 	realStore := openCLIStore(t, realPath)
 	canonical, err := configstore.CanonicalPath(aliasPath)
@@ -882,9 +874,7 @@ func TestIdentityInitPreservesLegacyRoleReadOnly(t *testing.T) {
 	backing := createIdentity(t, identitySeedPath(path))
 	cfg := configstore.DefaultConfig()
 	cfg.Node.Role = "thin"
-	if err := configstore.Save(path, cfg); err != nil {
-		t.Fatal(err)
-	}
+	saveCLIConfig(t, path, cfg)
 	code, out := runDaemonCLI(t, "--offline", "--config", path, "--json", "--revision", "0", "local", "identity", "init", "--name", "legacy")
 	if code != 0 {
 		t.Fatalf("recoverable init failed: %s", out)
@@ -905,9 +895,7 @@ func TestIdentityInitHandlesRecoverableLegacyMismatchAndBacked(t *testing.T) {
 		backing := createIdentity(t, identitySeedPath(path))
 		cfg := configstore.DefaultConfig()
 		cfg.Revision = 7
-		if err := configstore.Save(path, cfg); err != nil {
-			t.Fatal(err)
-		}
+		saveCLIConfig(t, path, cfg)
 		code, out := runDaemonCLI(t, "--offline", "--config", path, "--json", "--revision", "7", "local", "identity", "init", "--name", "recovered")
 		if code != 0 {
 			t.Fatalf("recover failed: %s", out)
@@ -969,9 +957,7 @@ func TestIdentityInitHandlesRecoverableLegacyMismatchAndBacked(t *testing.T) {
 			cfg := configstore.DefaultConfig()
 			cfg.Revision = 3
 			tc.configure(t, path, &cfg)
-			if err := configstore.Save(path, cfg); err != nil {
-				t.Fatal(err)
-			}
+			saveCLIConfig(t, path, cfg)
 			code, out := runDaemonCLI(t, "--offline", "--config", path, "--json", "--revision", "3", "local", "identity", "init")
 			if code == 0 || jsonField(t, out, "error_code") != tc.wantCode {
 				t.Fatalf("init result code=%d want=%s output=%s", code, tc.wantCode, out)
@@ -1559,10 +1545,27 @@ func seedConfig(t *testing.T, cfg configstore.Config) string {
 	if cfg.System.LogLevel == "" {
 		cfg.System = configstore.DefaultConfig().System
 	}
-	if err := configstore.Save(path, cfg); err != nil {
-		t.Fatalf("seed config: %v", err)
-	}
+	saveCLIConfig(t, path, cfg)
 	return path
+}
+
+func saveCLIConfig(t *testing.T, path string, cfg configstore.Config) {
+	t.Helper()
+	if err := configstore.Save(path, cfg); err != nil {
+		t.Fatalf("seed path config: %v", err)
+	}
+	canonical, err := configstore.CanonicalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := configstore.SaveStore(store, cfg); err != nil {
+		t.Fatalf("seed store config: %v", err)
+	}
 }
 
 func node(id string) configstore.NodeConfig {

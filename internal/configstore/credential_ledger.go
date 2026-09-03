@@ -17,6 +17,8 @@ const (
 	maxPeerCredentialLedgerSize = 1 << 20
 )
 
+var ErrPeerCredentialLedgerMissing = errors.New("peer credential ledger missing")
+
 type peerCredentialQuarantineLedger struct {
 	Version     int                        `json:"version"`
 	Quarantines []PeerCredentialQuarantine `json:"quarantines"`
@@ -51,6 +53,20 @@ func decodePeerCredentialLedger(payload []byte) ([]PeerCredentialQuarantine, err
 		return nil, markContentError(configErrorf("config.peer_credential_ledger_invalid: %w", err))
 	}
 	return canonical, nil
+}
+
+// ValidatePeerCredentialLedgerDocument validates a legacy adjacent ledger
+// before statestore binds and copies it into the private object store.
+func ValidatePeerCredentialLedgerDocument(payload []byte) error {
+	_, err := decodePeerCredentialLedger(payload)
+	return err
+}
+
+func peerCredentialLedgerMissingError() error {
+	return markContentError(configErrorf(
+		"config.peer_credential_ledger_missing: %w",
+		ErrPeerCredentialLedgerMissing,
+	))
 }
 
 func encodePeerCredentialLedger(quarantines []PeerCredentialQuarantine) ([]byte, error) {
@@ -168,10 +184,7 @@ func validateConfigMatchesCredentialLedger(
 	ledgerExists bool,
 ) error {
 	if !ledgerExists {
-		if len(cfg.PeerCredentialQuarantines) != 0 {
-			return markContentError(configErrorf("config.peer_credential_ledger_missing"))
-		}
-		return nil
+		return peerCredentialLedgerMissingError()
 	}
 	merged, err := mergePeerCredentialQuarantines(cfg.PeerCredentialQuarantines, ledger)
 	if err != nil {

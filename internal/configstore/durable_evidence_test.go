@@ -2,6 +2,10 @@ package configstore
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -61,6 +65,23 @@ func TestObjectCredentialLedgerAndRevisionReservationAreMonotonic(t *testing.T) 
 	revision, exists, err := loadStoreConfigRevisionHighWater(store)
 	if err != nil || !exists || revision != 41 {
 		t.Fatalf("revision=%d exists=%v error=%v", revision, exists, err)
+	}
+}
+
+func TestStoreRevisionHighWaterPreservesUnknownCommitOutcome(t *testing.T) {
+	store := openConfigObjectStore(t)
+	defer store.Close()
+	injected := fmt.Errorf("%w: injected post-rename sync failure", statestore.ErrCommitOutcomeUnknown)
+	err := persistStoreConfigRevisionHighWaterWithReplace(
+		store,
+		41,
+		func(statestore.Object, []byte) error { return injected },
+	)
+	if !errors.Is(err, ErrCommitOutcomeUnknown) || !errors.Is(err, statestore.ErrCommitOutcomeUnknown) {
+		t.Fatalf("high-water error=%v, want both config and statestore unknown outcomes", err)
+	}
+	if !strings.Contains(err.Error(), "config.revision_high_water_outcome_indeterminate") {
+		t.Fatalf("high-water error=%v, want indeterminate stage", err)
 	}
 }
 
@@ -364,6 +385,124 @@ func TestObjectRestoreFailsClosedWhenUnreadableActivePredatesCredentialLedger(t 
 	if _, err := RestoreStoreLastKnownGood(store, checkpoint.Revision, false); err == nil ||
 		!strings.Contains(err.Error(), "config.restore_credential_ledger_missing") {
 		t.Fatalf("restore without ledger error=%v", err)
+	}
+}
+
+func TestCurrentConfigLoadDoesNotRecreateMissingCredentialLedger(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	active := DefaultConfig()
+	if err := Save(configPath, active); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := active
+	checkpoint.Revision = 1
+	checkpoint.PeerCredentialQuarantines = []PeerCredentialQuarantine{credentialLedgerTestRecord(t)}
+	if err := SaveLastKnownGood(configPath, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath := peerCredentialLedgerPath(configPath)
+	if err := os.Remove(ledgerPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadOrMigrate(configPath); err == nil ||
+		!strings.Contains(err.Error(), "config.peer_credential_ledger_missing") {
+		t.Fatalf("load without ledger error=%v", err)
+	}
+	if _, err := os.Stat(ledgerPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ordinary load recreated missing ledger: %v", err)
+	}
+}
+
+func TestCurrentConfigWithoutHistoricalQuarantinesStillRequiresMissingLedgerRecovery(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	active := DefaultConfig()
+	if err := Save(configPath, active); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveLastKnownGood(configPath, active); err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath := peerCredentialLedgerPath(configPath)
+	if err := os.Remove(ledgerPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadOrMigrate(configPath); err == nil ||
+		!strings.Contains(err.Error(), "config.peer_credential_ledger_missing") {
+		t.Fatalf("path load without ledger error=%v", err)
+	}
+	if _, err := os.Stat(ledgerPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("path load recreated missing ledger: %v", err)
+	}
+
+	store := openConfigObjectStore(t)
+	defer store.Close()
+	if err := SaveStore(store, active); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveStoreLastKnownGood(store, active); err != nil {
+		t.Fatal(err)
+	}
+	storeLedgerPath, err := store.DiagnosticPath(statestore.PeerCredentialQuarantineLedger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(storeLedgerPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadStoreOrMigrate(store, true); err == nil ||
+		!strings.Contains(err.Error(), "config.peer_credential_ledger_missing") {
+		t.Fatalf("store load without ledger error=%v", err)
+	}
+	if _, exists, err := loadStorePeerCredentialLedger(store); err != nil || exists {
+		t.Fatalf("store load recreated missing ledger: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestLegacyConfigCannotRecreateMissingCredentialLedger(t *testing.T) {
+	legacy := configV1{
+		SchemaVersion: 1,
+		Revision:      7,
+		Node:          DefaultConfig().Node,
+		System:        DefaultConfig().System,
+		XrayProfiles:  map[string]XrayProfile{},
+		PeerTrust:     map[string]PeerTrustGrant{},
+	}
+	payload, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	if err := writeFileAtomic(configPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, migrated, err := LoadOrMigrate(configPath); migrated ||
+		!errors.Is(err, ErrPeerCredentialLedgerMissing) {
+		t.Fatalf("path legacy migration = migrated:%v err:%v", migrated, err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(after, payload) {
+		t.Fatalf("path legacy config changed: err=%v", err)
+	}
+	if _, exists, err := loadPathPeerCredentialLedger(configPath); err != nil || exists {
+		t.Fatalf("path legacy migration recreated ledger: exists=%v err=%v", exists, err)
+	}
+
+	store := openConfigObjectStore(t)
+	defer store.Close()
+	if err := store.CreateConfigExclusive(payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, migrated, err := LoadStoreOrMigrate(store, true); migrated ||
+		!errors.Is(err, ErrPeerCredentialLedgerMissing) {
+		t.Fatalf("store legacy migration = migrated:%v err:%v", migrated, err)
+	}
+	storeAfter, err := store.ReadConfig(maxConfigFileBytes)
+	if err != nil || !bytes.Equal(storeAfter, payload) {
+		t.Fatalf("store legacy config changed: err=%v", err)
+	}
+	if _, exists, err := loadStorePeerCredentialLedger(store); err != nil || exists {
+		t.Fatalf("store legacy migration recreated ledger: exists=%v err=%v", exists, err)
 	}
 }
 

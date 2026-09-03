@@ -133,6 +133,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, daemon bo
 	g.ownershipKey = ownershipKey
 	g.stateStore = store
 	g.ctx = ctx
+	if daemon && isMissingCredentialLedgerRecovery(rest) {
+		return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
+			"config.credential_recovery_local_only",
+			fmt.Errorf("missing credential ledger recovery is available only to a local xtierctl process"),
+		})}
+	}
 	if store != nil {
 		if !daemon || filepath.Clean(g.configPath) != store.ConfigPath() {
 			return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
@@ -147,6 +153,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, daemon bo
 			return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, canonicalErr)}
 		}
 		g.configPath = canonical
+		if isMissingCredentialLedgerRecovery(rest) {
+			if !g.offline {
+				return ExecutionResult{ExitCode: writeCommandError(g, stdout, stderr, commandError{
+					"config.credential_recovery_requires_offline",
+					fmt.Errorf("missing credential ledger recovery requires --offline and a stopped daemon"),
+				})}
+			}
+			return ExecutionResult{ExitCode: runMissingCredentialLedgerRecovery(g, rest, stdout, stderr)}
+		}
 		if g.offline {
 			offlineStore, openErr := statestore.Open(g.configPath)
 			if openErr != nil {
@@ -1600,7 +1615,7 @@ func commandMutates(args []string) bool {
 	case "settings":
 		return action == "set"
 	case "config":
-		return action == "restore-last-good"
+		return action == "restore-last-good" || action == "recover-missing-credential-ledger"
 	case "inbound":
 		return action == "set" || action == "enable" || action == "disable"
 	case "peer":

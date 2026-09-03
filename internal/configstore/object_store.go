@@ -156,6 +156,9 @@ func LoadStoreOrMigrate(store *statestore.Store, persistMissing bool) (Config, b
 			if ledgerErr != nil {
 				return ledgerErr
 			}
+			if !ledgerExists {
+				return peerCredentialLedgerMissingError()
+			}
 			changed, quarantineErr := mergeCredentialLedgerIntoConfig(&cfg, ledger)
 			if quarantineErr != nil {
 				return markContentError(quarantineErr)
@@ -190,9 +193,12 @@ func LoadStoreOrMigrate(store *statestore.Store, persistMissing bool) (Config, b
 			return configErrorf("config.revision_exhausted")
 		}
 		cfg.SchemaVersion = CurrentSchemaVersion
-		ledger, _, ledgerErr := loadStorePeerCredentialLedger(store)
+		ledger, ledgerExists, ledgerErr := loadStorePeerCredentialLedger(store)
 		if ledgerErr != nil {
 			return ledgerErr
+		}
+		if !ledgerExists {
+			return peerCredentialLedgerMissingError()
 		}
 		if _, quarantineErr := mergeCredentialLedgerIntoConfig(&cfg, ledger); quarantineErr != nil {
 			return markContentError(quarantineErr)

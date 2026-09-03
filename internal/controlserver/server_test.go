@@ -37,6 +37,9 @@ func TestStartOwnedStoreUsesObjectBoundTokenAndConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	if err := configstore.SaveStore(store, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
 	server, err := StartOwnedStore(context.Background(), "127.0.0.1:0", store, canonical)
 	if err != nil {
 		t.Fatal(err)

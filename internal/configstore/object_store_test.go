@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -21,6 +22,9 @@ func TestObjectStoreMigratesExplicitV1ToV2ExactlyOnceWithoutGrants(t *testing.T)
 	defer store.Close()
 	v1 := []byte(`{"schema_version":1,"revision":7,"node":{},"system":{}}`)
 	if err := store.CreateConfigExclusive(v1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistStorePeerCredentialLedger(store, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,6 +82,9 @@ func TestObjectStoreCredentialCollisionQuarantineFailsClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := store.CreateConfigExclusive(append(payload, '\n')); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := persistStorePeerCredentialLedger(store, nil); err != nil {
 				t.Fatal(err)
 			}
 			if schemaVersion == CurrentSchemaVersion {
@@ -169,6 +176,9 @@ func TestObjectStoreCompletesPartialCredentialQuarantineBeforeRuntime(t *testing
 	if err := store.CreateConfigExclusive(append(payload, '\n')); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := persistStorePeerCredentialLedger(store, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	repaired, changed, err := LoadStoreOrMigrate(store, false)
 	if err != nil {
@@ -202,6 +212,9 @@ func TestObjectStoreCurrentCredentialCollisionAtMaxRevisionIsNotRewritten(t *tes
 	if err := store.CreateConfigExclusive(payload); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := persistStorePeerCredentialLedger(store, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, changed, err := LoadStoreOrMigrate(store, false); err == nil || changed || !strings.Contains(err.Error(), "config.revision_exhausted") {
 		t.Fatalf("max-revision quarantine = changed:%v error:%v", changed, err)
@@ -227,6 +240,9 @@ func TestObjectStoreConcurrentCurrentCredentialQuarantinePublishesOnce(t *testin
 		t.Fatal(err)
 	}
 	if err := first.CreateConfigExclusive(append(payload, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistStorePeerCredentialLedger(first, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -342,6 +358,9 @@ func TestObjectStoreConcurrentV1MigrationPublishesOneRevision(t *testing.T) {
 	defer second.Close()
 	v1 := []byte(`{"schema_version":1,"revision":41,"node":{},"system":{}}`)
 	if err := first.CreateConfigExclusive(v1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistStorePeerCredentialLedger(first, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -515,6 +534,69 @@ func TestObjectStoreRestoresOnlyInvalidActiveConfig(t *testing.T) {
 	if err != nil || secondDryRun.AfterRevision != 6 {
 		t.Fatalf("durable reservation did not advance repeated restore: result=%+v error=%v", secondDryRun, err)
 	}
+}
+
+func TestObjectStoreRestoreCannotRecreateMissingCredentialLedger(t *testing.T) {
+	store := openConfigObjectStore(t)
+	defer store.Close()
+	active := DefaultConfig()
+	active.Revision = 4
+	if err := SaveStore(store, active); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveStoreLastKnownGood(store, active); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := store.ReadConfig(maxConfigFileBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath, err := store.DiagnosticPath(statestore.PeerCredentialQuarantineLedger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(ledgerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RestoreStoreLastKnownGood(store, active.Revision, false); !errors.Is(err, ErrPeerCredentialLedgerMissing) {
+		t.Fatalf("restore error=%v, want missing credential ledger", err)
+	}
+	assertObjectStoreConfigUnchanged(t, store, payload)
+	if _, exists, err := loadStorePeerCredentialLedger(store); err != nil || exists {
+		t.Fatalf("restore recreated ledger: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestObjectStoreRestoreRejectsRecoverableActiveIdentityMismatch(t *testing.T) {
+	store := openConfigObjectStore(t)
+	defer store.Close()
+	checkpoint := DefaultConfig()
+	checkpoint.Revision = 4
+	checkpoint.Node.NodeID = testLegacyNodeID
+	if err := SaveStore(store, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveStoreLastKnownGood(store, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	active := peerCredentialCollisionConfig()
+	active.Revision = 5
+	active.Node.NodeID = "node-fedcba9876543210fedcba9876543210"
+	payload, err := json.MarshalIndent(active, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = append(payload, '\n')
+	if err := store.ReplaceConfig(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RestoreStoreLastKnownGood(store, active.Revision, false); err == nil ||
+		!strings.Contains(err.Error(), "config.restore_node_id_mismatch") {
+		t.Fatalf("identity mismatch restore error=%v", err)
+	}
+	assertObjectStoreConfigUnchanged(t, store, payload)
 }
 
 func TestObjectStoreRestoreTreatsCredentialCollisionAsInvalidActive(t *testing.T) {

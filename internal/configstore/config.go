@@ -40,13 +40,17 @@ type Config struct {
 }
 
 const (
-	CurrentSchemaVersion          = 2
-	maxConfigBackups              = 5
-	preMigrationConfigSuffix      = ".pre-migration"
-	rejectedConfigSuffix          = ".rejected"
-	PeerCredentialQuarantineCause = "disabled during migration: shared VLESS credential quarantined; assign a new unique profile before enabling"
-	PeerCredentialRotatedDisabled = "disabled after credential rotation; enable explicitly"
-	PeerCredentialCollisionReason = "shared_vless_credential"
+	CurrentSchemaVersion                         = 2
+	maxConfigBackups                             = 5
+	preMigrationConfigSuffix                     = ".pre-migration"
+	rejectedConfigSuffix                         = ".rejected"
+	PeerCredentialQuarantineCause                = "disabled during migration: shared VLESS credential quarantined; assign a new unique profile before enabling"
+	PeerCredentialQuarantineInboundCause         = "disabled during migration: exit peer credential was quarantined"
+	PeerCredentialEvidenceUnverifiedCause        = "disabled during recovery: VLESS credential evidence is unverified; assign a new unique profile before enabling"
+	PeerCredentialEvidenceUnverifiedInboundCause = "disabled during recovery: exit peer credential evidence is unverified; rotate the peer credential before enabling"
+	PeerCredentialRotatedDisabled                = "disabled after credential rotation; enable explicitly"
+	PeerCredentialCollisionReason                = "shared_vless_credential"
+	PeerCredentialEvidenceUnverifiedReason       = "credential_evidence_unverified"
 )
 
 type NodeConfig struct {
@@ -88,7 +92,8 @@ type PeerConfig struct {
 }
 
 func IsPeerCredentialQuarantined(peer PeerConfig) bool {
-	return peer.DisabledCause == PeerCredentialQuarantineCause
+	return peer.DisabledCause == PeerCredentialQuarantineCause ||
+		peer.DisabledCause == PeerCredentialEvidenceUnverifiedCause
 }
 
 type PeerCredentialQuarantine struct {
@@ -312,6 +317,9 @@ func loadOrMigrateWithLock(path string, persistMissing bool, withLock func(func(
 			if ledgerErr != nil {
 				return ledgerErr
 			}
+			if !ledgerExists {
+				return peerCredentialLedgerMissingError()
+			}
 			changed, quarantineErr := mergeCredentialLedgerIntoConfig(&cfg, ledger)
 			if quarantineErr != nil {
 				return markContentError(quarantineErr)
@@ -348,9 +356,12 @@ func loadOrMigrateWithLock(path string, persistMissing bool, withLock func(func(
 			return configErrorf("config.revision_exhausted")
 		}
 		legacy.SchemaVersion = CurrentSchemaVersion
-		ledger, _, ledgerErr := loadPathPeerCredentialLedger(lockedPath)
+		ledger, ledgerExists, ledgerErr := loadPathPeerCredentialLedger(lockedPath)
 		if ledgerErr != nil {
 			return ledgerErr
+		}
+		if !ledgerExists {
+			return peerCredentialLedgerMissingError()
 		}
 		if _, quarantineErr := mergeCredentialLedgerIntoConfig(&legacy, ledger); quarantineErr != nil {
 			return markContentError(quarantineErr)
@@ -1183,10 +1194,11 @@ func validatePeerCredentialQuarantines(quarantines []PeerCredentialQuarantine) (
 		if _, duplicate := fingerprints[fingerprint]; duplicate {
 			return nil, configErrorf("config.peer_credential_quarantine_duplicate: %s", fingerprint)
 		}
-		if quarantine.Reason != PeerCredentialCollisionReason {
+		if quarantine.Reason != PeerCredentialCollisionReason &&
+			quarantine.Reason != PeerCredentialEvidenceUnverifiedReason {
 			return nil, configErrorf("config.peer_credential_quarantine_reason_invalid: %s", quarantine.Reason)
 		}
-		if len(quarantine.PeerNodeIDs) == 0 {
+		if len(quarantine.PeerNodeIDs) == 0 && quarantine.Reason != PeerCredentialEvidenceUnverifiedReason {
 			return nil, configErrorf("config.peer_credential_quarantine_peers_required: %s", fingerprint)
 		}
 		seenNodeIDs := make(map[string]struct{}, len(quarantine.PeerNodeIDs))
@@ -1302,12 +1314,17 @@ func quarantinePeerCredentialCollisions(cfg *Config) (bool, error) {
 		enabled int
 		marked  bool
 		revoked bool
+		reason  string
 		nodeIDs map[string]struct{}
 	}
 	groups := make(map[string]*credentialGroup, len(cfg.Peers)+len(cfg.PeerCredentialQuarantines))
 	recordIndexes := make(map[string]int, len(cfg.PeerCredentialQuarantines))
 	for index, quarantine := range cfg.PeerCredentialQuarantines {
-		group := &credentialGroup{revoked: true, nodeIDs: make(map[string]struct{}, len(quarantine.PeerNodeIDs))}
+		group := &credentialGroup{
+			revoked: true,
+			reason:  quarantine.Reason,
+			nodeIDs: make(map[string]struct{}, len(quarantine.PeerNodeIDs)),
+		}
 		for _, nodeID := range quarantine.PeerNodeIDs {
 			group.nodeIDs[nodeID] = struct{}{}
 		}
@@ -1326,7 +1343,7 @@ func quarantinePeerCredentialCollisions(cfg *Config) (bool, error) {
 		}
 		group := groups[fingerprint]
 		if group == nil {
-			group = &credentialGroup{nodeIDs: map[string]struct{}{}}
+			group = &credentialGroup{reason: PeerCredentialCollisionReason, nodeIDs: map[string]struct{}{}}
 			groups[fingerprint] = group
 		}
 		group.bound = append(group.bound, index)
@@ -1338,8 +1355,8 @@ func quarantinePeerCredentialCollisions(cfg *Config) (bool, error) {
 		}
 	}
 
-	quarantinedNodeIDs := make(map[string]struct{}, len(cfg.Peers))
-	quarantinedNames := make(map[string]struct{}, len(cfg.Peers))
+	quarantinedNodeIDs := make(map[string]string, len(cfg.Peers))
+	quarantinedNames := make(map[string]string, len(cfg.Peers))
 	changed := false
 	for fingerprint, group := range groups {
 		if !group.revoked && !group.marked && group.enabled < 2 {
@@ -1348,11 +1365,17 @@ func quarantinePeerCredentialCollisions(cfg *Config) (bool, error) {
 		for _, index := range group.bound {
 			peer := &cfg.Peers[index]
 			group.nodeIDs[peer.NodeID] = struct{}{}
-			quarantinedNodeIDs[peer.NodeID] = struct{}{}
-			quarantinedNames[peer.Name] = struct{}{}
-			if peer.Enabled || peer.DisabledCause != PeerCredentialQuarantineCause {
+			disabledCause := PeerCredentialQuarantineCause
+			inboundDisabledCause := PeerCredentialQuarantineInboundCause
+			if group.reason == PeerCredentialEvidenceUnverifiedReason {
+				disabledCause = PeerCredentialEvidenceUnverifiedCause
+				inboundDisabledCause = PeerCredentialEvidenceUnverifiedInboundCause
+			}
+			quarantinedNodeIDs[peer.NodeID] = inboundDisabledCause
+			quarantinedNames[peer.Name] = inboundDisabledCause
+			if peer.Enabled || peer.DisabledCause != disabledCause {
 				peer.Enabled = false
-				peer.DisabledCause = PeerCredentialQuarantineCause
+				peer.DisabledCause = disabledCause
 				changed = true
 			}
 		}
@@ -1372,7 +1395,7 @@ func quarantinePeerCredentialCollisions(cfg *Config) (bool, error) {
 			cfg.PeerCredentialQuarantines = append(cfg.PeerCredentialQuarantines, PeerCredentialQuarantine{
 				CredentialFingerprint: fingerprint,
 				PeerNodeIDs:           nodeIDs,
-				Reason:                PeerCredentialCollisionReason,
+				Reason:                group.reason,
 			})
 			changed = true
 		}
@@ -1380,15 +1403,24 @@ func quarantinePeerCredentialCollisions(cfg *Config) (bool, error) {
 
 	for index := range cfg.NodeInbound {
 		inbound := &cfg.NodeInbound[index]
-		if !inbound.Enabled || inbound.ExitPeer == "" {
+		if inbound.ExitPeer == "" {
 			continue
 		}
-		_, byNodeID := quarantinedNodeIDs[inbound.ExitPeer]
-		_, byName := quarantinedNames[inbound.ExitPeer]
+		disabledCause, byNodeID := quarantinedNodeIDs[inbound.ExitPeer]
+		byName := false
+		if !byNodeID {
+			disabledCause, byName = quarantinedNames[inbound.ExitPeer]
+		}
 		if byNodeID || byName {
-			inbound.Enabled = false
-			inbound.DisabledCause = "disabled during migration: exit peer credential was quarantined"
-			changed = true
+			quarantineOwnedCause := inbound.DisabledCause == PeerCredentialQuarantineInboundCause ||
+				inbound.DisabledCause == PeerCredentialEvidenceUnverifiedInboundCause
+			if inbound.Enabled || quarantineOwnedCause {
+				if inbound.Enabled || inbound.DisabledCause != disabledCause {
+					inbound.Enabled = false
+					inbound.DisabledCause = disabledCause
+					changed = true
+				}
+			}
 		}
 	}
 	if err := Validate(*cfg); err != nil {

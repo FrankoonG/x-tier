@@ -65,6 +65,42 @@ func loadStoreLastKnownGood(configPath string) (cfg configstore.Config, err erro
 	return configstore.LoadStoreLastKnownGood(store)
 }
 
+func loadStoreConfig(configPath string) (cfg configstore.Config, err error) {
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		return configstore.Config{}, err
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		return configstore.Config{}, err
+	}
+	defer func() { err = errors.Join(err, store.Close()) }()
+	return configstore.LoadStoreExisting(store)
+}
+
+func updateStoreConfigCAS(
+	t *testing.T,
+	configPath string,
+	expectedRevision int64,
+	mutate func(*configstore.Config) error,
+) configstore.UpdateResult {
+	t.Helper()
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	result, err := configstore.UpdateStoreCAS(store, expectedRevision, mutate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
 func saveStoreLastKnownGood(t *testing.T, configPath string, cfg configstore.Config) {
 	t.Helper()
 	canonical, err := configstore.CanonicalPath(configPath)
@@ -217,12 +253,139 @@ func TestStartPersistsInitialDefaultConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	cfg, err := configstore.LoadExisting(configPath)
+	cfg, err := configstore.LoadStoreExisting(d.stateStore)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Revision != 0 || cfg.SchemaVersion != configstore.CurrentSchemaVersion {
 		t.Fatalf("persisted initial config = %+v", cfg)
+	}
+}
+
+func TestDaemonCannotFallbackThroughMissingCredentialLedger(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := configstore.DefaultConfig()
+	active.Revision = 4
+	if err := configstore.SaveStore(store, active); err != nil {
+		t.Fatal(err)
+	}
+	if err := configstore.SaveStoreLastKnownGood(store, active); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.ReadConfig(16 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath, err := store.DiagnosticPath(statestore.PeerCredentialQuarantineLedger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(ledgerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if d != nil {
+		defer d.Close()
+	}
+	if !errors.Is(err, configstore.ErrPeerCredentialLedgerMissing) {
+		t.Fatalf("daemon error=%v, want missing credential ledger", err)
+	}
+	store, err = statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	after, err := store.ReadConfig(16 << 20)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("active config changed: err=%v before=%q after=%q", err, before, after)
+	}
+	if _, err := store.Read(statestore.PeerCredentialQuarantineLedger, 1<<20); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("daemon recreated missing ledger: %v", err)
+	}
+}
+
+func TestDaemonCannotRecreateMissingCredentialLedgerThroughV1Migration(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	payload := []byte(`{"schema_version":1,"revision":4,"node":{},"system":{}}`)
+	if err := configstore.Save(configPath, configstore.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(configPath + ".peer-credential-quarantines.v1.json"); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if d != nil {
+		defer d.Close()
+	}
+	if !errors.Is(err, configstore.ErrPeerCredentialLedgerMissing) {
+		t.Fatalf("daemon v1 error=%v, want missing credential ledger", err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(after, payload) {
+		t.Fatalf("daemon changed v1 active config: err=%v before=%q after=%q", err, payload, after)
+	}
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Read(statestore.PeerCredentialQuarantineLedger, 1<<20); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("daemon v1 migration recreated missing ledger: %v", err)
+	}
+}
+
+func TestDaemonRejectsConfiguredAndCheckpointIdentityMismatch(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "xtier.json")
+	canonical, err := configstore.CanonicalPath(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := statestore.Open(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := configstore.DefaultConfig()
+	active.Revision = 5
+	active.Node.NodeID = "node-fedcba9876543210fedcba9876543210"
+	checkpoint := active
+	checkpoint.Revision = 4
+	checkpoint.Node.NodeID = "node-0123456789abcdef0123456789abcdef"
+	if err := configstore.SaveStore(store, active); err != nil {
+		t.Fatal(err)
+	}
+	if err := configstore.SaveStoreLastKnownGood(store, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
+	if d != nil {
+		defer d.Close()
+	}
+	if publicerr.Code(err, "operation.failed") != "config.restore_node_id_mismatch" {
+		t.Fatalf("identity mismatch error=%v", err)
 	}
 }
 
@@ -372,7 +535,7 @@ func TestDaemonAllowsDefaultInitializationBesideNonBackupNeighbor(t *testing.T) 
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configstore.LoadExisting(configPath); err != nil {
+	if _, err := loadStoreConfig(configPath); err != nil {
 		t.Fatalf("default config was not initialized: %v", err)
 	}
 }
@@ -385,7 +548,7 @@ func TestDaemonStatusSurvivesMissingRuntimeConfigWithReadBackoff(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Close() })
 
-	cfg, err := configstore.LoadExisting(d.runtimeConfigPath)
+	cfg, err := configstore.LoadStoreExisting(d.stateStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1137,7 +1300,7 @@ func TestSameDirectoryDaemonsUseIndependentPrivateState(t *testing.T) {
 			t.Fatal(err)
 		}
 		tokens = append(tokens, token)
-		loaded, err := configstore.LoadExisting(path)
+		loaded, err := loadStoreConfig(path)
 		if err != nil || loaded.Node.DisplayName != fmt.Sprintf("neighbor-%d", index) {
 			t.Fatalf("neighbor %d was modified: config=%+v err=%v", index, loaded, err)
 		}
@@ -1272,6 +1435,9 @@ func TestDaemonFinishReportsBlockedReconcilerWithoutReleasingOwnedResources(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := configstore.SaveStore(lease.Store(), cfg); err != nil {
+		t.Fatal(err)
+	}
 	plane := &contextIgnoringApplyPlane{
 		entered: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{}),
 	}
@@ -1341,6 +1507,9 @@ func TestDaemonFinishWaitsForDirectReloadBeforeReleasingOwnedResources(t *testin
 	defer cancel()
 	lease, err := acquireInstanceLease(configPath)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configstore.SaveStore(lease.Store(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	plane := &contextIgnoringApplyPlane{
@@ -1635,7 +1804,7 @@ func TestDaemonStartsControlPlaneFromLastKnownGoodAfterRuntimeApplyFailure(t *te
 		t.Fatal(err)
 	}
 	blockedAddress := blocker.Addr().String()
-	if _, err := configstore.UpdateCAS(configPath, 0, func(cfg *configstore.Config) error {
+	updateStoreConfigCAS(t, configPath, 0, func(cfg *configstore.Config) error {
 		cfg.XrayProfiles["carrier-in"] = configstore.XrayProfile{
 			ID: "carrier-in", Kind: "vless", VLESS: &configstore.VLESSProfile{
 				UUID: "d342d11e-d424-4583-b36e-524ab1f0afa4", Transport: "tcp", Security: "none", AllowInsecurePlaintext: true,
@@ -1649,9 +1818,7 @@ func TestDaemonStartsControlPlaneFromLastKnownGoodAfterRuntimeApplyFailure(t *te
 			XrayProfileID: "carrier-in", Enabled: true,
 		}}
 		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 
 	recovered, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
 	if err != nil {
@@ -1688,12 +1855,10 @@ func TestDaemonStartsControlPlaneFromLastKnownGoodAfterRuntimeApplyFailure(t *te
 		t.Fatal(err)
 	}
 
-	if _, err := configstore.UpdateCAS(configPath, 1, func(cfg *configstore.Config) error {
+	updateStoreConfigCAS(t, configPath, 1, func(cfg *configstore.Config) error {
 		cfg.NodeInbound[0].Enabled = false
 		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	fixed, err := Start(context.Background(), Options{ConfigPath: configPath, ControlAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
@@ -1889,7 +2054,7 @@ func TestDaemonStartsLastKnownGoodWhenConfiguredContentIsInvalid(t *testing.T) {
 		status.Xray.FailStopped {
 		t.Fatalf("restored daemon did not reconcile: %+v", status)
 	}
-	repaired, err := configstore.LoadExisting(configPath)
+	repaired, err := loadStoreConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2440,9 +2605,6 @@ func TestDaemonStartupRollbackMergesDurableCredentialLedgerBeforeStartingPlane(t
 		Name: "B", NodeID: "node-b", Addr: "10.20.0.2:2443", GatewayAddr: "10.20.0.2:2443",
 		Direction: route.DirectionOutbound, XrayProfileID: "shared", Enabled: true,
 	}}
-	if err := configstore.Save(configPath, checkpoint); err != nil {
-		t.Fatal(err)
-	}
 	canonical, err := configstore.CanonicalPath(configPath)
 	if err != nil {
 		t.Fatal(err)

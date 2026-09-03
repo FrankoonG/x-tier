@@ -19,6 +19,7 @@ func TestLegacyMigrationCopiesOnlyUnambiguousPrivateState(t *testing.T) {
 	legacy := map[string][]byte{
 		store.configLeaf + ".control-token":                 []byte("  " + strings.Repeat("a", 64) + "\r\n"),
 		store.configLeaf + ".web-token":                     []byte(strings.Repeat("b", 64) + "\n"),
+		store.configLeaf + legacyPeerCredentialLedgerSuffix: []byte("{\"version\":1,\"quarantines\":[]}\n"),
 		store.configLeaf + ".last-good":                     []byte(`{"revision":7}`),
 		store.configLeaf + ".bak.20260826T010203.123456789": []byte("backup-one"),
 		store.configLeaf + ".bak.notes":                     []byte("backup-neighbor"),
@@ -31,6 +32,7 @@ func TestLegacyMigrationCopiesOnlyUnambiguousPrivateState(t *testing.T) {
 	writeLegacySeedForMigrationTest(t, store, seed)
 
 	seedCalls := 0
+	ledgerCalls := 0
 	options := LegacyMigrationOptions{
 		Identity: "node-a",
 		ValidateIdentitySeed: func(identity string, payload []byte) error {
@@ -41,21 +43,35 @@ func TestLegacyMigrationCopiesOnlyUnambiguousPrivateState(t *testing.T) {
 			payload[0] = 'x'
 			return nil
 		},
+		ValidatePeerCredentialLedger: func(payload []byte) error {
+			ledgerCalls++
+			if !bytes.Equal(payload, legacy[store.configLeaf+legacyPeerCredentialLedgerSuffix]) {
+				t.Fatalf("ledger validator payload=%q", payload)
+			}
+			payload[0] = 'x'
+			return nil
+		},
 	}
 	result, err := store.MigrateLegacy(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Sources != 3 || result.Published != 3 || result.AlreadyComplete {
+	if result.Sources != 4 || result.Published != 4 || result.AlreadyComplete {
 		t.Fatalf("migration result=%+v", result)
 	}
-	if seedCalls != 1 {
-		t.Fatalf("seed validator calls=%d", seedCalls)
+	if seedCalls != 1 || ledgerCalls != 1 {
+		t.Fatalf("validator calls: seed=%d ledger=%d", seedCalls, ledgerCalls)
 	}
 
 	assertStoreObjectForMigrationTest(t, store, ControlToken, legacy[store.configLeaf+".control-token"])
 	assertStoreObjectForMigrationTest(t, store, WebToken, legacy[store.configLeaf+".web-token"])
 	assertStoreObjectForMigrationTest(t, store, IdentitySeed, seed)
+	assertStoreObjectForMigrationTest(
+		t,
+		store,
+		PeerCredentialQuarantineLedger,
+		legacy[store.configLeaf+legacyPeerCredentialLedgerSuffix],
+	)
 	if _, err := store.Read(LastKnownGood, maxLegacyConfigSize); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("ambiguous last-known-good was imported: %v", err)
 	}
@@ -71,8 +87,101 @@ func TestLegacyMigrationCopiesOnlyUnambiguousPrivateState(t *testing.T) {
 	}
 
 	result, err = store.MigrateLegacy(options)
-	if err != nil || !result.AlreadyComplete || result.Sources != 3 || result.Published != 0 {
+	if err != nil || !result.AlreadyComplete || result.Sources != 4 || result.Published != 0 {
 		t.Fatalf("idempotent migration result=%+v err=%v", result, err)
+	}
+}
+
+func TestCompletedLegacyMigrationDoesNotRepublishDeletedCredentialLedger(t *testing.T) {
+	store := newLegacyMigrationStore(t)
+	defer store.Close()
+	source := store.configLeaf + legacyPeerCredentialLedgerSuffix
+	writeSecureRootFileForMigrationTest(t, store.parent, source, []byte("{\"version\":1,\"quarantines\":[]}\n"))
+	options := LegacyMigrationOptions{ValidatePeerCredentialLedger: func([]byte) error { return nil }}
+	if _, err := store.MigrateLegacy(options); err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath, err := store.DiagnosticPath(PeerCredentialQuarantineLedger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(ledgerPath); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.MigrateLegacy(options)
+	if err != nil || !result.AlreadyComplete || result.Published != 0 {
+		t.Fatalf("completed migration result=%+v err=%v", result, err)
+	}
+	if _, err := store.Read(PeerCredentialQuarantineLedger, 1024); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("completed migration silently recreated ledger: %v", err)
+	}
+}
+
+func TestLegacyReceiptWithoutLedgerEntryPermanentlyIgnoresAdjacentSidecar(t *testing.T) {
+	store := newLegacyMigrationStore(t)
+	defer store.Close()
+	if _, err := store.MigrateLegacy(LegacyMigrationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	sourcePayload := []byte("{\"version\":1,\"quarantines\":[{\"legacy\":true}]}\n")
+	targetPayload := []byte("{\"version\":1,\"quarantines\":[]}\n")
+	writeSecureRootFileForMigrationTest(
+		t,
+		store.parent,
+		store.configLeaf+legacyPeerCredentialLedgerSuffix,
+		sourcePayload,
+	)
+	if err := store.Replace(PeerCredentialQuarantineLedger, targetPayload); err != nil {
+		t.Fatal(err)
+	}
+	validatorCalls := 0
+	result, err := store.MigrateLegacy(LegacyMigrationOptions{
+		ValidatePeerCredentialLedger: func([]byte) error {
+			validatorCalls++
+			return errors.New("retired sidecar must not be consulted")
+		},
+	})
+	if err != nil || !result.AlreadyComplete || result.Published != 0 || validatorCalls != 0 {
+		t.Fatalf("old receipt migration result=%+v validator_calls=%d err=%v", result, validatorCalls, err)
+	}
+	assertStoreObjectForMigrationTest(t, store, PeerCredentialQuarantineLedger, targetPayload)
+
+	ledgerPath, err := store.DiagnosticPath(PeerCredentialQuarantineLedger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(ledgerPath); err != nil {
+		t.Fatal(err)
+	}
+	result, err = store.MigrateLegacy(LegacyMigrationOptions{
+		ValidatePeerCredentialLedger: func([]byte) error {
+			validatorCalls++
+			return errors.New("retired sidecar must not be consulted")
+		},
+	})
+	if err != nil || !result.AlreadyComplete || result.Published != 0 || validatorCalls != 0 {
+		t.Fatalf("deleted target migration result=%+v validator_calls=%d err=%v", result, validatorCalls, err)
+	}
+	if _, err := store.Read(PeerCredentialQuarantineLedger, 1024); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("old receipt republished deleted ledger: %v", err)
+	}
+}
+
+func TestLegacyMigrationRejectsInvalidCredentialLedger(t *testing.T) {
+	store := newLegacyMigrationStore(t)
+	defer store.Close()
+	writeSecureRootFileForMigrationTest(
+		t,
+		store.parent,
+		store.configLeaf+legacyPeerCredentialLedgerSuffix,
+		[]byte("invalid"),
+	)
+	injected := errors.New("invalid ledger")
+	_, err := store.MigrateLegacy(LegacyMigrationOptions{
+		ValidatePeerCredentialLedger: func([]byte) error { return injected },
+	})
+	if !errors.Is(err, ErrInvalidLegacyState) || !errors.Is(err, injected) {
+		t.Fatalf("invalid ledger error=%v", err)
 	}
 }
 

@@ -166,12 +166,16 @@ func start(ctx context.Context, opts Options, startPlane runtimePlaneStarter) (*
 	}()
 	runtimeConfigPath := lease.ConfigPath()
 	stateStore := lease.Store()
+	assertedIdentity, err := legacyMigrationIdentity(stateStore)
+	if err != nil {
+		return nil, fmt.Errorf("daemon.state_migration_identity: %w", err)
+	}
+	if err := migrateLegacyState(stateStore, assertedIdentity); err != nil {
+		return nil, fmt.Errorf("daemon.state_migration: %w", err)
+	}
 	cfg, migrated, configRollback, err := loadInitialConfig(stateStore, runtimeConfigPath, configPath)
 	if err != nil {
 		return nil, fmt.Errorf("daemon.config_load: %w", err)
-	}
-	if err := migrateLegacyState(stateStore, cfg.Node.NodeID); err != nil {
-		return nil, fmt.Errorf("daemon.state_migration: %w", err)
 	}
 	bootID, err := newBootID()
 	if err != nil {
@@ -1433,6 +1437,7 @@ func migrateLegacyState(store *statestore.Store, assertedIdentity string) error 
 				}
 				return nil
 			},
+			ValidatePeerCredentialLedger: configstore.ValidatePeerCredentialLedgerDocument,
 			IsConfigDocument: func(payload []byte) bool {
 				_, err := configstore.DecodeCheckpointDocument(payload)
 				return err == nil
@@ -1442,11 +1447,42 @@ func migrateLegacyState(store *statestore.Store, assertedIdentity string) error 
 	})
 }
 
+func legacyMigrationIdentity(store *statestore.Store) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("state store is required")
+	}
+	for _, read := range []func() ([]byte, error){
+		func() ([]byte, error) { return store.ReadConfig(16 << 20) },
+		func() ([]byte, error) { return store.Read(statestore.LastKnownGood, 16<<20) },
+	} {
+		payload, err := read()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		cfg, err := configstore.DecodeCheckpointDocument(payload)
+		if err == nil {
+			return cfg.Node.NodeID, nil
+		}
+	}
+	return "", nil
+}
+
 func startRuntimePlane(ctx context.Context, configPath string, store *statestore.Store, configured configstore.Config) (runtimePlane, int64, *controlapi.StartupRollbackStatus, error) {
 	lastGood, loadErr := loadLastKnownGood(store, configPath)
 	hasLastGood := loadErr == nil
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 		return nil, -1, nil, fmt.Errorf("load last-known-good: %w", loadErr)
+	}
+	if hasLastGood && lastGood.Node.NodeID != configured.Node.NodeID {
+		return nil, -1, nil, publicerr.Errorf(
+			"config.restore_node_id_mismatch",
+			"configured node identity %q differs from last-known-good identity %q",
+			configured.Node.NodeID,
+			lastGood.Node.NodeID,
+		)
 	}
 	var precheckErr error
 	if hasLastGood && lastGood.Revision > configured.Revision {
@@ -1549,6 +1585,9 @@ func loadInitialConfig(store *statestore.Store, runtimeConfigPath, ownershipKey 
 				)
 			}
 		} else {
+			if errors.Is(err, configstore.ErrPeerCredentialLedgerMissing) {
+				return configstore.Config{}, false, nil, err
+			}
 			if !configstore.IsContentError(err) {
 				return configstore.Config{}, false, nil, err
 			}
@@ -1566,6 +1605,9 @@ func loadInitialConfig(store *statestore.Store, runtimeConfigPath, ownershipKey 
 		cfg, migrated, err = configstore.LoadPinnedOrMigrate(runtimeConfigPath, ownershipKey)
 	}
 	if err != nil {
+		if errors.Is(err, configstore.ErrPeerCredentialLedgerMissing) {
+			return configstore.Config{}, false, nil, err
+		}
 		if configstore.IsContentError(err) {
 			return recoverInitialConfigFromLastKnownGood(store, runtimeConfigPath, ownershipKey, err)
 		}

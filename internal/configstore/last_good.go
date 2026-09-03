@@ -257,6 +257,20 @@ func prepareLastKnownGoodRestore(
 	ledger []PeerCredentialQuarantine,
 	ledgerExists bool,
 ) (Config, []PeerCredentialQuarantine, error) {
+	if !ledgerExists {
+		return Config{}, nil, configErrorf(
+			"config.restore_credential_ledger_missing: %w",
+			ErrPeerCredentialLedgerMissing,
+		)
+	}
+	if activeNodeID, known := recoverableConfigNodeID(activePayload, activeReadErr); known &&
+		activeNodeID != checkpoint.Node.NodeID {
+		return Config{}, nil, configErrorf(
+			"config.restore_node_id_mismatch: active %q checkpoint %q",
+			activeNodeID,
+			checkpoint.Node.NodeID,
+		)
+	}
 	activeQuarantines, known, err := recoverablePeerCredentialQuarantines(activePayload, activeReadErr)
 	if err != nil {
 		return Config{}, nil, configErrorf("config.restore_active_quarantine_invalid: %w", err)
@@ -267,9 +281,6 @@ func prepareLastKnownGoodRestore(
 	)
 	if err != nil {
 		return Config{}, nil, configErrorf("config.restore_quarantine_merge: %w", err)
-	}
-	if !known && !ledgerExists {
-		return Config{}, nil, configErrorf("config.restore_credential_ledger_missing")
 	}
 	if known {
 		authoritative, err = mergePeerCredentialQuarantines(
@@ -284,6 +295,26 @@ func prepareLastKnownGoodRestore(
 		return Config{}, nil, configErrorf("config.restore_quarantine_apply: %w", err)
 	}
 	return checkpoint, authoritative, nil
+}
+
+func recoverableConfigNodeID(payload []byte, readErr error) (string, bool) {
+	if readErr != nil {
+		return "", false
+	}
+	schemaVersion, versioned, err := configSchemaFromJSON(payload)
+	if err != nil || versioned && schemaVersion > CurrentSchemaVersion {
+		return "", false
+	}
+	var cfg Config
+	if versioned && schemaVersion == CurrentSchemaVersion {
+		cfg, err = decodeRepairableConfig(payload)
+	} else {
+		cfg, err = decodeMigratableConfig(payload, schemaVersion, versioned)
+	}
+	if err != nil {
+		return "", false
+	}
+	return cfg.Node.NodeID, true
 }
 
 func recoverablePeerCredentialQuarantines(

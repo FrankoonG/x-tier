@@ -114,6 +114,38 @@ func TestPeerCredentialQuarantineLedgerSecureReadWrite(t *testing.T) {
 	}
 }
 
+func TestReplaceReportsUnknownOutcomeWhenDirectorySyncFailsAfterPublish(t *testing.T) {
+	dir := canonicalTempDir(t)
+	store := openTestStore(t, filepath.Join(dir, "config.json"))
+	defer store.Close()
+	if err := store.Replace(ConfigRevisionHighWater, []byte("before")); err != nil {
+		t.Fatal(err)
+	}
+
+	name, err := objectName(ConfigRevisionHighWater)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected directory sync failure")
+	err = replaceInRootWithSync(
+		store.state,
+		store.stateDir,
+		name,
+		[]byte("after"),
+		func(*os.File) error { return injected },
+	)
+	if !errors.Is(err, ErrCommitOutcomeUnknown) || errors.Is(err, injected) {
+		t.Fatalf("replace error=%v, want only ErrCommitOutcomeUnknown classification", err)
+	}
+	payload, readErr := store.Read(ConfigRevisionHighWater, 64)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(payload, []byte("after")) {
+		t.Fatalf("published payload=%q, want after", payload)
+	}
+}
+
 func TestStoreRejectsReservedConfigPath(t *testing.T) {
 	dir := canonicalTempDir(t)
 	for _, path := range []string{

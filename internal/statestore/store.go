@@ -444,6 +444,16 @@ func createExclusiveInRoot(root *os.Root, directory *os.File, name string, data 
 }
 
 func replaceInRoot(root *os.Root, directory *os.File, name string, data []byte) (err error) {
+	return replaceInRootWithSync(root, directory, name, data, syncDirectory)
+}
+
+func replaceInRootWithSync(
+	root *os.Root,
+	directory *os.File,
+	name string,
+	data []byte,
+	syncDirectoryFn func(*os.File) error,
+) (err error) {
 	if info, statErr := root.Lstat(name); statErr == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return fmt.Errorf("%w: target is not a regular file", ErrInsecureState)
@@ -479,7 +489,7 @@ func replaceInRoot(root *os.Root, directory *os.File, name string, data []byte) 
 	if err = replaceRootFile(root, directory, temporaryName, name); err != nil {
 		return err
 	}
-	if err = syncDirectory(directory); err != nil {
+	if err = syncDirectoryFn(directory); err != nil {
 		return fmt.Errorf("%w: statestore.replace_sync: %v", ErrCommitOutcomeUnknown, err)
 	}
 	return nil

@@ -16,16 +16,18 @@ import (
 )
 
 const (
-	legacyMigrationVersion      = 1
-	legacyMigrationIntentKind   = "xtier-legacy-state-migration-intent"
-	legacyMigrationCompleteKind = "xtier-legacy-state-migration-complete"
-	legacyMigrationIntentName   = "legacy-migration.v1.intent.json"
-	legacyMigrationCompleteName = "legacy-migration.v1.complete.json"
+	legacyMigrationVersion           = 1
+	legacyMigrationIntentKind        = "xtier-legacy-state-migration-intent"
+	legacyMigrationCompleteKind      = "xtier-legacy-state-migration-complete"
+	legacyMigrationIntentName        = "legacy-migration.v1.intent.json"
+	legacyMigrationCompleteName      = "legacy-migration.v1.complete.json"
+	legacyPeerCredentialLedgerSuffix = ".peer-credential-quarantines.v1.json"
 
-	maxLegacyTokenSize  = 64 << 10
-	maxLegacyConfigSize = 16 << 20
-	maxLegacySeedSize   = 4096
-	maxLegacyIntentSize = 1 << 20
+	maxLegacyTokenSize            = 64 << 10
+	maxLegacyCredentialLedgerSize = 1 << 20
+	maxLegacyConfigSize           = 16 << 20
+	maxLegacySeedSize             = 4096
+	maxLegacyIntentSize           = 1 << 20
 )
 
 var (
@@ -42,8 +44,9 @@ type LegacyMigrationOptions struct {
 	// present and its validator proves ownership.
 	Identity string
 
-	ValidateIdentitySeed func(identity string, payload []byte) error
-	IsConfigDocument     func([]byte) bool
+	ValidateIdentitySeed         func(identity string, payload []byte) error
+	ValidatePeerCredentialLedger func(payload []byte) error
+	IsConfigDocument             func([]byte) bool
 }
 
 // LegacyMigrationResult reports durable migration progress for this call.
@@ -106,7 +109,15 @@ func (s *Store) MigrateLegacy(options LegacyMigrationOptions) (LegacyMigrationRe
 		if err != nil {
 			return LegacyMigrationResult{}, err
 		}
-		current, err := s.buildLegacyMigrationPlan(options)
+		currentOptions := options
+		if !legacyMigrationIntentContainsKind(intent, "peer-credential-quarantine-ledger") {
+			// Receipts written before the ledger migration existed permanently
+			// retire the unbound adjacent sidecar. The private-store ledger, if
+			// present, remains authoritative; if it was deleted, ordinary config
+			// loading fails closed instead of republishing legacy evidence.
+			currentOptions.ValidatePeerCredentialLedger = nil
+		}
+		current, err := s.buildLegacyMigrationPlan(currentOptions)
 		if err != nil {
 			return LegacyMigrationResult{}, fmt.Errorf(
 				"%w: legacy state changed after v2 migration: %w",
@@ -257,6 +268,20 @@ func (s *Store) buildLegacyMigrationPlan(options LegacyMigrationOptions) (legacy
 		add(candidate.kind, source, target, payload)
 	}
 
+	if options.ValidatePeerCredentialLedger != nil {
+		ledgerSource := s.configLeaf + legacyPeerCredentialLedgerSuffix
+		ledgerPayload, ledgerErr := readFromRoot(s.parent, ledgerSource, maxLegacyCredentialLedgerSize)
+		if ledgerErr == nil {
+			if err := options.ValidatePeerCredentialLedger(bytes.Clone(ledgerPayload)); err != nil {
+				return legacyMigrationPlan{}, fmt.Errorf("%w: peer credential ledger: %w", ErrInvalidLegacyState, err)
+			}
+			target, _ := objectName(PeerCredentialQuarantineLedger)
+			add("peer-credential-quarantine-ledger", ledgerSource, target, ledgerPayload)
+		} else if !errors.Is(ledgerErr, fs.ErrNotExist) {
+			return legacyMigrationPlan{}, fmt.Errorf("statestore.legacy_source_read %q: %w", ledgerSource, ledgerErr)
+		}
+	}
+
 	seed, present, err := s.readLegacySeed()
 	if err != nil {
 		return legacyMigrationPlan{}, err
@@ -277,6 +302,15 @@ func (s *Store) buildLegacyMigrationPlan(options LegacyMigrationOptions) (legacy
 		return plan.intent.Entries[i].Source < plan.intent.Entries[j].Source
 	})
 	return plan, nil
+}
+
+func legacyMigrationIntentContainsKind(intent legacyMigrationIntent, kind string) bool {
+	for _, entry := range intent.Entries {
+		if entry.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCompletedLegacySources(intent, current legacyMigrationIntent) error {
@@ -472,6 +506,9 @@ func validLegacyReceiptEntry(entry legacyMigrationEntry, configLeaf string) bool
 	case "web-token":
 		object = WebToken
 		source = configLeaf + ".web-token"
+	case "peer-credential-quarantine-ledger":
+		object = PeerCredentialQuarantineLedger
+		source = configLeaf + legacyPeerCredentialLedgerSuffix
 	case "identity-seed":
 		object = IdentitySeed
 		source = "keystore/node-seed.v1.json"

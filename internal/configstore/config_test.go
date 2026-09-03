@@ -566,6 +566,9 @@ func TestLoadPreservesExplicitFalseAndDoesNotForgePeerIdentity(t *testing.T) {
 	if err := writeFileAtomic(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -694,6 +697,9 @@ func TestLoadOrMigrateVersionsUnversionedConfigWithoutUnknownFields(t *testing.T
 	if err := writeFileAtomic(path, legacy, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
+		t.Fatal(err)
+	}
 	cfg, migrated, err := LoadOrMigrate(path)
 	if err != nil {
 		t.Fatal(err)
@@ -722,6 +728,9 @@ func TestLoadOrMigrateStrictlyMigratesExplicitV1ExactlyOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	v1 := []byte(`{"schema_version":1,"revision":7,"node":{},"system":{}}`)
 	if err := writeFileAtomic(path, v1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
 		t.Fatal(err)
 	}
 	cfg, migrated, err := LoadOrMigrate(path)
@@ -805,6 +814,9 @@ func TestLoadOrMigrateUnversionedStrictlyPreservesKnownV2Grant(t *testing.T) {
   }
 }`)
 	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
 		t.Fatal(err)
 	}
 	cfg, migrated, err := LoadOrMigrate(path)
@@ -1284,6 +1296,9 @@ func TestCurrentCredentialCollisionLoadOrMigrateQuarantinesBeforeRuntime(t *test
 	if err := writeFileAtomic(path, append(payload, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	quarantined, changed, err := LoadOrMigrate(path)
 	if err != nil {
@@ -1344,6 +1359,9 @@ func TestCurrentPartialCredentialQuarantineIsCompletedBeforeRuntime(t *testing.T
 		t.Fatal(err)
 	}
 	if err := writeFileAtomic(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1421,6 +1439,9 @@ func TestCurrentCredentialCollisionAtMaxRevisionIsNotRewritten(t *testing.T) {
 	}
 	payload = append(payload, '\n')
 	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1502,6 +1523,9 @@ func TestV1MigrationQuarantinesCredentialCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeFileAtomic(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistPathPeerCredentialLedger(path, nil); err != nil {
 		t.Fatal(err)
 	}
 

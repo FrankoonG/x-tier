@@ -107,6 +107,14 @@ func persistPathConfigRevisionHighWater(configPath string, revision int64) error
 }
 
 func persistStoreConfigRevisionHighWater(store *statestore.Store, revision int64) error {
+	return persistStoreConfigRevisionHighWaterWithReplace(store, revision, store.Replace)
+}
+
+func persistStoreConfigRevisionHighWaterWithReplace(
+	store *statestore.Store,
+	revision int64,
+	replace func(statestore.Object, []byte) error,
+) error {
 	existing, exists, err := loadStoreConfigRevisionHighWater(store)
 	if err != nil {
 		return err
@@ -118,7 +126,13 @@ func persistStoreConfigRevisionHighWater(store *statestore.Store, revision int64
 	if err != nil {
 		return err
 	}
-	if err := store.Replace(statestore.ConfigRevisionHighWater, payload); err != nil {
+	if err := replace(statestore.ConfigRevisionHighWater, payload); err != nil {
+		if errors.Is(err, statestore.ErrCommitOutcomeUnknown) {
+			return configErrorf(
+				"config.revision_high_water_outcome_indeterminate: %w",
+				errors.Join(ErrCommitOutcomeUnknown, err),
+			)
+		}
 		return configErrorf("config.revision_high_water_write: %w", err)
 	}
 	return nil
